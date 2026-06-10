@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -82,6 +83,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestFullscreen),
             name: NSNotification.Name("com.jiliang.NotchHub.testfullscreen"), object: nil)
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(debugSnapshotSettings),
+            name: NSNotification.Name("com.jiliang.NotchHub.snapsettings"), object: nil)
+    }
+
+    /// 调试用：离屏渲染设置界面到 PNG（无需打开窗口与屏幕录制权限）
+    @objc private func debugSnapshotSettings() {
+        let root = SettingsView()
+            .environmentObject(settingsStore!)
+            .environmentObject(chatStore!)
+        let hosting = NSHostingView(rootView: root)
+        hosting.frame = NSRect(x: 0, y: 0, width: 520, height: 440)
+        hosting.layoutSubtreeIfNeeded()
+        guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { return }
+        hosting.cacheDisplay(in: hosting.bounds, to: rep)
+        if let data = rep.representation(using: .png, properties: [:]) {
+            try? data.write(to: URL(fileURLWithPath: "/tmp/notchhub-settings-snapshot.png"))
+            print("[NotchHub] 设置界面快照已保存")
+        }
     }
 
     @objc private func debugTestFullscreen() {

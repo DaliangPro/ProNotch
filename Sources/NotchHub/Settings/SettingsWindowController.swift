@@ -15,8 +15,6 @@ final class SettingsWindowController {
             let newWindow = NSWindow(contentViewController: hosting)
             newWindow.title = "NotchHub 设置"
             newWindow.styleMask = [.titled, .closable]
-            // 表单按深色面板配色设计，窗口固定深色外观保证可读
-            newWindow.appearance = NSAppearance(named: .darkAqua)
             newWindow.isReleasedWhenClosed = false
             newWindow.center()
             window = newWindow
