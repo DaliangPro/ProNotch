@@ -32,6 +32,10 @@ final class NotchViewModel: ObservableObject {
     /// 搜索框聚焦期间为 true，暂停鼠标离开触发的自动收起
     var keyboardHold = false
 
+    /// 悬停展开前的外部否决钩子（如「全屏时禁用悬停」设置）；
+    /// 调试通道与菜单栏手动展开不受影响
+    var shouldSuppressExpand: (() -> Bool)?
+
     weak var panel: NSPanel?
 
     private var monitors: [Any] = []
@@ -150,6 +154,7 @@ final class NotchViewModel: ObservableObject {
                 self.pendingExpand = nil
                 // 触发时刻再校验一次，过滤快速划过
                 if self.enterRect.contains(NSEvent.mouseLocation) {
+                    if self.shouldSuppressExpand?() == true { return }
                     self.expand()
                 }
             }

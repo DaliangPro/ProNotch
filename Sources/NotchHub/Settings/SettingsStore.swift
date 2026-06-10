@@ -14,12 +14,21 @@ final class SettingsStore: ObservableObject {
     }
     @Published private(set) var loginItemHint: String?
 
+    /// 当前屏幕有全屏应用时禁用悬停展开
+    @Published var disableHoverInFullscreen: Bool {
+        didSet {
+            UserDefaults.standard.set(disableHoverInFullscreen,
+                                      forKey: "disableHoverInFullscreen")
+        }
+    }
+
     private static var serviceStatus: SMAppService.Status {
         SMAppService.mainApp.status
     }
 
     init() {
         launchAtLogin = Self.serviceStatus == .enabled
+        disableHoverInFullscreen = UserDefaults.standard.bool(forKey: "disableHoverInFullscreen")
     }
 
     private func applyLaunchAtLogin() {

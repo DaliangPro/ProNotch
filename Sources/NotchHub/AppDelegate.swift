@@ -79,6 +79,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(openSettings),
             name: NSNotification.Name("com.jiliang.NotchHub.opensettings"), object: nil)
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(debugTestFullscreen),
+            name: NSNotification.Name("com.jiliang.NotchHub.testfullscreen"), object: nil)
+    }
+
+    @objc private func debugTestFullscreen() {
+        windowController?.debugTestFullscreen()
     }
 
     @objc private func debugTestCaffeinate() {
@@ -150,7 +157,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             launcherStore: launcherStore,
             clipboardStore: clipboardStore,
             chatStore: chatStore,
-            quickActions: quickActions)
+            quickActions: quickActions,
+            settingsStore: settingsStore)
     }
 
     /// 代理应用没有可见菜单栏，但 ⌘V/⌘C 等快捷键依赖主菜单路由，

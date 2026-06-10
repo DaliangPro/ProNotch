@@ -23,6 +23,13 @@ struct SettingsView: View {
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
 
+            Toggle("全屏应用时禁用悬停展开", isOn: $settings.disableHoverInFullscreen)
+                .toggleStyle(.switch)
+                .font(.system(size: 12))
+            Text("开启后，当前屏幕有应用处于全屏时，悬停刘海不会展开面板")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+
             Divider()
                 .padding(.vertical, 6)
 

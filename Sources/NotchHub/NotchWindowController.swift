@@ -15,7 +15,8 @@ final class NotchWindowController {
     init(launcherStore: LauncherStore,
          clipboardStore: ClipboardStore,
          chatStore: ChatStore,
-         quickActions: QuickActionsStore) {
+         quickActions: QuickActionsStore,
+         settingsStore: SettingsStore) {
         self.launcherStore = launcherStore
         self.clipboardStore = clipboardStore
         self.chatStore = chatStore
@@ -40,6 +41,11 @@ final class NotchWindowController {
                 .environmentObject(quickActions))
         panel.contentView = hosting
         panel.orderFrontRegardless()
+        // 「全屏时禁用悬停」：仅在即将展开那一刻检测，无常驻开销
+        viewModel.shouldSuppressExpand = { [weak settingsStore] in
+            guard settingsStore?.disableHoverInFullscreen == true else { return false }
+            return FullscreenDetector.hasFullscreenWindow(on: NotchGeometry.targetScreen())
+        }
         viewModel.startMouseTracking()
         print("[NotchHub] 固定窗口 frame: \(panel.frame)")
     }
@@ -65,6 +71,12 @@ final class NotchWindowController {
     /// 调试用：走与「获取模型」按钮相同的路径拉取模型列表（含 UI 状态更新）
     func debugTestModels() {
         chatStore.fetchModels()
+    }
+
+    /// 调试用：打印当前屏幕全屏检测结果
+    func debugTestFullscreen() {
+        let result = FullscreenDetector.hasFullscreenWindow(on: NotchGeometry.targetScreen())
+        print("[NotchHub] 全屏检测: \(result ? "有全屏应用" : "无全屏应用")")
     }
 
     /// 调试用：打印当前外观状态
