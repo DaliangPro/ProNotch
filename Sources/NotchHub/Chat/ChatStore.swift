@@ -10,6 +10,8 @@ struct ChatMessage: Identifiable, Equatable {
     let id = UUID()
     let role: Role
     var content: String
+    /// 该回复参考的联网搜索结果条数（nil 表示未联网）
+    var searchResultCount: Int? = nil
 }
 
 /// AI 对话数据源：OpenAI 兼容接口 + SSE 流式输出。
@@ -34,6 +36,15 @@ final class ChatStore: ObservableObject {
     @Published private(set) var fetchingModels = false
     @Published var fetchError: String?
 
+    /// 联网搜索开关（切换即持久化）
+    @Published var webSearchEnabled: Bool {
+        didSet { UserDefaults.standard.set(webSearchEnabled, forKey: "chatWebSearchEnabled") }
+    }
+    /// Tavily 搜索 Key（选填；为空时用内置 DuckDuckGo 抓取）
+    @Published private(set) var tavilyKey: String
+    @Published var draftTavilyKey: String
+    @Published private(set) var isSearching = false
+
     private var streamTask: Task<Void, Never>?
 
     var isConfigured: Bool {
@@ -51,6 +62,10 @@ final class ChatStore: ObservableObject {
         draftBaseURL = savedURL
         draftAPIKey = savedKey
         draftModel = savedModel
+        let savedTavily = defaults.string(forKey: "chatTavilyKey") ?? ""
+        tavilyKey = savedTavily
+        draftTavilyKey = savedTavily
+        webSearchEnabled = defaults.bool(forKey: "chatWebSearchEnabled")
     }
 
     /// 把表单草稿提交为正式设置并持久化
@@ -58,13 +73,16 @@ final class ChatStore: ObservableObject {
         baseURL = draftBaseURL.trimmingCharacters(in: .whitespaces)
         apiKey = draftAPIKey.trimmingCharacters(in: .whitespaces)
         model = draftModel.trimmingCharacters(in: .whitespaces)
+        tavilyKey = draftTavilyKey.trimmingCharacters(in: .whitespaces)
         draftBaseURL = baseURL
         draftAPIKey = apiKey
         draftModel = model
+        draftTavilyKey = tavilyKey
         let defaults = UserDefaults.standard
         defaults.set(baseURL, forKey: "chatBaseURL")
         defaults.set(apiKey, forKey: "chatAPIKey")
         defaults.set(model, forKey: "chatModel")
+        defaults.set(tavilyKey, forKey: "chatTavilyKey")
         print("[NotchHub] 已保存 AI 设置，端点: \((try? endpointURL())?.absoluteString ?? "无效")")
     }
 
@@ -98,12 +116,79 @@ final class ChatStore: ObservableObject {
         guard !trimmed.isEmpty, !isStreaming, isConfigured else { return }
         errorText = nil
         messages.append(ChatMessage(role: .user, content: trimmed))
-        let payload = messages.map { ["role": $0.role.rawValue, "content": $0.content] }
+        let history = messages.map { ["role": $0.role.rawValue, "content": $0.content] }
         messages.append(ChatMessage(role: .assistant, content: ""))
         isStreaming = true
         streamTask = Task { [weak self] in
-            await self?.stream(payload: payload)
+            await self?.run(question: trimmed, history: history)
         }
+    }
+
+    /// 完整一轮：可选联网搜索（结果注入最后一条用户消息）→ 流式请求
+    private func run(question: String, history: [[String: String]]) async {
+        var payload = history
+        if webSearchEnabled {
+            isSearching = true
+            do {
+                let results = try await WebSearch.search(query: question, tavilyKey: tavilyKey)
+                if !results.isEmpty {
+                    payload[payload.count - 1]["content"] =
+                        Self.augmentedPrompt(question: question, results: results)
+                    setLastAssistantSearchCount(results.count)
+                    print("[NotchHub] 联网搜索返回 \(results.count) 条结果")
+                }
+            } catch is CancellationError {
+                isSearching = false
+                cancelBeforeStream()
+                return
+            } catch let error as URLError where error.code == .cancelled {
+                isSearching = false
+                cancelBeforeStream()
+                return
+            } catch {
+                // 搜索失败不阻断对话，降级为直接回答
+                errorText = "联网搜索失败（已不带搜索结果直接回答）：\(error.localizedDescription)"
+                print("[NotchHub] 联网搜索失败: \(error.localizedDescription)")
+            }
+            isSearching = false
+            if Task.isCancelled {
+                cancelBeforeStream()
+                return
+            }
+        }
+        await stream(payload: payload)
+    }
+
+    private func cancelBeforeStream() {
+        isStreaming = false
+        if let last = messages.last, last.role == .assistant, last.content.isEmpty {
+            messages.removeLast()
+        }
+        print("[NotchHub] 已在搜索阶段停止")
+    }
+
+    private func setLastAssistantSearchCount(_ count: Int) {
+        if let index = messages.indices.last, messages[index].role == .assistant {
+            messages[index].searchResultCount = count
+        }
+    }
+
+    private static func augmentedPrompt(question: String, results: [SearchResult]) -> String {
+        var lines = [
+            "请基于以下联网搜索结果回答用户问题；搜索结果可能不完整或过时，必要时注明不确定性，引用时可标注来源序号。",
+            "",
+            "搜索结果：",
+        ]
+        for (index, result) in results.enumerated() {
+            lines.append("[\(index + 1)] \(result.title)")
+            if !result.snippet.isEmpty {
+                lines.append(result.snippet)
+            }
+            lines.append("来源: \(result.url)")
+            lines.append("")
+        }
+        lines.append("用户问题：\(question)")
+        return lines.joined(separator: "\n")
     }
 
     func stopStreaming() {

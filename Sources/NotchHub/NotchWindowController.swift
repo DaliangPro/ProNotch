@@ -60,6 +60,23 @@ final class NotchWindowController {
         chatStore.fetchModels()
     }
 
+    /// 调试用：执行一次联网搜索（不调用大模型），验证搜索链路
+    func debugTestSearch() {
+        let key = chatStore.tavilyKey
+        Task { @MainActor in
+            do {
+                let results = try await WebSearch.search(
+                    query: "MacBook 刘海 notch 应用", tavilyKey: key)
+                print("[NotchHub] 搜索返回 \(results.count) 条:")
+                for result in results {
+                    print("  - \(result.title) | \(result.url)")
+                }
+            } catch {
+                print("[NotchHub] 搜索失败: \(error.localizedDescription)")
+            }
+        }
+    }
+
     /// 调试用：走真实代码路径发送一条对话消息，验证流式输出
     func debugTestChat() {
         guard chatStore.isConfigured else {

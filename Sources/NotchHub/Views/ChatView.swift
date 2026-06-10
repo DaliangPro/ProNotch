@@ -66,7 +66,8 @@ struct ChatView: View {
                     ForEach(store.messages) { message in
                         MessageBubble(message: message,
                                       streaming: store.isStreaming
-                                          && message.id == store.messages.last?.id)
+                                          && message.id == store.messages.last?.id,
+                                      searching: store.isSearching)
                     }
                     if let error = store.errorText {
                         Text(error)
@@ -89,6 +90,17 @@ struct ChatView: View {
 
     private var inputBar: some View {
         HStack(spacing: 8) {
+            Button {
+                store.webSearchEnabled.toggle()
+            } label: {
+                Image(systemName: "globe")
+                    .font(.system(size: 13))
+                    .foregroundColor(store.webSearchEnabled ? .cyan : .white.opacity(0.35))
+            }
+            .buttonStyle(.plain)
+            .help(store.webSearchEnabled
+                ? "联网搜索已开启：先搜索再回答（点击关闭）"
+                : "联网搜索已关闭（点击开启）")
             TextField("", text: $store.draftMessage,
                       prompt: Text("输入问题，回车发送")
                           .foregroundColor(.white.opacity(0.3)))
@@ -138,20 +150,39 @@ struct ChatView: View {
 private struct MessageBubble: View {
     let message: ChatMessage
     let streaming: Bool
+    let searching: Bool
 
     var body: some View {
         HStack {
             if message.role == .user { Spacer(minLength: 80) }
             Group {
                 if message.content.isEmpty && streaming {
-                    ProgressView()
-                        .controlSize(.small)
-                        .padding(4)
+                    HStack(spacing: 6) {
+                        ProgressView()
+                            .controlSize(.small)
+                        if searching {
+                            Text("正在联网搜索…")
+                                .font(.system(size: 11))
+                                .foregroundColor(.white.opacity(0.5))
+                        }
+                    }
+                    .padding(4)
                 } else {
-                    Text(message.content)
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.9))
-                        .textSelection(.enabled)
+                    VStack(alignment: .leading, spacing: 3) {
+                        if let count = message.searchResultCount {
+                            HStack(spacing: 3) {
+                                Image(systemName: "globe")
+                                    .font(.system(size: 8))
+                                Text("已参考 \(count) 条搜索结果")
+                                    .font(.system(size: 9))
+                            }
+                            .foregroundColor(.cyan.opacity(0.75))
+                        }
+                        Text(message.content)
+                            .font(.system(size: 12))
+                            .foregroundColor(.white.opacity(0.9))
+                            .textSelection(.enabled)
+                    }
                 }
             }
             .padding(.horizontal, 10)
@@ -177,7 +208,7 @@ private struct ChatSettingsForm: View {
     @FocusState private var focusedField: Field?
 
     private enum Field {
-        case url, key, model
+        case url, key, model, searchKey
     }
 
     private var canFetchModels: Bool {
@@ -268,6 +299,23 @@ private struct ChatSettingsForm: View {
             }
             // 保证悬浮下拉盖在后续兄弟行（提示与保存按钮）之上
             .zIndex(10)
+
+            HStack(spacing: 6) {
+                Text("搜索 Key")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.5))
+                    .frame(width: 50, alignment: .leading)
+                SecureField("", text: $store.draftTavilyKey,
+                            prompt: Text("选填：Tavily Key；不填则用内置免费搜索（稳定性一般）")
+                                .foregroundColor(.white.opacity(0.3)))
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundColor(.white)
+                    .focused($focusedField, equals: .searchKey)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.08)))
+            }
 
             if let fetchError = store.fetchError {
                 Text(fetchError)

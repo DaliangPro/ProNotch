@@ -45,6 +45,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestModels),
             name: NSNotification.Name("com.jiliang.NotchHub.testmodels"), object: nil)
+
+        // 调试入口：执行一次联网搜索验证搜索链路
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(debugTestSearch),
+            name: NSNotification.Name("com.jiliang.NotchHub.testsearch"), object: nil)
+    }
+
+    @objc private func debugTestSearch() {
+        windowController?.debugTestSearch()
     }
 
     @objc private func debugTestModels() {
