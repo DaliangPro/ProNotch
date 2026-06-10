@@ -27,7 +27,7 @@ final class NotchViewModel: ObservableObject {
     /// 刘海矩形（全局坐标）
     let notchRect: CGRect
     /// 展开后刘海下方面板的内容尺寸
-    let panelSize = CGSize(width: 680, height: 300)
+    let panelSize = CGSize(width: 720, height: 300)
 
     weak var panel: NSPanel?
 

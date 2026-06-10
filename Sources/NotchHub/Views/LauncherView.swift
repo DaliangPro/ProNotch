@@ -55,9 +55,9 @@ private struct AppCell: View {
             VStack(spacing: 3) {
                 Image(nsImage: AppIconCache.icon(for: app.url))
                     .resizable()
-                    .frame(width: 40, height: 40)
+                    .frame(width: 48, height: 48)
                 Text(app.name)
-                    .font(.system(size: 9))
+                    .font(.system(size: 10))
                     .foregroundColor(.white.opacity(0.65))
                     .lineLimit(1)
                     .truncationMode(.tail)
