@@ -204,6 +204,8 @@ struct SettingsView: View {
                 .font(.system(size: 11))
                 .foregroundColor(.white.opacity(0.35))
                 .fixedSize(horizontal: false, vertical: true)
+                // 与卡片内行文字左对齐
+                .padding(.leading, 14)
             }
             .padding(.horizontal, 24)
             // 顶部留白只需让出标题栏红绿灯的高度
@@ -246,10 +248,12 @@ struct SettingsView: View {
 
     // MARK: - 组件
 
+    // 标题与说明文字统一缩进 14pt，与卡片内行文字左对齐
     private func sectionTitle(_ title: String) -> some View {
         Text(title)
             .font(.system(size: 13, weight: .semibold))
             .foregroundColor(.white.opacity(0.9))
+            .padding(.leading, 14)
     }
 
     private func noteText(_ text: String, color: Color) -> some View {
@@ -257,6 +261,7 @@ struct SettingsView: View {
             .font(.system(size: 11))
             .foregroundColor(color)
             .lineLimit(2)
+            .padding(.leading, 14)
     }
 
     private func toggleRow(_ title: String, isOn: Binding<Bool>) -> some View {
