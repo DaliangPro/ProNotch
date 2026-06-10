@@ -13,7 +13,9 @@
       `~/Library/Application Support/NotchHub/Clipboard/`，
       每条带复制/删除按钮（操作后面板保持展开，复制有绿色「已复制」反馈），
       右键也可删除，支持一键清空
-- [ ] M3 AI 对话（自定义 API URL + Key，流式输出）
+- [x] M3 AI 对话：OpenAI 兼容接口（自动规范化端点路径，支持 DeepSeek/
+      Kimi/Ollama 等），自填 API 地址 + Key + 模型名，SSE 流式输出可中途停止，
+      单会话保留上下文（收起不清空、重启清空），回复文本可选中复制
 - [ ] M4 打磨：设置面板、开机自启、多显示器、全屏兼容
 
 ## 构建与运行
@@ -43,6 +45,8 @@ swift -e 'import Foundation; DistributedNotificationCenter.default().postNotific
 - `com.jiliang.NotchHub.testlaunch`：走真实代码路径启动计算器并收起面板
 - `com.jiliang.NotchHub.nexttab`：循环切换标签页
 - `com.jiliang.NotchHub.testpaste`：把剪贴板历史第一条回填剪贴板
+- `com.jiliang.NotchHub.testchat`：发送一条测试对话消息（需已配置 API；
+  联调可用 `/tmp/notchhub-mock-llm.py` 起本地 mock SSE 服务）
 
 注意：命令行用 `pbcopy` 测试中文捕获时需带 `LANG=zh_CN.UTF-8`，
 否则 C locale 下 `pbcopy` 会把中文丢成空内容（这是测试管道问题，非应用问题）。

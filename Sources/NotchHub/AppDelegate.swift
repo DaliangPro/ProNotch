@@ -36,6 +36,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestPaste),
             name: NSNotification.Name("com.jiliang.NotchHub.testpaste"), object: nil)
+
+        // 调试入口：走真实代码路径发送一条 AI 对话消息
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(debugTestChat),
+            name: NSNotification.Name("com.jiliang.NotchHub.testchat"), object: nil)
+    }
+
+    @objc private func debugTestChat() {
+        windowController?.debugTestChat()
     }
 
     @objc private func debugNextTab() {

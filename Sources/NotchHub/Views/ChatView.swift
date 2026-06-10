@@ -1,0 +1,263 @@
+import SwiftUI
+
+/// AI 对话：未配置时显示设置表单；配置后为消息列表 + 输入框，流式输出
+struct ChatView: View {
+    @EnvironmentObject var vm: NotchViewModel
+    @EnvironmentObject var store: ChatStore
+
+    @State private var showSettings = false
+    @State private var draft = ""
+    @FocusState private var inputFocused: Bool
+
+    private let edgeInset: CGFloat = 14
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                SectionHeader(title: "AI 对话")
+                if store.isConfigured {
+                    Text(store.model)
+                        .font(.system(size: 9))
+                        .foregroundColor(.white.opacity(0.3))
+                }
+                Spacer()
+                if !store.messages.isEmpty {
+                    Button("新对话") { store.clearConversation() }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 10))
+                        .foregroundColor(.white.opacity(0.45))
+                }
+                Button {
+                    showSettings.toggle()
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.45))
+                }
+                .buttonStyle(.plain)
+                .help("API 设置")
+            }
+            .padding(.horizontal, edgeInset)
+
+            if showSettings || !store.isConfigured {
+                ChatSettingsForm(showSettings: $showSettings)
+            } else {
+                messageList
+                inputBar
+            }
+        }
+        .onDisappear { vm.keyboardHold = false }
+    }
+
+    private var messageList: some View {
+        ScrollViewReader { proxy in
+            ScrollView(showsIndicators: false) {
+                LazyVStack(spacing: 6) {
+                    if store.messages.isEmpty {
+                        VStack(spacing: 8) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 24))
+                                .foregroundColor(.white.opacity(0.25))
+                            Text("问点什么吧，回车发送")
+                                .font(.system(size: 11))
+                                .foregroundColor(.white.opacity(0.35))
+                        }
+                        .padding(.top, 40)
+                    }
+                    ForEach(store.messages) { message in
+                        MessageBubble(message: message,
+                                      streaming: store.isStreaming
+                                          && message.id == store.messages.last?.id)
+                    }
+                    if let error = store.errorText {
+                        Text(error)
+                            .font(.system(size: 10))
+                            .foregroundColor(.red.opacity(0.8))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    Color.clear.frame(height: 1).id("bottom")
+                }
+                .padding(.horizontal, edgeInset)
+            }
+            .onChange(of: store.messages.last?.content) { _ in
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
+            .onAppear {
+                proxy.scrollTo("bottom", anchor: .bottom)
+            }
+        }
+    }
+
+    private var inputBar: some View {
+        HStack(spacing: 8) {
+            TextField("", text: $draft,
+                      prompt: Text("输入问题，回车发送")
+                          .foregroundColor(.white.opacity(0.3)))
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .foregroundColor(.white)
+                .focused($inputFocused)
+                .onSubmit { sendDraft() }
+                .onChange(of: inputFocused) { vm.keyboardHold = $0 }
+            if store.isStreaming {
+                Button {
+                    store.stopStreaming()
+                } label: {
+                    Image(systemName: "stop.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundColor(.white.opacity(0.7))
+                }
+                .buttonStyle(.plain)
+                .help("停止")
+            } else {
+                Button {
+                    sendDraft()
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundColor(draft.isEmpty ? .white.opacity(0.25) : .white.opacity(0.8))
+                }
+                .buttonStyle(.plain)
+                .disabled(draft.isEmpty)
+                .help("发送")
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.08)))
+        .padding(.horizontal, edgeInset)
+    }
+
+    private func sendDraft() {
+        let text = draft
+        draft = ""
+        store.send(text)
+    }
+}
+
+private struct MessageBubble: View {
+    let message: ChatMessage
+    let streaming: Bool
+
+    var body: some View {
+        HStack {
+            if message.role == .user { Spacer(minLength: 80) }
+            Group {
+                if message.content.isEmpty && streaming {
+                    ProgressView()
+                        .controlSize(.small)
+                        .padding(4)
+                } else {
+                    Text(message.content)
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.9))
+                        .textSelection(.enabled)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.white.opacity(message.role == .user ? 0.16 : 0.06)))
+            if message.role == .assistant { Spacer(minLength: 80) }
+        }
+        .frame(maxWidth: .infinity,
+               alignment: message.role == .user ? .trailing : .leading)
+        .id(message.id)
+    }
+}
+
+/// API 设置表单：兼容 OpenAI /v1/chat/completions 格式
+private struct ChatSettingsForm: View {
+    @EnvironmentObject var vm: NotchViewModel
+    @EnvironmentObject var store: ChatStore
+    @Binding var showSettings: Bool
+
+    @State private var baseURL = ""
+    @State private var apiKey = ""
+    @State private var model = ""
+    @FocusState private var focusedField: Field?
+
+    private enum Field {
+        case url, key, model
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            settingField("API 地址", text: $baseURL,
+                         placeholder: "如 https://api.deepseek.com", field: .url)
+            HStack(spacing: 6) {
+                Text("API Key")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.5))
+                    .frame(width: 50, alignment: .leading)
+                SecureField("", text: $apiKey,
+                            prompt: Text("sk-…").foregroundColor(.white.opacity(0.3)))
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundColor(.white)
+                    .focused($focusedField, equals: .key)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.08)))
+            }
+            settingField("模型", text: $model,
+                         placeholder: "如 deepseek-chat / gpt-4o-mini", field: .model)
+
+            HStack {
+                Text("兼容 OpenAI /v1/chat/completions 格式；地址填到域名或 /v1 即可")
+                    .font(.system(size: 9))
+                    .foregroundColor(.white.opacity(0.3))
+                Spacer()
+                Button("保存") { save() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(canSave ? .white : .white.opacity(0.3))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Color.white.opacity(canSave ? 0.18 : 0.06)))
+                    .disabled(!canSave)
+            }
+        }
+        .padding(.horizontal, edgeInset)
+        .onAppear {
+            baseURL = store.baseURL
+            apiKey = store.apiKey
+            model = store.model
+        }
+        .onChange(of: focusedField) { vm.keyboardHold = ($0 != nil) }
+        .onDisappear { vm.keyboardHold = false }
+    }
+
+    private let edgeInset: CGFloat = 14
+
+    private var canSave: Bool {
+        !baseURL.trimmingCharacters(in: .whitespaces).isEmpty
+            && !apiKey.trimmingCharacters(in: .whitespaces).isEmpty
+            && !model.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private func save() {
+        store.saveSettings(baseURL: baseURL, apiKey: apiKey, model: model)
+        showSettings = false
+    }
+
+    private func settingField(_ label: String, text: Binding<String>,
+                              placeholder: String, field: Field) -> some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(.system(size: 10))
+                .foregroundColor(.white.opacity(0.5))
+                .frame(width: 50, alignment: .leading)
+            TextField("", text: text,
+                      prompt: Text(placeholder).foregroundColor(.white.opacity(0.3)))
+                .textFieldStyle(.plain)
+                .font(.system(size: 11))
+                .foregroundColor(.white)
+                .focused($focusedField, equals: field)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.08)))
+        }
+    }
+}

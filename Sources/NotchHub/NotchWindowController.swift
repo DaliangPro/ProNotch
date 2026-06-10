@@ -6,6 +6,7 @@ final class NotchWindowController {
     let viewModel: NotchViewModel
     let launcherStore = LauncherStore()
     let clipboardStore = ClipboardStore()
+    let chatStore = ChatStore()
     private let panel: NotchPanel
 
     init() {
@@ -24,7 +25,8 @@ final class NotchWindowController {
             rootView: NotchContainerView()
                 .environmentObject(viewModel)
                 .environmentObject(launcherStore)
-                .environmentObject(clipboardStore))
+                .environmentObject(clipboardStore)
+                .environmentObject(chatStore))
         panel.contentView = hosting
         panel.orderFrontRegardless()
         viewModel.startMouseTracking()
@@ -49,7 +51,17 @@ final class NotchWindowController {
     func close() {
         viewModel.stop()
         clipboardStore.stop()
+        chatStore.stopStreaming()
         panel.close()
+    }
+
+    /// 调试用：走真实代码路径发送一条对话消息，验证流式输出
+    func debugTestChat() {
+        guard chatStore.isConfigured else {
+            print("[NotchHub] 调试对话：尚未配置 API")
+            return
+        }
+        chatStore.send("联调测试：请用一句话回复")
     }
 
     /// 调试用：循环切换标签页
