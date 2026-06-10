@@ -159,23 +159,26 @@ private struct StripToggle: View {
     }
 }
 
-/// 外观三段式切换：系统 / 深色 / 浅色
+/// 外观三段式切换（图标样式，参照系统外观选择器）：系统 / 浅色 / 深色
 private struct AppearanceSegments: View {
     @EnvironmentObject var quickActions: QuickActionsStore
 
     var body: some View {
         HStack(spacing: 2) {
-            segment(.system)
-            segment(.dark)
-            segment(.light)
+            segment(.system, icon: "display",
+                    help: "跟随系统（macOS 未开放接口，点击打开设置面板选择）")
+            segment(.light, icon: "sun.max",
+                    help: "浅色模式")
+            segment(.dark, icon: "moon",
+                    help: "深色模式")
         }
         .padding(2)
         .background(Capsule().fill(Color.white.opacity(0.06)))
-        .help("切换系统外观")
     }
 
-    private func segment(_ mode: QuickActionsStore.AppearanceMode) -> some View {
-        SegmentButton(title: mode.rawValue,
+    private func segment(_ mode: QuickActionsStore.AppearanceMode,
+                         icon: String, help: String) -> some View {
+        SegmentButton(icon: icon, help: help,
                       selected: quickActions.appearanceMode == mode) {
             quickActions.setAppearance(mode)
         }
@@ -183,7 +186,8 @@ private struct AppearanceSegments: View {
 }
 
 private struct SegmentButton: View {
-    let title: String
+    let icon: String
+    let help: String
     let selected: Bool
     let action: () -> Void
 
@@ -191,17 +195,17 @@ private struct SegmentButton: View {
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(.system(size: 10, weight: .medium))
+            Image(systemName: icon)
+                .font(.system(size: 11, weight: .medium))
                 .foregroundColor(selected ? .white : .white.opacity(hovering ? 0.85 : 0.5))
-                .padding(.horizontal, 7)
-                .padding(.vertical, 3)
+                .frame(width: 30, height: 22)
                 .background(Capsule().fill(
                     Color.white.opacity(selected ? 0.18 : (hovering ? 0.08 : 0))))
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .help(help)
     }
 }
 
