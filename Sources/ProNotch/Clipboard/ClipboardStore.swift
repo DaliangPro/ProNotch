@@ -36,7 +36,7 @@ final class ClipboardStore: ObservableObject {
     private let directory: URL = {
         let base = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("NotchHub/Clipboard", isDirectory: true)
+        return base.appendingPathComponent("ProNotch/Clipboard", isDirectory: true)
     }()
 
     private var indexURL: URL { directory.appendingPathComponent("index.json") }
@@ -58,7 +58,7 @@ final class ClipboardStore: ObservableObject {
         }
         // 设置里调小上限时立即裁剪
         limitObserver = NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("NotchHubClipboardLimitChanged"),
+            forName: NSNotification.Name("ProNotchClipboardLimitChanged"),
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in self?.trimAndSave() }
         }
@@ -88,7 +88,7 @@ final class ClipboardStore: ObservableObject {
         // 同步 changeCount，避免把自己的写入再捕获一遍；
         // 面板保持展开时不调整列表顺序，避免条目在用户眼前跳动
         lastChangeCount = pb.changeCount
-        print("[NotchHub] 已复制回剪贴板: \(item.kind == .text ? "文本" : "图片")")
+        print("[ProNotch] 已复制回剪贴板: \(item.kind == .text ? "文本" : "图片")")
     }
 
     /// 把任意文本写入剪贴板（话术库等外部来源用），同步 changeCount 不触发自捕获
@@ -97,7 +97,7 @@ final class ClipboardStore: ObservableObject {
         pb.clearContents()
         pb.setString(text, forType: .string)
         lastChangeCount = pb.changeCount
-        print("[NotchHub] 话术已复制到剪贴板")
+        print("[ProNotch] 话术已复制到剪贴板")
     }
 
     func delete(_ item: ClipboardItem) {
@@ -126,7 +126,7 @@ final class ClipboardStore: ObservableObject {
 
         let types = pb.types ?? []
         guard !Self.skippedTypes.contains(where: types.contains) else {
-            print("[NotchHub] 跳过敏感/临时剪贴板内容")
+            print("[ProNotch] 跳过敏感/临时剪贴板内容")
             return
         }
 
@@ -155,7 +155,7 @@ final class ClipboardStore: ObservableObject {
                                        imageFileName: nil, date: Date()), at: 0)
         }
         trimAndSave()
-        print("[NotchHub] 捕获文本（\(text.count) 字符）")
+        print("[ProNotch] 捕获文本（\(text.count) 字符）")
     }
 
     private func captureImage(from pb: NSPasteboard) {
@@ -163,20 +163,20 @@ final class ClipboardStore: ObservableObject {
             return
         }
         guard data.count <= maxImageBytes else {
-            print("[NotchHub] 图片超过 5MB，不入历史")
+            print("[ProNotch] 图片超过 5MB，不入历史")
             return
         }
         let name = UUID().uuidString + ".png"
         do {
             try data.write(to: directory.appendingPathComponent(name))
         } catch {
-            print("[NotchHub] 图片保存失败: \(error)")
+            print("[ProNotch] 图片保存失败: \(error)")
             return
         }
         items.insert(ClipboardItem(id: UUID(), kind: .image, text: nil,
                                    imageFileName: name, date: Date()), at: 0)
         trimAndSave()
-        print("[NotchHub] 捕获图片（\(data.count / 1024) KB）")
+        print("[ProNotch] 捕获图片（\(data.count / 1024) KB）")
     }
 
     private func tiffAsPNG(_ tiff: Data?) -> Data? {
@@ -209,7 +209,7 @@ final class ClipboardStore: ObservableObject {
             guard let name = item.imageFileName else { return true }
             return fm.fileExists(atPath: directory.appendingPathComponent(name).path)
         }
-        print("[NotchHub] 加载剪贴板历史 \(items.count) 条")
+        print("[ProNotch] 加载剪贴板历史 \(items.count) 条")
     }
 
     private func saveIndex() {

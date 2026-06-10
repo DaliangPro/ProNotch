@@ -57,7 +57,7 @@ final class LauncherStore: ObservableObject {
     }
 
     func launch(_ app: AppEntry) {
-        print("[NotchHub] 启动应用: \(app.name)")
+        print("[ProNotch] 启动应用: \(app.name)")
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
         NSWorkspace.shared.openApplication(at: app.url, configuration: config)
@@ -89,7 +89,7 @@ final class LauncherStore: ObservableObject {
             return apps.first { $0.url.path == path }
                 ?? AppEntry(url: URL(fileURLWithPath: path), name: fm.displayName(atPath: path))
         }
-        print("[NotchHub] 应用扫描完成：全部 \(allApps.count) 个，置顶 \(pinned.count) 个")
+        print("[ProNotch] 应用扫描完成：全部 \(allApps.count) 个，置顶 \(pinned.count) 个")
     }
 
     /// 递归扫描（最深两层子目录）：覆盖 Chrome Apps.localized 这类嵌套安装，

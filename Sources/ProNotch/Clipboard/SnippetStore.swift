@@ -20,7 +20,7 @@ final class SnippetStore: ObservableObject {
     private let fileURL: URL = {
         let base = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("NotchHub/snippets.json")
+        return base.appendingPathComponent("ProNotch/snippets.json")
     }()
 
     init() {
@@ -56,7 +56,7 @@ final class SnippetStore: ObservableObject {
         }
         save()
         cancelEditor()
-        print("[NotchHub] 话术已保存（共 \(snippets.count) 条）")
+        print("[ProNotch] 话术已保存（共 \(snippets.count) 条）")
     }
 
     /// 从剪贴板历史等外部来源直接入库
@@ -65,7 +65,7 @@ final class SnippetStore: ObservableObject {
         guard !text.isEmpty else { return }
         snippets.insert(Snippet(id: UUID(), content: text, date: Date()), at: 0)
         save()
-        print("[NotchHub] 已存入话术库（共 \(snippets.count) 条）")
+        print("[ProNotch] 已存入话术库（共 \(snippets.count) 条）")
     }
 
     func delete(_ snippet: Snippet) {
@@ -79,7 +79,7 @@ final class SnippetStore: ObservableObject {
             return
         }
         snippets = decoded
-        print("[NotchHub] 加载话术库 \(snippets.count) 条")
+        print("[ProNotch] 加载话术库 \(snippets.count) 条")
     }
 
     private func save() {

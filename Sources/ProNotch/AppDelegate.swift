@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settingsWindow = SettingsWindowController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Self.migrateFromNotchHubIfNeeded()
         launcherStore = LauncherStore()
         clipboardStore = ClipboardStore()
         snippetStore = SnippetStore()
@@ -42,70 +43,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 调试入口：命令行可触发展开/收起，便于不靠鼠标悬停验证
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugToggle),
-            name: NSNotification.Name("com.jiliang.NotchHub.toggle"), object: nil)
+            name: NSNotification.Name("com.daliangpro.ProNotch.toggle"), object: nil)
 
         // 调试入口：把当前窗口内容渲染成 PNG，无需屏幕录制权限即可验证 UI
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugSnapshot),
-            name: NSNotification.Name("com.jiliang.NotchHub.snapshot"), object: nil)
+            name: NSNotification.Name("com.daliangpro.ProNotch.snapshot"), object: nil)
 
         // 调试入口：走真实代码路径启动计算器，验证启动台逻辑
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestLaunch),
-            name: NSNotification.Name("com.jiliang.NotchHub.testlaunch"), object: nil)
+            name: NSNotification.Name("com.daliangpro.ProNotch.testlaunch"), object: nil)
 
         // 调试入口：循环切换标签页 / 把历史第一条复制回剪贴板
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugNextTab),
-            name: NSNotification.Name("com.jiliang.NotchHub.nexttab"), object: nil)
+            name: NSNotification.Name("com.daliangpro.ProNotch.nexttab"), object: nil)
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestPaste),
-            name: NSNotification.Name("com.jiliang.NotchHub.testpaste"), object: nil)
+            name: NSNotification.Name("com.daliangpro.ProNotch.testpaste"), object: nil)
 
         // 调试入口：走真实代码路径发送一条 AI 对话消息 / 拉取模型列表
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestChat),
-            name: NSNotification.Name("com.jiliang.NotchHub.testchat"), object: nil)
+            name: NSNotification.Name("com.daliangpro.ProNotch.testchat"), object: nil)
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestModels),
-            name: NSNotification.Name("com.jiliang.NotchHub.testmodels"), object: nil)
+            name: NSNotification.Name("com.daliangpro.ProNotch.testmodels"), object: nil)
 
         // 调试入口：执行一次联网搜索验证搜索链路
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestSearch),
-            name: NSNotification.Name("com.jiliang.NotchHub.testsearch"), object: nil)
+            name: NSNotification.Name("com.daliangpro.ProNotch.testsearch"), object: nil)
 
         // 调试入口：探测 SkyLight 外观接口可用性
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestTheme),
-            name: NSNotification.Name("com.jiliang.NotchHub.testtheme"), object: nil)
+            name: NSNotification.Name("com.daliangpro.ProNotch.testtheme"), object: nil)
 
         // 调试入口：切换防休眠 / 打开设置窗口
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestCaffeinate),
-            name: NSNotification.Name("com.jiliang.NotchHub.testcaffeinate"), object: nil)
+            name: NSNotification.Name("com.daliangpro.ProNotch.testcaffeinate"), object: nil)
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(openSettings),
-            name: NSNotification.Name("com.jiliang.NotchHub.opensettings"), object: nil)
+            name: NSNotification.Name("com.daliangpro.ProNotch.opensettings"), object: nil)
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestFullscreen),
-            name: NSNotification.Name("com.jiliang.NotchHub.testfullscreen"), object: nil)
+            name: NSNotification.Name("com.daliangpro.ProNotch.testfullscreen"), object: nil)
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugSnapshotSettings),
-            name: NSNotification.Name("com.jiliang.NotchHub.snapsettings"), object: nil)
+            name: NSNotification.Name("com.daliangpro.ProNotch.snapsettings"), object: nil)
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugToggleSnippets),
-            name: NSNotification.Name("com.jiliang.NotchHub.snippets"), object: nil)
+            name: NSNotification.Name("com.daliangpro.ProNotch.snippets"), object: nil)
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestCapture),
-            name: NSNotification.Name("com.jiliang.NotchHub.testcapture"), object: nil)
+            name: NSNotification.Name("com.daliangpro.ProNotch.testcapture"), object: nil)
         #endif
 
         // 面板内齿轮按钮打开设置窗口（窗口由本类持有，进程内通知解耦）——
         // 正式功能，必须在调试块之外
         NotificationCenter.default.addObserver(
             self, selector: #selector(openSettings),
-            name: NSNotification.Name("NotchHubOpenSettings"), object: nil)
+            name: NSNotification.Name("ProNotchOpenSettings"), object: nil)
     }
 
     /// 调试用：写入一条测试妙记
@@ -116,7 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 调试用：切换剪贴板页的「历史/话术」子视图
     @objc private func debugToggleSnippets() {
         clipboardStore.showingSnippets.toggle()
-        print("[NotchHub] 剪贴板子视图: \(clipboardStore.showingSnippets ? "话术库" : "历史")")
+        print("[ProNotch] 剪贴板子视图: \(clipboardStore.showingSnippets ? "话术库" : "历史")")
     }
 
     /// 调试用：离屏渲染设置界面到 PNG（无需打开窗口与屏幕录制权限）
@@ -132,7 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hosting.cacheDisplay(in: hosting.bounds, to: rep)
         if let data = rep.representation(using: .png, properties: [:]) {
             try? data.write(to: URL(fileURLWithPath: "/tmp/notchhub-settings-snapshot.png"))
-            print("[NotchHub] 设置界面快照已保存")
+            print("[ProNotch] 设置界面快照已保存")
         }
     }
 
@@ -174,6 +175,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func debugSnapshot() {
         windowController?.saveSnapshot()
+    }
+
+    /// 应用更名（NotchHub → ProNotch，bundle id 一并变更）的一次性数据搬家：
+    /// 配置域整体拷贝、数据目录改名、钥匙串条目迁移，必须先于各 Store 初始化
+    private static func migrateFromNotchHubIfNeeded() {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: "didMigrateFromNotchHub") else { return }
+
+        // 1. 旧配置域整体拷入新域（新域已有的键不覆盖）
+        if let legacy = defaults.persistentDomain(forName: "com.jiliang.NotchHub") {
+            var copied = 0
+            for (key, value) in legacy where defaults.object(forKey: key) == nil {
+                defaults.set(value, forKey: key)
+                copied += 1
+            }
+            print("[ProNotch] 已从旧版配置迁移 \(copied) 项设置")
+        }
+
+        // 2. 数据目录（剪贴板历史 / 话术库）随应用名改名
+        let fm = FileManager.default
+        if let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let oldDir = base.appendingPathComponent("NotchHub")
+            let newDir = base.appendingPathComponent("ProNotch")
+            if fm.fileExists(atPath: oldDir.path), !fm.fileExists(atPath: newDir.path) {
+                try? fm.moveItem(at: oldDir, to: newDir)
+                print("[ProNotch] 数据目录已迁移")
+            }
+        }
+
+        // 3. 钥匙串条目搬到新 service
+        KeychainStore.migrateLegacyService()
+
+        defaults.set(true, forKey: "didMigrateFromNotchHub")
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -281,7 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsItem.image = emptyImage
         menu.addItem(settingsItem)
         menu.addItem(.separator())
-        let quitItem = NSMenuItem(title: "退出 NotchHub",
+        let quitItem = NSMenuItem(title: "退出 ProNotch",
                                   action: #selector(NSApplication.terminate(_:)),
                                   keyEquivalent: "q")
         quitItem.image = emptyImage

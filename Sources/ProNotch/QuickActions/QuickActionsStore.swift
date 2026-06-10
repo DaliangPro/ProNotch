@@ -95,7 +95,7 @@ final class QuickActionsStore: ObservableObject {
             if let url = URL(string: "x-apple.systempreferences:com.apple.Appearance-Settings.extension") {
                 NSWorkspace.shared.open(url)
             }
-            print("[NotchHub] 跳转系统设置外观面板（系统未开放自动档接口）")
+            print("[ProNotch] 跳转系统设置外观面板（系统未开放自动档接口）")
         case .dark, .light:
             let task = Process()
             task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
@@ -104,16 +104,16 @@ final class QuickActionsStore: ObservableObject {
             do {
                 try task.run()
                 appearanceMode = mode
-                print("[NotchHub] 外观切换为: \(mode.rawValue)")
+                print("[ProNotch] 外观切换为: \(mode.rawValue)")
             } catch {
-                print("[NotchHub] 外观切换失败: \(error.localizedDescription)")
+                print("[ProNotch] 外观切换失败: \(error.localizedDescription)")
             }
         }
     }
 
     /// 调试用：打印当前外观状态
     func debugProbeAppearance() {
-        print("[NotchHub] 当前外观模式: \(appearanceMode.rawValue)，重新读取: \(Self.readAppearanceMode().rawValue)")
+        print("[ProNotch] 当前外观模式: \(appearanceMode.rawValue)，重新读取: \(Self.readAppearanceMode().rawValue)")
     }
 
     // MARK: - 其他快捷操作
@@ -126,17 +126,17 @@ final class QuickActionsStore: ObservableObject {
         task.arguments = ["-i", "-c"]
         do {
             try task.run()
-            print("[NotchHub] 已唤起区域截图")
+            print("[ProNotch] 已唤起区域截图")
         } catch {
-            print("[NotchHub] 截图唤起失败: \(error.localizedDescription)")
+            print("[ProNotch] 截图唤起失败: \(error.localizedDescription)")
         }
     }
 
-    /// 打开 NotchHub 自己的设置窗口（窗口由 AppDelegate 持有，走通知解耦）
+    /// 打开 ProNotch 自己的设置窗口（窗口由 AppDelegate 持有，走通知解耦）
     func openAppSettings() {
         NotificationCenter.default.post(
-            name: NSNotification.Name("NotchHubOpenSettings"), object: nil)
-        print("[NotchHub] 打开应用设置")
+            name: NSNotification.Name("ProNotchOpenSettings"), object: nil)
+        print("[ProNotch] 打开应用设置")
     }
 
     /// 熄屏锁定：CGSession 在新版 macOS 已移除，用 pmset 熄屏替代；
@@ -147,9 +147,9 @@ final class QuickActionsStore: ObservableObject {
         task.arguments = ["displaysleepnow"]
         do {
             try task.run()
-            print("[NotchHub] 已熄屏锁定")
+            print("[ProNotch] 已熄屏锁定")
         } catch {
-            print("[NotchHub] 熄屏失败: \(error.localizedDescription)")
+            print("[ProNotch] 熄屏失败: \(error.localizedDescription)")
         }
     }
 
@@ -167,7 +167,7 @@ final class QuickActionsStore: ObservableObject {
         caffeinateProcess = nil
         if caffeinateActive {
             caffeinateActive = false
-            print("[NotchHub] 防休眠已关闭")
+            print("[ProNotch] 防休眠已关闭")
         }
     }
 
@@ -182,9 +182,9 @@ final class QuickActionsStore: ObservableObject {
             try task.run()
             caffeinateProcess = task
             caffeinateActive = true
-            print("[NotchHub] 防休眠已开启")
+            print("[ProNotch] 防休眠已开启")
         } catch {
-            print("[NotchHub] 防休眠启动失败: \(error.localizedDescription)")
+            print("[ProNotch] 防休眠启动失败: \(error.localizedDescription)")
         }
     }
 }

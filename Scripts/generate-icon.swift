@@ -1,4 +1,4 @@
-// NotchHub 应用图标生成器：黑色圆角底 + 亮色屏幕 + 顶部刘海 + 展开面板暗示
+// ProNotch 应用图标生成器：黑色圆角底 + 亮色屏幕 + 顶部刘海 + 展开面板暗示
 // 用法: swift Scripts/generate-icon.swift <输出 1024px PNG 路径>
 import AppKit
 

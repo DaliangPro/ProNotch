@@ -95,7 +95,7 @@ final class ChatStore: ObservableObject {
             if let legacy = persisted[account] as? String, !legacy.isEmpty {
                 KeychainStore.save(legacy, account: account)
                 UserDefaults.standard.removeObject(forKey: account)
-                print("[NotchHub] \(account) 已从明文配置迁入钥匙串")
+                print("[ProNotch] \(account) 已从明文配置迁入钥匙串")
             }
         }
     }
@@ -116,7 +116,7 @@ final class ChatStore: ObservableObject {
         // Key 只进钥匙串，不落明文配置
         KeychainStore.save(apiKey, account: "chatAPIKey")
         KeychainStore.save(tavilyKey, account: "chatTavilyKey")
-        print("[NotchHub] 已保存 AI 设置，端点: \((try? endpointURL())?.absoluteString ?? "无效")")
+        print("[ProNotch] 已保存 AI 设置，端点: \((try? endpointURL())?.absoluteString ?? "无效")")
         checkConnectivity(force: true)
     }
 
@@ -136,10 +136,10 @@ final class ChatStore: ObservableObject {
             do {
                 _ = try await Self.fetchAvailableModels(baseURL: url, apiKey: key)
                 self?.connectivity = .ok
-                print("[NotchHub] API 连通检测: 正常")
+                print("[ProNotch] API 连通检测: 正常")
             } catch {
                 self?.connectivity = .failed(error.localizedDescription)
-                print("[NotchHub] API 连通检测失败: \(error.localizedDescription)")
+                print("[ProNotch] API 连通检测失败: \(error.localizedDescription)")
             }
         }
     }
@@ -161,7 +161,7 @@ final class ChatStore: ObservableObject {
                    let first = models.first {
                     self.draftModel = first
                 }
-                print("[NotchHub] 获取到 \(models.count) 个模型")
+                print("[ProNotch] 获取到 \(models.count) 个模型")
             } catch {
                 self?.fetchError = error.localizedDescription
             }
@@ -195,7 +195,7 @@ final class ChatStore: ObservableObject {
                     payload[payload.count - 1]["content"] =
                         Self.augmentedPrompt(question: question, results: results)
                     setLastAssistantSearchCount(results.count)
-                    print("[NotchHub] 联网搜索返回 \(results.count) 条结果")
+                    print("[ProNotch] 联网搜索返回 \(results.count) 条结果")
                 }
             } catch is CancellationError {
                 isSearching = false
@@ -208,7 +208,7 @@ final class ChatStore: ObservableObject {
             } catch {
                 // 搜索失败不阻断对话，降级为直接回答
                 errorText = "联网搜索失败（已不带搜索结果直接回答）：\(error.localizedDescription)"
-                print("[NotchHub] 联网搜索失败: \(error.localizedDescription)")
+                print("[ProNotch] 联网搜索失败: \(error.localizedDescription)")
             }
             isSearching = false
             if Task.isCancelled {
@@ -224,7 +224,7 @@ final class ChatStore: ObservableObject {
         if let last = messages.last, last.role == .assistant, last.content.isEmpty {
             messages.removeLast()
         }
-        print("[NotchHub] 已在搜索阶段停止")
+        print("[ProNotch] 已在搜索阶段停止")
     }
 
     private func setLastAssistantSearchCount(_ count: Int) {
@@ -281,10 +281,10 @@ final class ChatStore: ObservableObject {
             guard !cleaned.isEmpty, cleaned.count <= 60, !cleaned.contains("\n") else {
                 return nil
             }
-            print("[NotchHub] 搜索查询改写: \(cleaned)")
+            print("[ProNotch] 搜索查询改写: \(cleaned)")
             return cleaned
         } catch {
-            print("[NotchHub] 查询改写失败，改用原话搜索: \(error.localizedDescription)")
+            print("[ProNotch] 查询改写失败，改用原话搜索: \(error.localizedDescription)")
             return nil
         }
     }
@@ -304,7 +304,7 @@ final class ChatStore: ObservableObject {
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             let detail = String(data: data, encoding: .utf8) ?? ""
-            throw NSError(domain: "NotchHub", code: http.statusCode,
+            throw NSError(domain: "ProNotch", code: http.statusCode,
                           userInfo: [NSLocalizedDescriptionKey:
                               "HTTP \(http.statusCode) \(detail.prefix(150))"])
         }
@@ -312,7 +312,7 @@ final class ChatStore: ObservableObject {
               let choices = object["choices"] as? [[String: Any]],
               let message = choices.first?["message"] as? [String: Any],
               let content = message["content"] as? String else {
-            throw NSError(domain: "NotchHub", code: -2,
+            throw NSError(domain: "ProNotch", code: -2,
                           userInfo: [NSLocalizedDescriptionKey: "非流式返回格式异常"])
         }
         return content
@@ -339,7 +339,7 @@ final class ChatStore: ObservableObject {
         if !raw.hasSuffix("/v1") { raw += "/v1" }
         raw += "/models"
         guard let url = URL(string: raw), url.scheme?.hasPrefix("http") == true else {
-            throw NSError(domain: "NotchHub", code: -1,
+            throw NSError(domain: "ProNotch", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "API 地址无效: \(raw)"])
         }
         var request = URLRequest(url: url)
@@ -349,18 +349,18 @@ final class ChatStore: ObservableObject {
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             let detail = String(data: data, encoding: .utf8) ?? ""
-            throw NSError(domain: "NotchHub", code: http.statusCode,
+            throw NSError(domain: "ProNotch", code: http.statusCode,
                           userInfo: [NSLocalizedDescriptionKey:
                               "HTTP \(http.statusCode) \(detail.prefix(200))"])
         }
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let list = object["data"] as? [[String: Any]] else {
-            throw NSError(domain: "NotchHub", code: -2,
+            throw NSError(domain: "ProNotch", code: -2,
                           userInfo: [NSLocalizedDescriptionKey: "返回格式不是 OpenAI 模型列表"])
         }
         let ids = list.compactMap { $0["id"] as? String }.sorted()
         guard !ids.isEmpty else {
-            throw NSError(domain: "NotchHub", code: -3,
+            throw NSError(domain: "ProNotch", code: -3,
                           userInfo: [NSLocalizedDescriptionKey: "服务端未返回任何模型"])
         }
         return ids
@@ -377,7 +377,7 @@ final class ChatStore: ObservableObject {
             raw += raw.hasSuffix("/v1") ? "/chat/completions" : "/v1/chat/completions"
         }
         guard let url = URL(string: raw), url.scheme?.hasPrefix("http") == true else {
-            throw NSError(domain: "NotchHub", code: -1,
+            throw NSError(domain: "ProNotch", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "API 地址无效: \(raw)"])
         }
         return url
@@ -408,7 +408,7 @@ final class ChatStore: ObservableObject {
                     if data.count > 4096 { break }
                 }
                 let detail = String(data: data, encoding: .utf8) ?? ""
-                throw NSError(domain: "NotchHub", code: http.statusCode,
+                throw NSError(domain: "ProNotch", code: http.statusCode,
                               userInfo: [NSLocalizedDescriptionKey:
                                   "HTTP \(http.statusCode) \(detail.prefix(200))"])
             }
@@ -425,13 +425,13 @@ final class ChatStore: ObservableObject {
                       !content.isEmpty else { continue }
                 appendToLastAssistant(content)
             }
-            print("[NotchHub] AI 回复完成（\(messages.last?.content.count ?? 0) 字符）")
+            print("[ProNotch] AI 回复完成（\(messages.last?.content.count ?? 0) 字符）")
             // 真实对话成功是最可靠的连通证据，顺带刷新状态灯
             connectivity = .ok
         } catch is CancellationError {
-            print("[NotchHub] AI 回复已停止")
+            print("[ProNotch] AI 回复已停止")
         } catch let error as URLError where error.code == .cancelled {
-            print("[NotchHub] AI 回复已停止")
+            print("[ProNotch] AI 回复已停止")
         } catch {
             errorText = error.localizedDescription
             connectivity = .failed(error.localizedDescription)
@@ -439,7 +439,7 @@ final class ChatStore: ObservableObject {
             if let last = messages.last, last.role == .assistant, last.content.isEmpty {
                 messages.removeLast()
             }
-            print("[NotchHub] AI 请求失败: \(error.localizedDescription)")
+            print("[ProNotch] AI 请求失败: \(error.localizedDescription)")
         }
     }
 

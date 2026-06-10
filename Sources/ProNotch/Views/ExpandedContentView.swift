@@ -110,7 +110,7 @@ struct ExpandedContentView: View {
             }
         case .appSettings:
             StripButton(icon: "gearshape",
-                        help: "打开 NotchHub 设置") {
+                        help: "打开 ProNotch 设置") {
                 quickActions.openAppSettings()
                 vm.collapseNow()
             }

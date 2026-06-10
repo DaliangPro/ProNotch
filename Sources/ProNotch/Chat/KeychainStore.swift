@@ -4,7 +4,7 @@ import Security
 /// 钥匙串读写：API Key 等敏感信息不落明文配置文件。
 /// 通用密码条目，service 固定为应用标识，account 区分具体字段
 enum KeychainStore {
-    private static let service = "com.jiliang.NotchHub"
+    private static let service = "com.daliangpro.ProNotch"
 
     static func read(_ account: String) -> String? {
         let query: [String: Any] = [
@@ -49,5 +49,32 @@ enum KeychainStore {
         ]
         let status = SecItemDelete(query as CFDictionary)
         return status == errSecSuccess || status == errSecItemNotFound
+    }
+
+    /// 应用更名遗留：把旧 service（NotchHub 时代）下的条目搬到当前 service
+    static func migrateLegacyService() {
+        let legacyService = "com.jiliang.NotchHub"
+        for account in ["chatAPIKey", "chatTavilyKey"] {
+            guard read(account) == nil else { continue }
+            let query: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: legacyService,
+                kSecAttrAccount as String: account,
+                kSecReturnData as String: true,
+                kSecMatchLimit as String: kSecMatchLimitOne,
+            ]
+            var item: CFTypeRef?
+            guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+                  let data = item as? Data,
+                  let value = String(data: data, encoding: .utf8), !value.isEmpty
+            else { continue }
+            save(value, account: account)
+            SecItemDelete([
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: legacyService,
+                kSecAttrAccount as String: account,
+            ] as CFDictionary)
+            print("[ProNotch] 钥匙串条目 \(account) 已迁移到新应用标识")
+        }
     }
 }

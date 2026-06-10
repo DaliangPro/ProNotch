@@ -30,7 +30,7 @@ final class NotchWindowController {
         let screen = NotchGeometry.targetScreen()
         let notchRect = NotchGeometry.notchRect(on: screen)
         let hasRealNotch = screen.safeAreaInsets.top > 0
-        print("[NotchHub] 屏幕: \(screen.localizedName)，真实刘海: \(hasRealNotch ? "是" : "否（模拟热区）")，刘海区域: \(notchRect)")
+        print("[ProNotch] 屏幕: \(screen.localizedName)，真实刘海: \(hasRealNotch ? "是" : "否（模拟热区）")，刘海区域: \(notchRect)")
 
         viewModel = NotchViewModel(notchRect: notchRect)
         // 窗口 frame 固定为展开尺寸，永不调整；收起时对鼠标隐形
@@ -55,7 +55,7 @@ final class NotchWindowController {
             return FullscreenDetector.hasFullscreenWindow(on: NotchGeometry.targetScreen())
         }
         viewModel.startMouseTracking()
-        print("[NotchHub] 固定窗口 frame: \(panel.frame)")
+        print("[ProNotch] 固定窗口 frame: \(panel.frame)")
     }
 
     /// 调试用：走与点击图标相同的代码路径启动计算器并收起面板
@@ -63,7 +63,7 @@ final class NotchWindowController {
         guard let calc = launcherStore.allApps.first(where: {
             $0.url.lastPathComponent == "Calculator.app"
         }) else {
-            print("[NotchHub] 调试启动：未找到计算器")
+            print("[ProNotch] 调试启动：未找到计算器")
             return
         }
         launcherStore.launch(calc)
@@ -84,7 +84,7 @@ final class NotchWindowController {
     /// 调试用：打印当前屏幕全屏检测结果
     func debugTestFullscreen() {
         let result = FullscreenDetector.hasFullscreenWindow(on: NotchGeometry.targetScreen())
-        print("[NotchHub] 全屏检测: \(result ? "有全屏应用" : "无全屏应用")")
+        print("[ProNotch] 全屏检测: \(result ? "有全屏应用" : "无全屏应用")")
     }
 
     /// 调试用：打印当前外观状态
@@ -104,12 +104,12 @@ final class NotchWindowController {
             do {
                 let results = try await WebSearch.search(
                     query: "MacBook 刘海 notch 应用", tavilyKey: key)
-                print("[NotchHub] 搜索返回 \(results.count) 条:")
+                print("[ProNotch] 搜索返回 \(results.count) 条:")
                 for result in results {
                     print("  - \(result.title) | 正文 \(result.snippet.count) 字 | \(result.url)")
                 }
             } catch {
-                print("[NotchHub] 搜索失败: \(error.localizedDescription)")
+                print("[ProNotch] 搜索失败: \(error.localizedDescription)")
             }
         }
     }
@@ -117,7 +117,7 @@ final class NotchWindowController {
     /// 调试用：走真实代码路径发送一条对话消息，验证流式输出
     func debugTestChat() {
         guard chatStore.isConfigured else {
-            print("[NotchHub] 调试对话：尚未配置 API")
+            print("[ProNotch] 调试对话：尚未配置 API")
             return
         }
         chatStore.send("联调测试：请用一句话回复")
@@ -128,13 +128,13 @@ final class NotchWindowController {
         let all = NotchViewModel.Tab.allCases
         guard let index = all.firstIndex(of: viewModel.activeTab) else { return }
         viewModel.activeTab = all[(index + 1) % all.count]
-        print("[NotchHub] 切换到标签: \(viewModel.activeTab.title)")
+        print("[ProNotch] 切换到标签: \(viewModel.activeTab.title)")
     }
 
     /// 调试用：把历史第一条复制回剪贴板，验证回填路径
     func debugTestPaste() {
         guard let first = clipboardStore.items.first else {
-            print("[NotchHub] 剪贴板历史为空")
+            print("[ProNotch] 剪贴板历史为空")
             return
         }
         clipboardStore.copyToPasteboard(first)
@@ -144,20 +144,20 @@ final class NotchWindowController {
     func saveSnapshot() {
         guard let view = panel.contentView,
               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
-            print("[NotchHub] 快照失败：无法创建位图")
+            print("[ProNotch] 快照失败：无法创建位图")
             return
         }
         view.cacheDisplay(in: view.bounds, to: rep)
         guard let data = rep.representation(using: .png, properties: [:]) else {
-            print("[NotchHub] 快照失败：PNG 编码失败")
+            print("[ProNotch] 快照失败：PNG 编码失败")
             return
         }
         let path = "/tmp/notchhub-snapshot.png"
         do {
             try data.write(to: URL(fileURLWithPath: path))
-            print("[NotchHub] 快照已保存: \(path)，窗口 frame: \(panel.frame)")
+            print("[ProNotch] 快照已保存: \(path)，窗口 frame: \(panel.frame)")
         } catch {
-            print("[NotchHub] 快照失败: \(error)")
+            print("[ProNotch] 快照失败: \(error)")
         }
     }
 }

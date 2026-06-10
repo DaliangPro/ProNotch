@@ -156,7 +156,7 @@ final class NotchViewModel: ObservableObject {
         }
         // 设置开关变化时立即生效（否则关掉开关后要等下次切空间才恢复）
         settingObserver = NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("NotchHubFullscreenSettingChanged"),
+            forName: NSNotification.Name("ProNotchFullscreenSettingChanged"),
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in self?.updateFullscreenHiding() }
         }
@@ -170,10 +170,10 @@ final class NotchViewModel: ObservableObject {
         if shouldHide {
             if isExpanded { collapse() }
             panel?.orderOut(nil)
-            print("[NotchHub] 检测到全屏应用，刘海已隐藏")
+            print("[ProNotch] 检测到全屏应用，刘海已隐藏")
         } else {
             panel?.orderFrontRegardless()
-            print("[NotchHub] 全屏结束，刘海已恢复")
+            print("[ProNotch] 全屏结束，刘海已恢复")
         }
     }
 
@@ -256,7 +256,7 @@ final class NotchViewModel: ObservableObject {
 
     func debugToggle() {
         guard !hiddenForFullscreen else {
-            print("[NotchHub] 刘海当前因全屏隐藏，忽略展开请求")
+            print("[ProNotch] 刘海当前因全屏隐藏，忽略展开请求")
             return
         }
         if isExpanded {
@@ -274,7 +274,7 @@ final class NotchViewModel: ObservableObject {
 
     private func expand() {
         guard !isExpanded else { return }
-        print("[NotchHub] 展开")
+        print("[ProNotch] 展开")
         // 展开期间窗口需要接收点击与悬停
         panel?.ignoresMouseEvents = false
         withAnimation(.spring(response: animationDuration, dampingFraction: 0.8)) {
@@ -284,7 +284,7 @@ final class NotchViewModel: ObservableObject {
 
     private func collapse() {
         guard isExpanded else { return }
-        print("[NotchHub] 收起")
+        print("[ProNotch] 收起")
         debugPinned = false
         keyboardHold = false
         pendingCollapse?.cancel()

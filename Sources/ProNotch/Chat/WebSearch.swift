@@ -42,13 +42,13 @@ enum WebSearch {
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             let detail = String(data: data, encoding: .utf8) ?? ""
-            throw NSError(domain: "NotchHub", code: http.statusCode,
+            throw NSError(domain: "ProNotch", code: http.statusCode,
                           userInfo: [NSLocalizedDescriptionKey:
                               "Tavily HTTP \(http.statusCode) \(detail.prefix(150))"])
         }
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let list = object["results"] as? [[String: Any]] else {
-            throw NSError(domain: "NotchHub", code: -2,
+            throw NSError(domain: "ProNotch", code: -2,
                           userInfo: [NSLocalizedDescriptionKey: "Tavily 返回格式异常"])
         }
         return list.compactMap { item in
@@ -74,7 +74,7 @@ enum WebSearch {
         request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         let (data, _) = try await URLSession.shared.data(for: request)
         guard let html = String(data: data, encoding: .utf8) else {
-            throw NSError(domain: "NotchHub", code: -3,
+            throw NSError(domain: "ProNotch", code: -3,
                           userInfo: [NSLocalizedDescriptionKey: "DuckDuckGo 返回无法解码"])
         }
 
@@ -93,7 +93,7 @@ enum WebSearch {
             results.append(SearchResult(title: title, snippet: snippet, url: url))
         }
         guard !results.isEmpty else {
-            throw NSError(domain: "NotchHub", code: -4,
+            throw NSError(domain: "ProNotch", code: -4,
                           userInfo: [NSLocalizedDescriptionKey:
                               "DuckDuckGo 未解析到结果（可能被拦截或改版），建议在设置中配置 Tavily Key"])
         }

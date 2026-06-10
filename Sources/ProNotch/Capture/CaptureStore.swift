@@ -66,10 +66,10 @@ final class CaptureStore: ObservableObject {
         components.host = "open"
         components.queryItems = [URLQueryItem(name: "path", value: url.path)]
         if let obsidianURL = components.url, NSWorkspace.shared.open(obsidianURL) {
-            print("[NotchHub] 已在 Obsidian 中打开收件箱")
+            print("[ProNotch] 已在 Obsidian 中打开收件箱")
         } else {
             NSWorkspace.shared.open(url)
-            print("[NotchHub] 已用默认应用打开收件箱")
+            print("[ProNotch] 已用默认应用打开收件箱")
         }
     }
 
@@ -83,7 +83,7 @@ final class CaptureStore: ObservableObject {
         let parent = (path as NSString).deletingLastPathComponent
         guard FileManager.default.fileExists(atPath: parent) else {
             lastError = "目录不存在：\(parent)"
-            print("[NotchHub] 妙记失败：目录不存在 \(parent)")
+            print("[ProNotch] 妙记失败：目录不存在 \(parent)")
             return false
         }
 
@@ -111,12 +111,12 @@ final class CaptureStore: ObservableObject {
             try content.write(toFile: path, atomically: true, encoding: .utf8)
         } catch {
             lastError = "写入失败：\(error.localizedDescription)"
-            print("[NotchHub] 妙记写入失败: \(error.localizedDescription)")
+            print("[ProNotch] 妙记写入失败: \(error.localizedDescription)")
             return false
         }
         lastError = nil
         refresh()
-        print("[NotchHub] 妙记已存入 \(inboxFileName)（今天共 \(todayEntries.count) 条）")
+        print("[ProNotch] 妙记已存入 \(inboxFileName)（今天共 \(todayEntries.count) 条）")
         return true
     }
 

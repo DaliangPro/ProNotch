@@ -1,10 +1,10 @@
-# NotchHub
+# ProNotch
 
 把 MacBook 的刘海变成你的效率中心：鼠标悬停刘海，自动展开一块面板——App 快捷启动、剪贴板历史、AI 问答、灵感闪记，移开鼠标自动收回，不占 Dock、不抢焦点。
 
 外接显示器作主屏时，面板会出现在主屏顶部中间的「模拟刘海」热区，没有刘海的 Mac 也能用。
 
-![NotchHub 面板](docs/screenshot.png)
+![ProNotch 面板](docs/screenshot.png)
 
 ## 功能
 
@@ -20,11 +20,11 @@
 
 要求 macOS 14 或更高（Apple Silicon 与 Intel 均支持）。
 
-1. 从 [Releases](../../releases) 下载最新的 `NotchHub-x.y.z.dmg`
-2. 打开 DMG，把 NotchHub 拖进「应用程序」
+1. 从 [Releases](../../releases) 下载最新的 `ProNotch-x.y.z.dmg`
+2. 打开 DMG，把 ProNotch 拖进「应用程序」
 3. **首次打开**：本应用未做 Apple 签名公证（个人开源项目，不想交每年 99 美元），系统会提示无法打开。两种解决办法任选：
-   - 在「应用程序」里**右键 NotchHub → 打开 → 再点打开**
-   - 或在终端执行：`xattr -dr com.apple.quarantine /Applications/NotchHub.app`
+   - 在「应用程序」里**右键 ProNotch → 打开 → 再点打开**
+   - 或在终端执行：`xattr -dr com.apple.quarantine /Applications/ProNotch.app`
 4. 启动后菜单栏出现图标，鼠标移到屏幕顶部中间的刘海位置即可展开面板
 
 ### 权限说明
@@ -50,7 +50,7 @@
 
 ```bash
 ./Scripts/install.sh            # 构建并安装到 /Applications（旧版进废纸篓）
-./Scripts/build-app.sh          # 只构建不安装，产物在 build/NotchHub.app
+./Scripts/build-app.sh          # 只构建不安装，产物在 build/ProNotch.app
 ./Scripts/package-dmg.sh        # 通用二进制（arm64 + x86_64）+ 分发 DMG
 ```
 
@@ -61,13 +61,13 @@
 调试通道只编译进 debug 构建（`swift build` 默认配置），正式 release 版不含。手动触发展开/收起：
 
 ```bash
-swift -e 'import Foundation; DistributedNotificationCenter.default().postNotificationName(.init("com.jiliang.NotchHub.toggle"), object: nil, userInfo: nil, deliverImmediately: true)'
+swift -e 'import Foundation; DistributedNotificationCenter.default().postNotificationName(.init("com.daliangpro.ProNotch.toggle"), object: nil, userInfo: nil, deliverImmediately: true)'
 ```
 
 其他调试通知名（同样的发送方式）：`snapshot`（面板离屏渲染到 /tmp/notchhub-snapshot.png）、`nexttab`、`testlaunch`、`testpaste`、`testchat`、`testmodels`、`testsearch`、`testcapture`、`snapsettings` 等，详见 `AppDelegate.swift`。
 
 测试隔离：用参数域覆盖配置，不碰真实数据，例如
-`.build/debug/NotchHub -captureInboxPath /tmp/test.md -chatBaseURL http://127.0.0.1:8000/v1`。
+`.build/debug/ProNotch -captureInboxPath /tmp/test.md -chatBaseURL http://127.0.0.1:8000/v1`。
 命令行用 `pbcopy` 测中文需带 `LANG=zh_CN.UTF-8`，否则 C locale 会把中文丢成空。
 
 ## 架构要点

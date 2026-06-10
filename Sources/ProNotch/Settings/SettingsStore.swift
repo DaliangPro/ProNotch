@@ -21,7 +21,7 @@ final class SettingsStore: ObservableObject {
                                       forKey: "hideNotchInFullscreen")
             // 通知刘海窗口立即按新设置重判一次
             NotificationCenter.default.post(
-                name: NSNotification.Name("NotchHubFullscreenSettingChanged"), object: nil)
+                name: NSNotification.Name("ProNotchFullscreenSettingChanged"), object: nil)
         }
     }
 
@@ -35,7 +35,7 @@ final class SettingsStore: ObservableObject {
             UserDefaults.standard.set(clipboardLimit, forKey: "clipboardLimit")
             // 通知剪贴板数据源立即按新上限裁剪
             NotificationCenter.default.post(
-                name: NSNotification.Name("NotchHubClipboardLimitChanged"), object: nil)
+                name: NSNotification.Name("ProNotchClipboardLimitChanged"), object: nil)
         }
     }
 
@@ -70,12 +70,12 @@ final class SettingsStore: ObservableObject {
             }
             let status = Self.serviceStatus
             loginItemHint = status == .requiresApproval
-                ? "需要在 系统设置 → 通用 → 登录项 中允许 NotchHub"
+                ? "需要在 系统设置 → 通用 → 登录项 中允许 ProNotch"
                 : nil
-            print("[NotchHub] 开机自启\(launchAtLogin ? "开启" : "关闭")，登录项状态: \(status.rawValue)")
+            print("[ProNotch] 开机自启\(launchAtLogin ? "开启" : "关闭")，登录项状态: \(status.rawValue)")
         } catch {
             loginItemHint = "设置失败: \(error.localizedDescription)"
-            print("[NotchHub] 开机自启设置失败: \(error.localizedDescription)")
+            print("[ProNotch] 开机自启设置失败: \(error.localizedDescription)")
             launchAtLogin = Self.serviceStatus == .enabled
         }
     }

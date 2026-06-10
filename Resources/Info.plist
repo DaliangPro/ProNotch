@@ -5,15 +5,15 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>zh_CN</string>
 	<key>CFBundleDisplayName</key>
-	<string>NotchHub</string>
+	<string>ProNotch</string>
 	<key>CFBundleExecutable</key>
-	<string>NotchHub</string>
+	<string>ProNotch</string>
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
-	<string>com.jiliang.NotchHub</string>
+	<string>com.daliangpro.ProNotch</string>
 	<key>CFBundleName</key>
-	<string>NotchHub</string>
+	<string>ProNotch</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

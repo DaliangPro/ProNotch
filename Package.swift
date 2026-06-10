@@ -2,12 +2,12 @@
 import PackageDescription
 
 let package = Package(
-    name: "NotchHub",
+    name: "ProNotch",
     platforms: [.macOS(.v14)],
     targets: [
         .executableTarget(
-            name: "NotchHub",
-            path: "Sources/NotchHub"
+            name: "ProNotch",
+            path: "Sources/ProNotch"
         )
     ]
 )

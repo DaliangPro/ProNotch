@@ -1,10 +1,10 @@
 #!/bin/bash
-# 生成 NotchHub 应用图标：绘制 1024px 原图 → 各尺寸 iconset → AppIcon.icns
+# 生成 ProNotch 应用图标：绘制 1024px 原图 → 各尺寸 iconset → AppIcon.icns
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SRC=/tmp/notchhub-icon-1024.png
-ICONSET=/tmp/NotchHubAppIcon.iconset
+ICONSET=/tmp/ProNotchAppIcon.iconset
 
 swift Scripts/generate-icon.swift "$SRC"
 
