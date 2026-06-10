@@ -11,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var clipboardStore: ClipboardStore!
     private var snippetStore: SnippetStore!
     private var chatStore: ChatStore!
+    private var captureStore: CaptureStore!
     private var quickActions: QuickActionsStore!
     private var settingsStore: SettingsStore!
     private let settingsWindow = SettingsWindowController()
@@ -20,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         clipboardStore = ClipboardStore()
         snippetStore = SnippetStore()
         chatStore = ChatStore()
+        captureStore = CaptureStore()
         quickActions = QuickActionsStore()
         settingsStore = SettingsStore()
         launcherStore.refreshIfNeeded()
@@ -91,6 +93,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugToggleSnippets),
             name: NSNotification.Name("com.jiliang.NotchHub.snippets"), object: nil)
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(debugTestCapture),
+            name: NSNotification.Name("com.jiliang.NotchHub.testcapture"), object: nil)
+    }
+
+    /// 调试用：写入一条测试速记
+    @objc private func debugTestCapture() {
+        captureStore.capture("测试速记：验证写入格式与今日列表解析")
     }
 
     /// 调试用：切换剪贴板页的「历史/话术」子视图
@@ -191,6 +201,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             snippetStore: snippetStore,
             chatStore: chatStore,
             quickActions: quickActions,
+            captureStore: captureStore,
             settingsStore: settingsStore)
     }
 

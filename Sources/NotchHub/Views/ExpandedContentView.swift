@@ -8,6 +8,7 @@ struct ExpandedContentView: View {
     @EnvironmentObject var snippetStore: SnippetStore
     @EnvironmentObject var chatStore: ChatStore
     @EnvironmentObject var quickActions: QuickActionsStore
+    @EnvironmentObject var captureStore: CaptureStore
 
     @State private var draggedTab: NotchViewModel.Tab?
     @State private var draggedAction: QuickActionsStore.ActionKind?
@@ -87,6 +88,8 @@ struct ExpandedContentView: View {
                     ClipboardView()
                 case .chat:
                     ChatView()
+                case .capture:
+                    CaptureView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -165,6 +168,14 @@ struct ExpandedContentView: View {
             }
             if !chatStore.messages.isEmpty {
                 AccessoryButton(title: "新对话") { chatStore.clearConversation() }
+            }
+        case .capture:
+            Text(captureStore.inboxFileName)
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.4))
+            AccessoryButton(title: "打开") {
+                NSWorkspace.shared.open(captureStore.inboxFileURL)
+                vm.collapseNow()
             }
         }
     }

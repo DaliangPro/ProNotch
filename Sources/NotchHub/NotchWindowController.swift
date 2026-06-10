@@ -9,6 +9,7 @@ final class NotchWindowController {
     let snippetStore: SnippetStore
     let chatStore: ChatStore
     let quickActions: QuickActionsStore
+    let captureStore: CaptureStore
     private let panel: NotchPanel
 
     /// 数据层由 AppDelegate 持有并传入：换屏重建窗口时对话记录、
@@ -18,12 +19,14 @@ final class NotchWindowController {
          snippetStore: SnippetStore,
          chatStore: ChatStore,
          quickActions: QuickActionsStore,
+         captureStore: CaptureStore,
          settingsStore: SettingsStore) {
         self.launcherStore = launcherStore
         self.clipboardStore = clipboardStore
         self.snippetStore = snippetStore
         self.chatStore = chatStore
         self.quickActions = quickActions
+        self.captureStore = captureStore
         let screen = NotchGeometry.targetScreen()
         let notchRect = NotchGeometry.notchRect(on: screen)
         let hasRealNotch = screen.safeAreaInsets.top > 0
@@ -42,7 +45,8 @@ final class NotchWindowController {
                 .environmentObject(clipboardStore)
                 .environmentObject(snippetStore)
                 .environmentObject(chatStore)
-                .environmentObject(quickActions))
+                .environmentObject(quickActions)
+                .environmentObject(captureStore))
         panel.contentView = hosting
         panel.orderFrontRegardless()
         // 「全屏时隐藏刘海」：每秒检测一次，全屏时整窗隐藏、退出后恢复

@@ -11,12 +11,14 @@ final class NotchViewModel: ObservableObject {
         case launcher = "启动台"
         case clipboard = "剪贴板"
         case chat = "AI 对话"
+        case capture = "速记"
 
         var icon: String {
             switch self {
             case .launcher: return "square.grid.3x3.fill"
             case .clipboard: return "doc.on.clipboard"
             case .chat: return "sparkles"
+            case .capture: return "square.and.pencil"
             }
         }
     }
