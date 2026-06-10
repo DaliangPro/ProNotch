@@ -19,10 +19,12 @@ struct LauncherView: View {
         }
     }
 
+    /// 图标(48pt)居中于网格单元，标题行内缩到与首末列图标边缘对齐：
+    /// 内容宽 680，8 列间距 10 → 单元宽 76.25，(76.25-48)/2 ≈ 14
+    private let edgeInset: CGFloat = 14
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            searchField
-
             // 置顶区：固定槽位，不随滚动移动
             LazyVGrid(columns: columns, spacing: 10) {
                 ForEach(0..<store.maxPinned, id: \.self) { index in
@@ -34,9 +36,14 @@ struct LauncherView: View {
                 }
             }
 
-            SectionHeader(title: searchText.isEmpty
-                ? "全部应用"
-                : "搜索结果（\(filteredApps.count)）")
+            HStack {
+                SectionHeader(title: searchText.isEmpty
+                    ? "全部应用"
+                    : "搜索结果（\(filteredApps.count)）")
+                Spacer()
+                searchField
+            }
+            .padding(.horizontal, edgeInset)
 
             ScrollView(showsIndicators: false) {
                 if filteredApps.isEmpty {
@@ -63,15 +70,15 @@ struct LauncherView: View {
     }
 
     private var searchField: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 4) {
             Image(systemName: "magnifyingglass")
-                .font(.system(size: 11))
+                .font(.system(size: 10))
                 .foregroundColor(.white.opacity(0.4))
             TextField("", text: $searchText,
-                      prompt: Text("搜索应用，回车启动第一个结果")
+                      prompt: Text("搜索应用")
                           .foregroundColor(.white.opacity(0.3)))
                 .textFieldStyle(.plain)
-                .font(.system(size: 12))
+                .font(.system(size: 11))
                 .foregroundColor(.white)
                 .focused($searchFocused)
                 .onSubmit { launchFirstResult() }
@@ -80,9 +87,11 @@ struct LauncherView: View {
                     searchFocused = false
                 }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
         .background(Capsule().fill(Color.white.opacity(searchFocused ? 0.14 : 0.08)))
+        .frame(width: 180)
+        .help("回车启动第一个结果，Esc 清空")
     }
 
     private func launchFirstResult() {
