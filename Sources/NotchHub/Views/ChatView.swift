@@ -209,38 +209,36 @@ private struct ChatSettingsForm: View {
                     .font(.system(size: 10))
                     .foregroundColor(.white.opacity(0.5))
                     .frame(width: 50, alignment: .leading)
-                TextField("", text: $store.draftModel,
-                          prompt: Text(store.availableModels.isEmpty
-                                  ? "如 deepseek-chat，或先点「获取模型」"
-                                  : "从右侧菜单选择，或手动输入")
-                              .foregroundColor(.white.opacity(0.3)))
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 11))
-                    .foregroundColor(.white)
-                    .focused($focusedField, equals: .model)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.08)))
-                if !store.availableModels.isEmpty {
-                    Menu {
-                        ForEach(store.availableModels, id: \.self) { name in
-                            Button(name) { store.draftModel = name }
+                // 输入框与下拉选择二合一：箭头长在输入框右端内部
+                HStack(spacing: 4) {
+                    TextField("", text: $store.draftModel,
+                              prompt: Text(store.availableModels.isEmpty
+                                      ? "如 deepseek-chat，或先点「获取模型」"
+                                      : "选择或输入模型名")
+                                  .foregroundColor(.white.opacity(0.3)))
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 11))
+                        .foregroundColor(.white)
+                        .focused($focusedField, equals: .model)
+                    if !store.availableModels.isEmpty {
+                        Menu {
+                            ForEach(store.availableModels, id: \.self) { name in
+                                Button(name) { store.draftModel = name }
+                            }
+                        } label: {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundColor(.white.opacity(0.6))
                         }
-                    } label: {
-                        HStack(spacing: 3) {
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.system(size: 9))
-                            Text("\(store.availableModels.count) 个可选")
-                                .font(.system(size: 10))
-                        }
-                        .foregroundColor(.white.opacity(0.7))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Capsule().fill(Color.white.opacity(0.1)))
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .help("从已获取的 \(store.availableModels.count) 个模型中选择")
                     }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.08)))
                 Button {
                     store.fetchModels()
                 } label: {

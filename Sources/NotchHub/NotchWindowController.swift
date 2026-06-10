@@ -55,19 +55,9 @@ final class NotchWindowController {
         panel.close()
     }
 
-    /// 调试用：用已保存的配置拉取模型列表，验证 /v1/models 路径
+    /// 调试用：走与「获取模型」按钮相同的路径拉取模型列表（含 UI 状态更新）
     func debugTestModels() {
-        let baseURL = chatStore.baseURL
-        let apiKey = chatStore.apiKey
-        Task { @MainActor in
-            do {
-                let models = try await ChatStore.fetchAvailableModels(
-                    baseURL: baseURL, apiKey: apiKey)
-                print("[NotchHub] 获取到 \(models.count) 个模型: \(models.joined(separator: ", "))")
-            } catch {
-                print("[NotchHub] 获取模型失败: \(error.localizedDescription)")
-            }
-        }
+        chatStore.fetchModels()
     }
 
     /// 调试用：走真实代码路径发送一条对话消息，验证流式输出
