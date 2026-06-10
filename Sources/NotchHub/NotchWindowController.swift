@@ -69,7 +69,7 @@ final class NotchWindowController {
                     query: "MacBook 刘海 notch 应用", tavilyKey: key)
                 print("[NotchHub] 搜索返回 \(results.count) 条:")
                 for result in results {
-                    print("  - \(result.title) | \(result.url)")
+                    print("  - \(result.title) | 正文 \(result.snippet.count) 字 | \(result.url)")
                 }
             } catch {
                 print("[NotchHub] 搜索失败: \(error.localizedDescription)")

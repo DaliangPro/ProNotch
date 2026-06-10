@@ -124,13 +124,15 @@ final class ChatStore: ObservableObject {
         }
     }
 
-    /// 完整一轮：可选联网搜索（结果注入最后一条用户消息）→ 流式请求
+    /// 完整一轮：可选联网搜索（查询改写 → 搜索 → 结果注入最后一条用户消息）→ 流式请求
     private func run(question: String, history: [[String: String]]) async {
         var payload = history
         if webSearchEnabled {
             isSearching = true
             do {
-                let results = try await WebSearch.search(query: question, tavilyKey: tavilyKey)
+                // 先让模型把口语化问题（含上下文指代）改写成搜索词，失败则用原话
+                let query = await rewriteQuery(history: history) ?? question
+                let results = try await WebSearch.search(query: query, tavilyKey: tavilyKey)
                 if !results.isEmpty {
                     payload[payload.count - 1]["content"] =
                         Self.augmentedPrompt(question: question, results: results)
@@ -175,7 +177,12 @@ final class ChatStore: ObservableObject {
 
     private static func augmentedPrompt(question: String, results: [SearchResult]) -> String {
         var lines = [
-            "请基于以下联网搜索结果回答用户问题；搜索结果可能不完整或过时，必要时注明不确定性，引用时可标注来源序号。",
+            "今天是\(currentDateText())。以下是针对用户问题的联网搜索结果，请据此回答：",
+            "- 综合多个来源的信息作答，互相矛盾时交叉比对并说明分歧",
+            "- 引用具体信息时标注来源序号，如 [1][3]",
+            "- 区分信息的时间，避免把旧信息当成最新动态",
+            "- 搜索结果不足以回答时明确说明，再基于自身知识谨慎补充",
+            "- 用用户提问的语言回答，直接给出答案，不要复述搜索结果原文",
             "",
             "搜索结果：",
         ]
@@ -189,6 +196,68 @@ final class ChatStore: ObservableObject {
         }
         lines.append("用户问题：\(question)")
         return lines.joined(separator: "\n")
+    }
+
+    private static func currentDateText() -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "zh_CN")
+        formatter.dateFormat = "yyyy年M月d日"
+        return formatter.string(from: Date())
+    }
+
+    /// 用同一个模型做非流式查询改写：把口语化问题与上下文指代还原成搜索词
+    private func rewriteQuery(history: [[String: String]]) async -> String? {
+        var payload: [[String: String]] = [[
+            "role": "system",
+            "content": "你是搜索查询改写器。今天是\(Self.currentDateText())。"
+                + "根据对话上下文与用户最新一条消息，生成一条最适合搜索引擎的简洁查询词"
+                + "（补全上下文中的指代对象，保留关键实体与时间限定）。"
+                + "只输出查询词本身，不要解释、不要引号。",
+        ]]
+        payload += history.suffix(6)
+        do {
+            let raw = try await completeOnce(payload: payload)
+            let cleaned = raw
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\"“”'「」"))
+            guard !cleaned.isEmpty, cleaned.count <= 60, !cleaned.contains("\n") else {
+                return nil
+            }
+            print("[NotchHub] 搜索查询改写: \(cleaned)")
+            return cleaned
+        } catch {
+            print("[NotchHub] 查询改写失败，改用原话搜索: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// 非流式单次补全，供查询改写等轻量内部任务使用
+    private func completeOnce(payload: [[String: String]]) async throws -> String {
+        var request = URLRequest(url: try endpointURL())
+        request.httpMethod = "POST"
+        request.timeoutInterval = 30
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "model": model,
+            "messages": payload,
+            "stream": false,
+        ])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            let detail = String(data: data, encoding: .utf8) ?? ""
+            throw NSError(domain: "NotchHub", code: http.statusCode,
+                          userInfo: [NSLocalizedDescriptionKey:
+                              "HTTP \(http.statusCode) \(detail.prefix(150))"])
+        }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = object["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let content = message["content"] as? String else {
+            throw NSError(domain: "NotchHub", code: -2,
+                          userInfo: [NSLocalizedDescriptionKey: "非流式返回格式异常"])
+        }
+        return content
     }
 
     func stopStreaming() {

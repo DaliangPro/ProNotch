@@ -1,14 +1,21 @@
 import Foundation
 
 struct SearchResult {
-    let title: String
-    let snippet: String
-    let url: String
+    var title: String
+    var snippet: String
+    var url: String
 }
 
 /// 客户端联网搜索：API 普遍不带联网能力，通用做法是先搜索再把结果注入提示词。
-/// 配置了 Tavily Key 优先用 Tavily（稳定），否则用 DuckDuckGo 网页抓取（免费）
+/// 配置了 Tavily Key 优先用 Tavily 深度搜索（取页面正文），
+/// 否则用 DuckDuckGo 抓取并补抓前几个结果的网页正文
 enum WebSearch {
+    /// 注入给模型的单条正文上限
+    static let perResultCap = 1500
+
+    private static let userAgent =
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Safari/537.36"
+
     static func search(query: String, tavilyKey: String) async throws -> [SearchResult] {
         let key = tavilyKey.trimmingCharacters(in: .whitespaces)
         if !key.isEmpty {
@@ -22,12 +29,15 @@ enum WebSearch {
     private static func tavily(query: String, key: String) async throws -> [SearchResult] {
         var request = URLRequest(url: URL(string: "https://api.tavily.com/search")!)
         request.httpMethod = "POST"
-        request.timeoutInterval = 20
+        request.timeoutInterval = 25
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        // advanced 深度搜索返回与查询更相关的内容块，raw_content 提供页面正文
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "query": query,
-            "max_results": 5,
+            "max_results": 6,
+            "search_depth": "advanced",
+            "include_raw_content": true,
         ])
         let (data, response) = try await URLSession.shared.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
@@ -44,8 +54,12 @@ enum WebSearch {
         return list.compactMap { item in
             guard let title = item["title"] as? String,
                   let url = item["url"] as? String else { return nil }
+            let content = (item["content"] as? String) ?? ""
+            let raw = (item["raw_content"] as? String) ?? ""
+            // 正文优先用 raw_content（更完整），太短则退回相关性内容块
+            let body = raw.count > content.count ? raw : content
             return SearchResult(title: title,
-                                snippet: (item["content"] as? String) ?? "",
+                                snippet: String(body.prefix(perResultCap)),
                                 url: url)
         }
     }
@@ -57,9 +71,7 @@ enum WebSearch {
         components.queryItems = [URLQueryItem(name: "q", value: query)]
         var request = URLRequest(url: components.url!)
         request.timeoutInterval = 15
-        request.setValue(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Safari/537.36",
-            forHTTPHeaderField: "User-Agent")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         let (data, _) = try await URLSession.shared.data(for: request)
         guard let html = String(data: data, encoding: .utf8) else {
             throw NSError(domain: "NotchHub", code: -3,
@@ -85,7 +97,50 @@ enum WebSearch {
                           userInfo: [NSLocalizedDescriptionKey:
                               "DuckDuckGo 未解析到结果（可能被拦截或改版），建议在设置中配置 Tavily Key"])
         }
+
+        // 并行抓取前 3 个结果的网页正文，替换贫瘠的摘要，提升注入给模型的信息量
+        let fetchCount = min(3, results.count)
+        await withTaskGroup(of: (Int, String?).self) { group in
+            for index in 0..<fetchCount {
+                let url = results[index].url
+                group.addTask { (index, await fetchPageText(url: url)) }
+            }
+            for await (index, text) in group {
+                if let text {
+                    results[index].snippet = text
+                }
+            }
+        }
         return results
+    }
+
+    /// 抓取网页并提取纯文本正文（尽力而为，失败返回 nil 保留原摘要）
+    private static func fetchPageText(url: String) async -> String? {
+        guard let pageURL = URL(string: url) else { return nil }
+        var request = URLRequest(url: pageURL)
+        request.timeoutInterval = 8
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let html = String(data: data, encoding: .utf8) else { return nil }
+        let text = htmlToText(html)
+        // 太短说明提取失败或是壳页面，不如保留搜索摘要
+        guard text.count > 200 else { return nil }
+        return String(text.prefix(perResultCap))
+    }
+
+    private static func htmlToText(_ html: String) -> String {
+        var text = html
+        text = text.replacingOccurrences(of: #"<script[\s\S]*?</script>"#,
+                                         with: " ", options: .regularExpression)
+        text = text.replacingOccurrences(of: #"<style[\s\S]*?</style>"#,
+                                         with: " ", options: .regularExpression)
+        text = text.replacingOccurrences(of: #"<[^>]+>"#,
+                                         with: " ", options: .regularExpression)
+        text = decodeEntities(text)
+        text = text.replacingOccurrences(of: #"\s+"#,
+                                         with: " ", options: .regularExpression)
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// DDG 链接是跳转包装（/l/?uddg=真实地址），解出真实 URL
@@ -111,13 +166,18 @@ enum WebSearch {
     }
 
     private static func stripHTML(_ html: String) -> String {
-        html.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
-            .replacingOccurrences(of: "&amp;", with: "&")
+        decodeEntities(
+            html.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func decodeEntities(_ text: String) -> String {
+        text.replacingOccurrences(of: "&amp;", with: "&")
             .replacingOccurrences(of: "&quot;", with: "\"")
             .replacingOccurrences(of: "&#x27;", with: "'")
+            .replacingOccurrences(of: "&#39;", with: "'")
             .replacingOccurrences(of: "&lt;", with: "<")
             .replacingOccurrences(of: "&gt;", with: ">")
             .replacingOccurrences(of: "&nbsp;", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
