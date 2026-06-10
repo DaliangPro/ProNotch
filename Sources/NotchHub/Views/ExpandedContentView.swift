@@ -20,7 +20,7 @@ struct ExpandedContentView: View {
             Group {
                 switch vm.activeTab {
                 case .launcher:
-                    LauncherPlaceholderView()
+                    LauncherView()
                 case .clipboard:
                     PlaceholderView(icon: "doc.on.clipboard",
                                     title: "剪贴板历史", note: "M2 实现")
@@ -72,29 +72,6 @@ private struct PlaceholderView: View {
                 .font(.system(size: 13))
                 .foregroundColor(.white.opacity(0.7))
             Text(note)
-                .font(.system(size: 11))
-                .foregroundColor(.white.opacity(0.35))
-        }
-    }
-}
-
-private struct LauncherPlaceholderView: View {
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 14), count: 8)
-
-    var body: some View {
-        VStack(spacing: 10) {
-            LazyVGrid(columns: columns, spacing: 14) {
-                ForEach(0..<8, id: \.self) { _ in
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color.white.opacity(0.08))
-                        .frame(height: 52)
-                        .overlay(
-                            Image(systemName: "app.dashed")
-                                .font(.system(size: 20))
-                                .foregroundColor(.white.opacity(0.3)))
-                }
-            }
-            Text("App 启动台（M1 实现）")
                 .font(.system(size: 11))
                 .foregroundColor(.white.opacity(0.35))
         }

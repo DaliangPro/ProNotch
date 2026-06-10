@@ -4,6 +4,7 @@ import SwiftUI
 @MainActor
 final class NotchWindowController {
     let viewModel: NotchViewModel
+    let launcherStore = LauncherStore()
     private let panel: NotchPanel
 
     init() {
@@ -19,11 +20,27 @@ final class NotchWindowController {
         viewModel.panel = panel
 
         let hosting = NSHostingView(
-            rootView: NotchContainerView().environmentObject(viewModel))
+            rootView: NotchContainerView()
+                .environmentObject(viewModel)
+                .environmentObject(launcherStore))
         panel.contentView = hosting
         panel.orderFrontRegardless()
         viewModel.startMouseTracking()
+        // 启动即预扫描，首次展开面板不用等待
+        launcherStore.refreshIfNeeded()
         print("[NotchHub] 固定窗口 frame: \(panel.frame)")
+    }
+
+    /// 调试用：走与点击图标相同的代码路径启动计算器并收起面板
+    func debugTestLaunch() {
+        guard let calc = launcherStore.allApps.first(where: {
+            $0.url.lastPathComponent == "Calculator.app"
+        }) else {
+            print("[NotchHub] 调试启动：未找到计算器")
+            return
+        }
+        launcherStore.launch(calc)
+        viewModel.collapseNow()
     }
 
     func close() {

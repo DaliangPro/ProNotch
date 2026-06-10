@@ -23,6 +23,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugSnapshot),
             name: NSNotification.Name("com.jiliang.NotchHub.snapshot"), object: nil)
+
+        // 调试入口：走真实代码路径启动计算器，验证启动台逻辑
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(debugTestLaunch),
+            name: NSNotification.Name("com.jiliang.NotchHub.testlaunch"), object: nil)
+    }
+
+    @objc private func debugTestLaunch() {
+        windowController?.debugTestLaunch()
     }
 
     @objc private func debugSnapshot() {
@@ -30,6 +39,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func screenParametersChanged() {
+        // 系统会成批发送参数变更通知（应用启动、色彩配置切换都可能触发），
+        // 刘海几何没变就不重建，避免面板使用中突然消失
+        let screen = NotchGeometry.targetScreen()
+        let rect = NotchGeometry.notchRect(on: screen)
+        if let existing = windowController, existing.viewModel.notchRect == rect {
+            return
+        }
         setupNotchWindow()
     }
 

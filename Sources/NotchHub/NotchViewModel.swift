@@ -27,7 +27,7 @@ final class NotchViewModel: ObservableObject {
     /// 刘海矩形（全局坐标）
     let notchRect: CGRect
     /// 展开后刘海下方面板的内容尺寸
-    let panelSize = CGSize(width: 640, height: 220)
+    let panelSize = CGSize(width: 680, height: 300)
 
     weak var panel: NSPanel?
 
@@ -178,6 +178,11 @@ final class NotchViewModel: ObservableObject {
             debugPinned = true
             expand()
         }
+    }
+
+    /// 供面板内操作（如启动应用后）主动收起
+    func collapseNow() {
+        collapse()
     }
 
     private func expand() {

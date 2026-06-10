@@ -5,7 +5,8 @@
 ## 路线图
 
 - [x] M0 核心交互骨架：刘海定位、悬停展开/收起动画、三标签页框架
-- [ ] M1 App 启动台（主页面）
+- [x] M1 App 启动台：常用固定区（首次从 Dock 预填充，右键固定/取消）+
+      全部应用滚动网格，点击启动并收起面板
 - [ ] M2 剪贴板历史
 - [ ] M3 AI 对话（自定义 API URL + Key，流式输出）
 - [ ] M4 打磨：设置面板、开机自启、多显示器、全屏兼容
@@ -30,6 +31,11 @@ open build/NotchHub.app       # 启动（菜单栏出现图标，无 Dock 图标
 ```bash
 swift -e 'import Foundation; DistributedNotificationCenter.default().postNotificationName(.init("com.jiliang.NotchHub.toggle"), object: nil, userInfo: nil, deliverImmediately: true)'
 ```
+
+其他调试通道（同样的发送方式，换通知名）：
+
+- `com.jiliang.NotchHub.snapshot`：把窗口内容渲染成 PNG 存到 `/tmp/notchhub-snapshot.png`
+- `com.jiliang.NotchHub.testlaunch`：走真实代码路径启动计算器并收起面板
 
 ## 架构
 
