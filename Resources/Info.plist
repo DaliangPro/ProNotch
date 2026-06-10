@@ -8,6 +8,8 @@
 	<string>NotchHub</string>
 	<key>CFBundleExecutable</key>
 	<string>NotchHub</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.jiliang.NotchHub</string>
 	<key>CFBundleName</key>
