@@ -19,6 +19,9 @@ final class SettingsStore: ObservableObject {
         didSet {
             UserDefaults.standard.set(hideNotchInFullscreen,
                                       forKey: "hideNotchInFullscreen")
+            // 通知刘海窗口立即按新设置重判一次
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NotchHubFullscreenSettingChanged"), object: nil)
         }
     }
 

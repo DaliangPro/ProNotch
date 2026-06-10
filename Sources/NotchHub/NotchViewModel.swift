@@ -36,7 +36,9 @@ final class NotchViewModel: ObservableObject {
     var shouldHideForFullscreen: (() -> Bool)?
     /// 当前是否因全屏而隐藏
     private(set) var hiddenForFullscreen = false
-    private var fullscreenCheckCounter = 0
+    /// 空间切换通知 token（进入/退出全屏即切换空间，事件驱动零轮询）
+    private var spaceObserver: Any?
+    private var settingObserver: Any?
 
     weak var panel: NSPanel?
 
@@ -108,18 +110,30 @@ final class NotchViewModel: ObservableObject {
             monitors.append(local)
         }
         poller = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.pollTick() }
+            Task { @MainActor [weak self] in self?.evaluateMouse() }
         }
-    }
 
-    /// 轮询主入口：每 0.2s 跑悬停判定，每 1s 跑一次全屏检测
-    private func pollTick() {
-        fullscreenCheckCounter += 1
-        if fullscreenCheckCounter >= 5 {
-            fullscreenCheckCounter = 0
-            updateFullscreenHiding()
+        // 全屏隐藏走事件驱动：进入/退出全屏必然切换空间，
+        // 只在空间切换时检测一次（再延迟补查一次等过渡动画结束），平时零开销
+        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.updateFullscreenHiding()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                    Task { @MainActor [weak self] in
+                        self?.updateFullscreenHiding()
+                    }
+                }
+            }
         }
-        evaluateMouse()
+        // 设置开关变化时立即生效（否则关掉开关后要等下次切空间才恢复）
+        settingObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("NotchHubFullscreenSettingChanged"),
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.updateFullscreenHiding() }
+        }
+        updateFullscreenHiding()
     }
 
     private func updateFullscreenHiding() {
@@ -139,6 +153,14 @@ final class NotchViewModel: ObservableObject {
     /// 窗口重建/退出前调用，移除监听与定时器
     func stop() {
         stopMouseTracking()
+        if let observer = spaceObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+            spaceObserver = nil
+        }
+        if let observer = settingObserver {
+            NotificationCenter.default.removeObserver(observer)
+            settingObserver = nil
+        }
         pendingExpand?.cancel()
         pendingExpand = nil
         pendingCollapse?.cancel()
