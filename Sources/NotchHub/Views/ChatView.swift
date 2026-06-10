@@ -173,6 +173,7 @@ private struct ChatSettingsForm: View {
     @EnvironmentObject var store: ChatStore
     @Binding var showSettings: Bool
 
+    @State private var showModelList = false
     @FocusState private var focusedField: Field?
 
     private enum Field {
@@ -209,7 +210,8 @@ private struct ChatSettingsForm: View {
                     .font(.system(size: 10))
                     .foregroundColor(.white.opacity(0.5))
                     .frame(width: 50, alignment: .leading)
-                // 输入框与下拉选择二合一：箭头长在输入框右端内部
+                // 输入框与下拉选择二合一：箭头长在输入框右端内部，
+                // 列表不走系统弹窗（在无边框面板里定位会飘），改为表单内展开
                 HStack(spacing: 4) {
                     TextField("", text: $store.draftModel,
                               prompt: Text(store.availableModels.isEmpty
@@ -221,18 +223,16 @@ private struct ChatSettingsForm: View {
                         .foregroundColor(.white)
                         .focused($focusedField, equals: .model)
                     if !store.availableModels.isEmpty {
-                        Menu {
-                            ForEach(store.availableModels, id: \.self) { name in
-                                Button(name) { store.draftModel = name }
+                        Button {
+                            withAnimation(.easeOut(duration: 0.12)) {
+                                showModelList.toggle()
                             }
                         } label: {
-                            Image(systemName: "chevron.down")
+                            Image(systemName: showModelList ? "chevron.up" : "chevron.down")
                                 .font(.system(size: 9, weight: .semibold))
                                 .foregroundColor(.white.opacity(0.6))
                         }
-                        .menuStyle(.borderlessButton)
-                        .menuIndicator(.hidden)
-                        .fixedSize()
+                        .buttonStyle(.plain)
                         .help("从已获取的 \(store.availableModels.count) 个模型中选择")
                     }
                 }
@@ -257,6 +257,26 @@ private struct ChatSettingsForm: View {
                 .buttonStyle(.plain)
                 .disabled(!canFetchModels)
                 .help("从服务端读取可用模型列表（需先填地址和 Key）")
+            }
+
+            // 模型列表：在模型框正下方展开，对齐输入框左缘
+            if showModelList, !store.availableModels.isEmpty {
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(store.availableModels, id: \.self) { name in
+                            ModelOptionRow(name: name,
+                                           isSelected: name == store.draftModel) {
+                                store.draftModel = name
+                                withAnimation(.easeIn(duration: 0.1)) {
+                                    showModelList = false
+                                }
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 130)
+                .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.06)))
+                .padding(.leading, 56)
             }
 
             if let fetchError = store.fetchError {
@@ -297,6 +317,37 @@ private struct ChatSettingsForm: View {
     private func save() {
         store.saveSettings()
         showSettings = false
+    }
+
+    private struct ModelOptionRow: View {
+        let name: String
+        let isSelected: Bool
+        let action: () -> Void
+
+        @State private var hovering = false
+
+        var body: some View {
+            Button(action: action) {
+                HStack {
+                    Text(name)
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.85))
+                        .lineLimit(1)
+                    Spacer()
+                    if isSelected {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 9))
+                            .foregroundColor(.white.opacity(0.7))
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.white.opacity(hovering ? 0.12 : 0))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .onHover { hovering = $0 }
+        }
     }
 
     private func settingField(_ label: String, text: Binding<String>,
