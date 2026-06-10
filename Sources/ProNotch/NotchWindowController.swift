@@ -120,7 +120,7 @@ final class NotchWindowController {
             print("[ProNotch] 调试对话：尚未配置 API")
             return
         }
-        chatStore.send("联调测试：请用一句话回复")
+        chatStore.send("有什么能让 Mac 用起来更高效的小技巧？")
     }
 
     /// 调试用：循环切换标签页

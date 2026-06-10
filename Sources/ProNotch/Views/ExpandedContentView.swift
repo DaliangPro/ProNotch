@@ -399,7 +399,7 @@ private struct AppearanceSlider: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help(isDark ? "深色模式（点击切换为浅色）" : "浅色模式（点击切换为深色）")
+        .help(isDark ? "系统外观：深色（点击切换整个 macOS 为浅色）" : "系统外观：浅色（点击切换整个 macOS 为深色）")
     }
 }
 
