@@ -52,11 +52,11 @@ struct LauncherView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // 置顶区：固定槽位，不随滚动移动
+            // 置顶区：固定槽位、只显示图标不带名字，给下方腾空间
             LazyVGrid(columns: columns, spacing: 10) {
                 ForEach(0..<store.maxPinned, id: \.self) { index in
                     if index < store.pinned.count {
-                        AppCell(app: store.pinned[index])
+                        AppCell(app: store.pinned[index], showsName: false)
                     } else {
                         EmptySlotView()
                     }
@@ -82,8 +82,23 @@ struct LauncherView: View {
                             AppCell(app: app)
                         }
                     }
+                    // 上下留白与渐隐高度匹配，静止时首末行不被遮挡
+                    .padding(.top, 8)
+                    .padding(.bottom, 14)
                 }
             }
+            // 滚动到边缘的图标渐隐消失，替代生硬截断
+            .mask(
+                VStack(spacing: 0) {
+                    LinearGradient(colors: [.clear, .black],
+                                   startPoint: .top, endPoint: .bottom)
+                        .frame(height: 8)
+                    Rectangle().fill(Color.black)
+                    LinearGradient(colors: [.black, .clear],
+                                   startPoint: .top, endPoint: .bottom)
+                        .frame(height: 14)
+                }
+            )
         }
         .onAppear { store.refreshIfNeeded() }
     }
@@ -92,21 +107,17 @@ struct LauncherView: View {
 /// 置顶区空槽位：右键下方应用图标可置顶到此处
 private struct EmptySlotView: View {
     var body: some View {
-        VStack(spacing: 3) {
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(Color.white.opacity(0.12),
-                              style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                .frame(width: 48, height: 48)
-                .overlay(
-                    Image(systemName: "plus")
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.15)))
-            Text(" ")
-                .font(.system(size: 10))
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 4)
-        .help("右键下方应用图标可置顶到此处")
+        RoundedRectangle(cornerRadius: 10)
+            .strokeBorder(Color.white.opacity(0.12),
+                          style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+            .frame(width: 48, height: 48)
+            .overlay(
+                Image(systemName: "plus")
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.15)))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .help("右键下方应用图标可置顶到此处")
     }
 }
 
@@ -114,6 +125,7 @@ private struct AppCell: View {
     @EnvironmentObject var vm: NotchViewModel
     @EnvironmentObject var store: LauncherStore
     let app: AppEntry
+    var showsName = true
 
     @State private var hovering = false
 
@@ -126,11 +138,13 @@ private struct AppCell: View {
                 Image(nsImage: AppIconCache.icon(for: app.url))
                     .resizable()
                     .frame(width: 48, height: 48)
-                Text(app.name)
-                    .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.65))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
+                if showsName {
+                    Text(app.name)
+                        .font(.system(size: 10))
+                        .foregroundColor(.white.opacity(0.65))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 4)

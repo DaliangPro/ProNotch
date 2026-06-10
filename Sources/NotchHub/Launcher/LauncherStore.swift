@@ -92,24 +92,33 @@ final class LauncherStore: ObservableObject {
         print("[NotchHub] 应用扫描完成：全部 \(allApps.count) 个，置顶 \(pinned.count) 个")
     }
 
+    /// 递归扫描（最深两层子目录）：覆盖 Chrome Apps.localized 这类嵌套安装，
+    /// skipsPackageDescendants 保证不进 .app 包内部（不会误收 iPad 应用的 Wrapper）
     private nonisolated static func scanApplications() -> [AppEntry] {
-        let dirs = [
+        let roots = [
             "/Applications",
-            "/Applications/Utilities",
             "/System/Applications",
-            "/System/Applications/Utilities",
+            "/System/Library/CoreServices/Applications",
             NSHomeDirectory() + "/Applications",
         ]
         let fm = FileManager.default
         var seen = Set<String>()
         var result: [AppEntry] = []
-        for dir in dirs {
-            guard let items = try? fm.contentsOfDirectory(atPath: dir) else { continue }
-            for item in items where item.hasSuffix(".app") && !item.hasPrefix(".") {
-                let path = dir + "/" + item
-                guard seen.insert(path).inserted else { continue }
-                result.append(AppEntry(url: URL(fileURLWithPath: path),
-                                       name: fm.displayName(atPath: path)))
+        for root in roots {
+            guard let enumerator = fm.enumerator(
+                at: URL(fileURLWithPath: root),
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]) else { continue }
+            for case let url as URL in enumerator {
+                if url.pathExtension == "app" {
+                    let path = url.path
+                    if seen.insert(path).inserted {
+                        result.append(AppEntry(url: url,
+                                               name: fm.displayName(atPath: path)))
+                    }
+                } else if enumerator.level >= 3 {
+                    enumerator.skipDescendants()
+                }
             }
         }
         return result.sorted {
