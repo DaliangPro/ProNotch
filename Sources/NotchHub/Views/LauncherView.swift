@@ -1,26 +1,53 @@
 import SwiftUI
 
-/// App 启动台：搜索框 + 置顶槽位区 + 全部应用滚动网格
-struct LauncherView: View {
+/// 顶行搜索框：与启动台网格共用 LauncherStore.searchText
+struct LauncherSearchField: View {
     @EnvironmentObject var vm: NotchViewModel
     @EnvironmentObject var store: LauncherStore
+    @FocusState private var focused: Bool
 
-    @State private var searchText = ""
-    @FocusState private var searchFocused: Bool
-
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 8)
-
-    private var filteredApps: [AppEntry] {
-        let query = searchText.trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty else { return store.allApps }
-        return store.allApps.filter {
-            $0.name.localizedCaseInsensitiveContains(query)
-                || $0.url.lastPathComponent.localizedCaseInsensitiveContains(query)
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 10))
+                .foregroundColor(.white.opacity(0.4))
+            TextField("", text: $store.searchText,
+                      prompt: Text("搜索应用")
+                          .foregroundColor(.white.opacity(0.3)))
+                .textFieldStyle(.plain)
+                .font(.system(size: 11))
+                .foregroundColor(.white)
+                .focused($focused)
+                .onSubmit { launchFirstResult() }
+                .onExitCommand {
+                    store.searchText = ""
+                    focused = false
+                }
         }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 3)
+        .background(Capsule().fill(Color.white.opacity(focused ? 0.14 : 0.08)))
+        .frame(width: 180)
+        .help("回车启动第一个结果，Esc 清空")
+        .onChange(of: focused) { vm.keyboardHold = $0 }
+        .onDisappear { vm.keyboardHold = false }
     }
 
-    /// 图标(48pt)居中于网格单元，标题行内缩到与首末列图标边缘对齐：
-    /// 内容宽 680，8 列间距 10 → 单元宽 76.25，(76.25-48)/2 ≈ 14
+    private func launchFirstResult() {
+        guard !store.searchText.isEmpty,
+              let first = store.filteredApps.first else { return }
+        store.launch(first)
+        vm.collapseNow()
+        store.searchText = ""
+    }
+}
+
+/// App 启动台：置顶槽位区 + 分隔线 + 全部应用滚动网格
+struct LauncherView: View {
+    @EnvironmentObject var store: LauncherStore
+
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 8)
+    /// 图标(48pt)居中于网格单元，分隔线内缩到与首末列图标边缘对齐
     private let edgeInset: CGFloat = 14
 
     var body: some View {
@@ -36,17 +63,14 @@ struct LauncherView: View {
                 }
             }
 
-            HStack {
-                SectionHeader(title: searchText.isEmpty
-                    ? "全部应用"
-                    : "搜索结果（\(filteredApps.count)）")
-                Spacer()
-                searchField
-            }
-            .padding(.horizontal, edgeInset)
+            // 浅分隔线区分置顶区与全部应用
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(height: 1)
+                .padding(.horizontal, edgeInset)
 
             ScrollView(showsIndicators: false) {
-                if filteredApps.isEmpty {
+                if store.filteredApps.isEmpty {
                     Text("没有匹配的应用")
                         .font(.system(size: 11))
                         .foregroundColor(.white.opacity(0.35))
@@ -54,7 +78,7 @@ struct LauncherView: View {
                         .padding(.top, 24)
                 } else {
                     LazyVGrid(columns: columns, spacing: 10) {
-                        ForEach(filteredApps) { app in
+                        ForEach(store.filteredApps) { app in
                             AppCell(app: app)
                         }
                     }
@@ -62,42 +86,6 @@ struct LauncherView: View {
             }
         }
         .onAppear { store.refreshIfNeeded() }
-        .onChange(of: searchFocused) { focused in
-            // 搜索框聚焦期间暂停自动收起，避免打字时鼠标不在面板上导致面板消失
-            vm.keyboardHold = focused
-        }
-        .onDisappear { vm.keyboardHold = false }
-    }
-
-    private var searchField: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 10))
-                .foregroundColor(.white.opacity(0.4))
-            TextField("", text: $searchText,
-                      prompt: Text("搜索应用")
-                          .foregroundColor(.white.opacity(0.3)))
-                .textFieldStyle(.plain)
-                .font(.system(size: 11))
-                .foregroundColor(.white)
-                .focused($searchFocused)
-                .onSubmit { launchFirstResult() }
-                .onExitCommand {
-                    searchText = ""
-                    searchFocused = false
-                }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(Capsule().fill(Color.white.opacity(searchFocused ? 0.14 : 0.08)))
-        .frame(width: 180)
-        .help("回车启动第一个结果，Esc 清空")
-    }
-
-    private func launchFirstResult() {
-        guard !searchText.isEmpty, let first = filteredApps.first else { return }
-        store.launch(first)
-        vm.collapseNow()
     }
 }
 

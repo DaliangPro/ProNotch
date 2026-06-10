@@ -44,6 +44,8 @@ final class ChatStore: ObservableObject {
     @Published private(set) var tavilyKey: String
     @Published var draftTavilyKey: String
     @Published private(set) var isSearching = false
+    /// 设置表单显隐（顶行齿轮按钮与页面内容两处共用）
+    @Published var showSettings = false
 
     private var streamTask: Task<Void, Never>?
 

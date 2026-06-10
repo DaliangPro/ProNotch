@@ -5,41 +5,14 @@ struct ChatView: View {
     @EnvironmentObject var vm: NotchViewModel
     @EnvironmentObject var store: ChatStore
 
-    @State private var showSettings = false
     @FocusState private var inputFocused: Bool
 
     private let edgeInset: CGFloat = 14
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                SectionHeader(title: "AI 对话")
-                if store.isConfigured {
-                    Text(store.model)
-                        .font(.system(size: 9))
-                        .foregroundColor(.white.opacity(0.3))
-                }
-                Spacer()
-                if !store.messages.isEmpty {
-                    Button("新对话") { store.clearConversation() }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.45))
-                }
-                Button {
-                    showSettings.toggle()
-                } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.45))
-                }
-                .buttonStyle(.plain)
-                .help("API 设置")
-            }
-            .padding(.horizontal, edgeInset)
-
-            if showSettings || !store.isConfigured {
-                ChatSettingsForm(showSettings: $showSettings)
+            if store.showSettings || !store.isConfigured {
+                ChatSettingsForm(showSettings: $store.showSettings)
             } else {
                 messageList
                 inputBar

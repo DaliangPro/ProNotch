@@ -1,8 +1,13 @@
 import SwiftUI
 
-/// 展开后的面板内容：顶部标签栏 + 各功能页（M0 阶段为占位实现）
+/// 展开后的面板内容：顶行 = 标签栏（左）+ 当前页功能区（右），下方为功能页
 struct ExpandedContentView: View {
     @EnvironmentObject var vm: NotchViewModel
+    @EnvironmentObject var launcherStore: LauncherStore
+    @EnvironmentObject var clipboardStore: ClipboardStore
+    @EnvironmentObject var chatStore: ChatStore
+
+    private let edgeInset: CGFloat = 14
 
     var body: some View {
         VStack(spacing: 10) {
@@ -15,7 +20,10 @@ struct ExpandedContentView: View {
                         vm.activeTab = tab
                     }
                 }
+                Spacer()
+                accessory
             }
+            .padding(.horizontal, edgeInset)
 
             Group {
                 switch vm.activeTab {
@@ -31,6 +39,47 @@ struct ExpandedContentView: View {
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 16)
+        .onDisappear { launcherStore.searchText = "" }
+    }
+
+    /// 顶行右侧：随当前标签页切换的功能区
+    @ViewBuilder
+    private var accessory: some View {
+        switch vm.activeTab {
+        case .launcher:
+            LauncherSearchField()
+        case .clipboard:
+            if !clipboardStore.items.isEmpty {
+                Text("\(clipboardStore.items.count) 条")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.3))
+                Button("清空") { clipboardStore.clear() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.45))
+            }
+        case .chat:
+            if chatStore.isConfigured {
+                Text(chatStore.model)
+                    .font(.system(size: 9))
+                    .foregroundColor(.white.opacity(0.3))
+            }
+            if !chatStore.messages.isEmpty {
+                Button("新对话") { chatStore.clearConversation() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.45))
+            }
+            Button {
+                chatStore.showSettings.toggle()
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.45))
+            }
+            .buttonStyle(.plain)
+            .help("API 设置")
+        }
     }
 }
 

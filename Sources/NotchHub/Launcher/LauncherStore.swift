@@ -27,9 +27,21 @@ enum AppIconCache {
 final class LauncherStore: ObservableObject {
     @Published private(set) var pinned: [AppEntry] = []
     @Published private(set) var allApps: [AppEntry] = []
+    /// 搜索关键词（顶行搜索框与网格过滤共用，面板收起时清空）
+    @Published var searchText = ""
 
     /// 置顶区固定槽位数
     let maxPinned = 8
+
+    /// 按搜索关键词过滤后的应用列表（匹配本地化名称与英文文件名）
+    var filteredApps: [AppEntry] {
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return allApps }
+        return allApps.filter {
+            $0.name.localizedCaseInsensitiveContains(query)
+                || $0.url.lastPathComponent.localizedCaseInsensitiveContains(query)
+        }
+    }
 
     private let pinnedKey = "topPinnedAppPaths"
     private var lastScan: Date = .distantPast

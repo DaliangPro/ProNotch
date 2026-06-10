@@ -16,18 +16,6 @@ struct ClipboardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                SectionHeader(title: "剪贴板历史（\(store.items.count)）")
-                Spacer()
-                if !store.items.isEmpty {
-                    Button("清空") { store.clear() }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 10))
-                        .foregroundColor(.white.opacity(0.45))
-                }
-            }
-            .padding(.horizontal, edgeInset)
-
             if store.items.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "doc.on.clipboard")
