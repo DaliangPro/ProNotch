@@ -153,7 +153,10 @@ final class QuickActionsStore: ObservableObject {
     private func startCaffeinate() {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
-        task.arguments = ["-di"]
+        // -d 防熄屏 -i 防闲置休眠 -s 插电时防系统休眠。
+        // 注意：合盖休眠是系统强制行为，任何应用都拦不住；
+        // 合盖不睡需走系统合盖模式（电源 + 外接屏 + 外接键鼠）
+        task.arguments = ["-d", "-i", "-s"]
         do {
             try task.run()
             caffeinateProcess = task

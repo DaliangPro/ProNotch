@@ -44,7 +44,9 @@ struct ExpandedContentView: View {
                     StripToggle(title: "防休眠",
                                 active: quickActions.caffeinateActive,
                                 help: quickActions.caffeinateActive
-                                    ? "防休眠已开启（点击关闭）" : "保持 Mac 不锁屏不休眠") {
+                                    ? "防休眠已开启（点击关闭）"
+                                    : "防止闲置熄屏与休眠；合盖休眠是系统强制行为，"
+                                      + "合盖不睡需接电源 + 外接屏（系统合盖模式）") {
                         quickActions.toggleCaffeinate()
                     }
                 }

@@ -55,6 +55,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestTheme),
             name: NSNotification.Name("com.jiliang.NotchHub.testtheme"), object: nil)
+
+        // 调试入口：切换防休眠
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(debugTestCaffeinate),
+            name: NSNotification.Name("com.jiliang.NotchHub.testcaffeinate"), object: nil)
+    }
+
+    @objc private func debugTestCaffeinate() {
+        windowController?.debugTestCaffeinate()
     }
 
     @objc private func debugTestTheme() {

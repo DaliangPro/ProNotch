@@ -63,9 +63,14 @@ final class NotchWindowController {
         chatStore.fetchModels()
     }
 
-    /// 调试用：探测 SkyLight 外观接口可用性（以当前值安全回写，不改变外观）
+    /// 调试用：打印当前外观状态
     func debugTestTheme() {
         quickActions.debugProbeAppearance()
+    }
+
+    /// 调试用：切换防休眠（配合 pmset -g assertions 验证断言注册）
+    func debugTestCaffeinate() {
+        quickActions.toggleCaffeinate()
     }
 
     /// 调试用：执行一次联网搜索（不调用大模型），验证搜索链路
