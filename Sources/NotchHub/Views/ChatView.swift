@@ -6,7 +6,6 @@ struct ChatView: View {
     @EnvironmentObject var store: ChatStore
 
     @State private var showSettings = false
-    @State private var draft = ""
     @FocusState private var inputFocused: Bool
 
     private let edgeInset: CGFloat = 14
@@ -90,7 +89,7 @@ struct ChatView: View {
 
     private var inputBar: some View {
         HStack(spacing: 8) {
-            TextField("", text: $draft,
+            TextField("", text: $store.draftMessage,
                       prompt: Text("输入问题，回车发送")
                           .foregroundColor(.white.opacity(0.3)))
                 .textFieldStyle(.plain)
@@ -115,10 +114,11 @@ struct ChatView: View {
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 16))
-                        .foregroundColor(draft.isEmpty ? .white.opacity(0.25) : .white.opacity(0.8))
+                        .foregroundColor(store.draftMessage.isEmpty
+                            ? .white.opacity(0.25) : .white.opacity(0.8))
                 }
                 .buttonStyle(.plain)
-                .disabled(draft.isEmpty)
+                .disabled(store.draftMessage.isEmpty)
                 .help("发送")
             }
         }
@@ -129,8 +129,8 @@ struct ChatView: View {
     }
 
     private func sendDraft() {
-        let text = draft
-        draft = ""
+        let text = store.draftMessage
+        store.draftMessage = ""
         store.send(text)
     }
 }
@@ -173,12 +173,6 @@ private struct ChatSettingsForm: View {
     @EnvironmentObject var store: ChatStore
     @Binding var showSettings: Bool
 
-    @State private var baseURL = ""
-    @State private var apiKey = ""
-    @State private var model = ""
-    @State private var availableModels: [String] = []
-    @State private var fetchingModels = false
-    @State private var fetchError: String?
     @FocusState private var focusedField: Field?
 
     private enum Field {
@@ -186,21 +180,21 @@ private struct ChatSettingsForm: View {
     }
 
     private var canFetchModels: Bool {
-        !baseURL.trimmingCharacters(in: .whitespaces).isEmpty
-            && !apiKey.trimmingCharacters(in: .whitespaces).isEmpty
-            && !fetchingModels
+        !store.draftBaseURL.trimmingCharacters(in: .whitespaces).isEmpty
+            && !store.draftAPIKey.trimmingCharacters(in: .whitespaces).isEmpty
+            && !store.fetchingModels
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            settingField("API 地址", text: $baseURL,
+            settingField("API 地址", text: $store.draftBaseURL,
                          placeholder: "如 https://api.deepseek.com", field: .url)
             HStack(spacing: 6) {
                 Text("API Key")
                     .font(.system(size: 10))
                     .foregroundColor(.white.opacity(0.5))
                     .frame(width: 50, alignment: .leading)
-                SecureField("", text: $apiKey,
+                SecureField("", text: $store.draftAPIKey,
                             prompt: Text("sk-…").foregroundColor(.white.opacity(0.3)))
                     .textFieldStyle(.plain)
                     .font(.system(size: 11))
@@ -215,8 +209,8 @@ private struct ChatSettingsForm: View {
                     .font(.system(size: 10))
                     .foregroundColor(.white.opacity(0.5))
                     .frame(width: 50, alignment: .leading)
-                TextField("", text: $model,
-                          prompt: Text(availableModels.isEmpty
+                TextField("", text: $store.draftModel,
+                          prompt: Text(store.availableModels.isEmpty
                                   ? "如 deepseek-chat，或先点「获取模型」"
                                   : "从右侧菜单选择，或手动输入")
                               .foregroundColor(.white.opacity(0.3)))
@@ -227,16 +221,16 @@ private struct ChatSettingsForm: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.08)))
-                if !availableModels.isEmpty {
+                if !store.availableModels.isEmpty {
                     Menu {
-                        ForEach(availableModels, id: \.self) { name in
-                            Button(name) { model = name }
+                        ForEach(store.availableModels, id: \.self) { name in
+                            Button(name) { store.draftModel = name }
                         }
                     } label: {
                         HStack(spacing: 3) {
                             Image(systemName: "chevron.up.chevron.down")
                                 .font(.system(size: 9))
-                            Text("\(availableModels.count) 个可选")
+                            Text("\(store.availableModels.count) 个可选")
                                 .font(.system(size: 10))
                         }
                         .foregroundColor(.white.opacity(0.7))
@@ -248,10 +242,10 @@ private struct ChatSettingsForm: View {
                     .fixedSize()
                 }
                 Button {
-                    fetchModels()
+                    store.fetchModels()
                 } label: {
                     Group {
-                        if fetchingModels {
+                        if store.fetchingModels {
                             ProgressView().controlSize(.small)
                         } else {
                             Text("获取模型").font(.system(size: 10))
@@ -267,7 +261,7 @@ private struct ChatSettingsForm: View {
                 .help("从服务端读取可用模型列表（需先填地址和 Key）")
             }
 
-            if let fetchError {
+            if let fetchError = store.fetchError {
                 Text(fetchError)
                     .font(.system(size: 9))
                     .foregroundColor(.red.opacity(0.8))
@@ -290,11 +284,6 @@ private struct ChatSettingsForm: View {
             }
         }
         .padding(.horizontal, edgeInset)
-        .onAppear {
-            baseURL = store.baseURL
-            apiKey = store.apiKey
-            model = store.model
-        }
         .onChange(of: focusedField) { vm.keyboardHold = ($0 != nil) }
         .onDisappear { vm.keyboardHold = false }
     }
@@ -302,36 +291,14 @@ private struct ChatSettingsForm: View {
     private let edgeInset: CGFloat = 14
 
     private var canSave: Bool {
-        !baseURL.trimmingCharacters(in: .whitespaces).isEmpty
-            && !apiKey.trimmingCharacters(in: .whitespaces).isEmpty
-            && !model.trimmingCharacters(in: .whitespaces).isEmpty
+        !store.draftBaseURL.trimmingCharacters(in: .whitespaces).isEmpty
+            && !store.draftAPIKey.trimmingCharacters(in: .whitespaces).isEmpty
+            && !store.draftModel.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     private func save() {
-        store.saveSettings(baseURL: baseURL, apiKey: apiKey, model: model)
+        store.saveSettings()
         showSettings = false
-    }
-
-    private func fetchModels() {
-        fetchingModels = true
-        fetchError = nil
-        let url = baseURL
-        let key = apiKey
-        Task {
-            do {
-                let models = try await ChatStore.fetchAvailableModels(baseURL: url, apiKey: key)
-                availableModels = models
-                // 模型栏为空时自动填入第一个，少点一次
-                if model.trimmingCharacters(in: .whitespaces).isEmpty,
-                   let first = models.first {
-                    model = first
-                }
-                print("[NotchHub] 获取到 \(models.count) 个模型")
-            } catch {
-                fetchError = error.localizedDescription
-            }
-            fetchingModels = false
-        }
     }
 
     private func settingField(_ label: String, text: Binding<String>,

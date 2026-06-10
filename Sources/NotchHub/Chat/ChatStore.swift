@@ -24,6 +24,16 @@ final class ChatStore: ObservableObject {
     @Published private(set) var apiKey: String
     @Published private(set) var model: String
 
+    // 表单草稿与对话输入框内容放在 Store 而非视图状态，
+    // 面板收起（视图销毁）后重新展开不丢失
+    @Published var draftBaseURL: String
+    @Published var draftAPIKey: String
+    @Published var draftModel: String
+    @Published var draftMessage = ""
+    @Published private(set) var availableModels: [String] = []
+    @Published private(set) var fetchingModels = false
+    @Published var fetchError: String?
+
     private var streamTask: Task<Void, Never>?
 
     var isConfigured: Bool {
@@ -32,20 +42,55 @@ final class ChatStore: ObservableObject {
 
     init() {
         let defaults = UserDefaults.standard
-        baseURL = defaults.string(forKey: "chatBaseURL") ?? ""
-        apiKey = defaults.string(forKey: "chatAPIKey") ?? ""
-        model = defaults.string(forKey: "chatModel") ?? ""
+        let savedURL = defaults.string(forKey: "chatBaseURL") ?? ""
+        let savedKey = defaults.string(forKey: "chatAPIKey") ?? ""
+        let savedModel = defaults.string(forKey: "chatModel") ?? ""
+        baseURL = savedURL
+        apiKey = savedKey
+        model = savedModel
+        draftBaseURL = savedURL
+        draftAPIKey = savedKey
+        draftModel = savedModel
     }
 
-    func saveSettings(baseURL: String, apiKey: String, model: String) {
-        self.baseURL = baseURL.trimmingCharacters(in: .whitespaces)
-        self.apiKey = apiKey.trimmingCharacters(in: .whitespaces)
-        self.model = model.trimmingCharacters(in: .whitespaces)
+    /// 把表单草稿提交为正式设置并持久化
+    func saveSettings() {
+        baseURL = draftBaseURL.trimmingCharacters(in: .whitespaces)
+        apiKey = draftAPIKey.trimmingCharacters(in: .whitespaces)
+        model = draftModel.trimmingCharacters(in: .whitespaces)
+        draftBaseURL = baseURL
+        draftAPIKey = apiKey
+        draftModel = model
         let defaults = UserDefaults.standard
-        defaults.set(self.baseURL, forKey: "chatBaseURL")
-        defaults.set(self.apiKey, forKey: "chatAPIKey")
-        defaults.set(self.model, forKey: "chatModel")
+        defaults.set(baseURL, forKey: "chatBaseURL")
+        defaults.set(apiKey, forKey: "chatAPIKey")
+        defaults.set(model, forKey: "chatModel")
         print("[NotchHub] 已保存 AI 设置，端点: \((try? endpointURL())?.absoluteString ?? "无效")")
+    }
+
+    /// 用草稿里的地址和 Key 拉取可用模型列表
+    func fetchModels() {
+        guard !fetchingModels else { return }
+        fetchingModels = true
+        fetchError = nil
+        let url = draftBaseURL
+        let key = draftAPIKey
+        Task { [weak self] in
+            do {
+                let models = try await Self.fetchAvailableModels(baseURL: url, apiKey: key)
+                guard let self else { return }
+                self.availableModels = models
+                // 模型栏为空时自动填入第一个，少点一次
+                if self.draftModel.trimmingCharacters(in: .whitespaces).isEmpty,
+                   let first = models.first {
+                    self.draftModel = first
+                }
+                print("[NotchHub] 获取到 \(models.count) 个模型")
+            } catch {
+                self?.fetchError = error.localizedDescription
+            }
+            self?.fetchingModels = false
+        }
     }
 
     func send(_ text: String) {
