@@ -98,16 +98,57 @@ struct ExpandedContentView: View {
             }
         case .chat:
             if chatStore.isConfigured {
-                Text(chatStore.model)
-                    .font(.system(size: 11))
-                    .foregroundColor(.white.opacity(0.4))
+                Button {
+                    chatStore.showSettings.toggle()
+                } label: {
+                    Text(chatStore.model)
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.4))
+                }
+                .buttonStyle(.plain)
+                .help("点击修改 API 设置")
+                ConnectivityLight()
             }
             if !chatStore.messages.isEmpty {
                 AccessoryButton(title: "新对话") { chatStore.clearConversation() }
             }
-            AccessoryIconButton(systemName: "gearshape", help: "API 设置") {
-                chatStore.showSettings.toggle()
-            }
+        }
+    }
+}
+
+/// API 连通状态灯：绿=连通，红=失败（悬停看原因），黄=检测中；点击重新检测
+private struct ConnectivityLight: View {
+    @EnvironmentObject var chatStore: ChatStore
+
+    var body: some View {
+        Button {
+            chatStore.checkConnectivity(force: true)
+        } label: {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+                .padding(5)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(helpText)
+    }
+
+    private var color: Color {
+        switch chatStore.connectivity {
+        case .unknown: return .white.opacity(0.25)
+        case .checking: return .yellow
+        case .ok: return .green
+        case .failed: return .red
+        }
+    }
+
+    private var helpText: String {
+        switch chatStore.connectivity {
+        case .unknown: return "未检测（点击检测连通性）"
+        case .checking: return "正在检测连通性…"
+        case .ok: return "API 连通正常（点击重新检测）"
+        case .failed(let reason): return "连接失败：\(reason)（点击重新检测）"
         }
     }
 }
@@ -217,29 +258,6 @@ private struct StripButton: View {
                 .font(.system(size: 14))
                 .foregroundColor(.white.opacity(hovering ? 0.9 : 0.5))
                 .frame(width: 28, height: 28)
-                .background(Circle().fill(Color.white.opacity(hovering ? 0.12 : 0)))
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .help(help)
-    }
-}
-
-/// 顶行功能区图标按钮：圆形可点击区域、悬停高亮
-private struct AccessoryIconButton: View {
-    let systemName: String
-    let help: String
-    let action: () -> Void
-
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 12))
-                .foregroundColor(.white.opacity(hovering ? 0.9 : 0.55))
-                .padding(6)
                 .background(Circle().fill(Color.white.opacity(hovering ? 0.12 : 0)))
                 .contentShape(Circle())
         }

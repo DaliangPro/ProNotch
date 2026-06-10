@@ -19,6 +19,7 @@ struct ChatView: View {
                 inputBar
             }
         }
+        .onAppear { store.checkConnectivity() }
         .onDisappear { vm.keyboardHold = false }
     }
 

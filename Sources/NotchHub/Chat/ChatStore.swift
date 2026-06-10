@@ -44,8 +44,19 @@ final class ChatStore: ObservableObject {
     @Published private(set) var tavilyKey: String
     @Published var draftTavilyKey: String
     @Published private(set) var isSearching = false
-    /// 设置表单显隐（顶行齿轮按钮与页面内容两处共用）
+    /// 设置表单显隐（顶行入口与页面内容两处共用）
     @Published var showSettings = false
+
+    /// API 连通状态（顶行状态灯）
+    enum ConnectivityState {
+        case unknown
+        case checking
+        case ok
+        case failed(String)
+    }
+
+    @Published private(set) var connectivity: ConnectivityState = .unknown
+    private var lastConnectivityCheck: Date = .distantPast
 
     private var streamTask: Task<Void, Never>?
 
@@ -86,6 +97,31 @@ final class ChatStore: ObservableObject {
         defaults.set(model, forKey: "chatModel")
         defaults.set(tavilyKey, forKey: "chatTavilyKey")
         print("[NotchHub] 已保存 AI 设置，端点: \((try? endpointURL())?.absoluteString ?? "无效")")
+        checkConnectivity(force: true)
+    }
+
+    /// 连通检测：拉一次模型列表（不消耗 token）。60 秒内不重复，force 强制
+    func checkConnectivity(force: Bool = false) {
+        guard isConfigured else {
+            connectivity = .unknown
+            return
+        }
+        if case .checking = connectivity { return }
+        if !force, Date().timeIntervalSince(lastConnectivityCheck) < 60 { return }
+        lastConnectivityCheck = Date()
+        connectivity = .checking
+        let url = baseURL
+        let key = apiKey
+        Task { [weak self] in
+            do {
+                _ = try await Self.fetchAvailableModels(baseURL: url, apiKey: key)
+                self?.connectivity = .ok
+                print("[NotchHub] API 连通检测: 正常")
+            } catch {
+                self?.connectivity = .failed(error.localizedDescription)
+                print("[NotchHub] API 连通检测失败: \(error.localizedDescription)")
+            }
+        }
     }
 
     /// 用草稿里的地址和 Key 拉取可用模型列表
@@ -370,12 +406,15 @@ final class ChatStore: ObservableObject {
                 appendToLastAssistant(content)
             }
             print("[NotchHub] AI 回复完成（\(messages.last?.content.count ?? 0) 字符）")
+            // 真实对话成功是最可靠的连通证据，顺带刷新状态灯
+            connectivity = .ok
         } catch is CancellationError {
             print("[NotchHub] AI 回复已停止")
         } catch let error as URLError where error.code == .cancelled {
             print("[NotchHub] AI 回复已停止")
         } catch {
             errorText = error.localizedDescription
+            connectivity = .failed(error.localizedDescription)
             // 失败时移除空的占位回复
             if let last = messages.last, last.role == .assistant, last.content.isEmpty {
                 messages.removeLast()
