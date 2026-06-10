@@ -9,6 +9,8 @@ struct ExpandedContentView: View {
     @EnvironmentObject var chatStore: ChatStore
     @EnvironmentObject var quickActions: QuickActionsStore
 
+    @State private var draggedTab: NotchViewModel.Tab?
+
     private let edgeInset: CGFloat = 14
 
     var body: some View {
@@ -57,10 +59,20 @@ struct ExpandedContentView: View {
             .padding(.horizontal, edgeInset)
 
             HStack(spacing: 8) {
-                ForEach(NotchViewModel.Tab.allCases, id: \.self) { tab in
+                // 标签可拖动换位：长按拖到目标位置松手，顺序持久化
+                ForEach(vm.tabOrder, id: \.self) { tab in
                     TabButton(tab: tab, isActive: vm.activeTab == tab) {
                         vm.activeTab = tab
                     }
+                    .opacity(draggedTab == tab ? 0.35 : 1)
+                    .onDrag {
+                        draggedTab = tab
+                        return NSItemProvider(object: tab.rawValue as NSString)
+                    }
+                    .onDrop(of: [.text],
+                            delegate: TabDropDelegate(tab: tab,
+                                                      dragged: $draggedTab,
+                                                      vm: vm))
                 }
                 Spacer()
                 accessory
@@ -190,6 +202,32 @@ private struct AccessoryButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+    }
+}
+
+/// 标签拖动换位：拖入目标标签时实时交换位置（带弹簧动画）
+private struct TabDropDelegate: DropDelegate {
+    let tab: NotchViewModel.Tab
+    @Binding var dragged: NotchViewModel.Tab?
+    let vm: NotchViewModel
+
+    func dropEntered(info: DropInfo) {
+        guard let dragged, dragged != tab,
+              let from = vm.tabOrder.firstIndex(of: dragged),
+              let to = vm.tabOrder.firstIndex(of: tab) else { return }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            vm.tabOrder.move(fromOffsets: IndexSet(integer: from),
+                             toOffset: to > from ? to + 1 : to)
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragged = nil
+        return true
     }
 }
 

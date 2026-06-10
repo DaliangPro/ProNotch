@@ -24,6 +24,13 @@ final class NotchViewModel: ObservableObject {
     @Published private(set) var isExpanded = false
     @Published var activeTab: Tab = .launcher
 
+    /// 标签顺序（可拖动调整并持久化）；排第一的是每次启动的默认页
+    @Published var tabOrder: [Tab] {
+        didSet {
+            UserDefaults.standard.set(tabOrder.map(\.rawValue), forKey: "tabOrder")
+        }
+    }
+
     /// 刘海矩形（全局坐标）
     let notchRect: CGRect
     /// 展开后刘海下方面板的内容尺寸
@@ -54,6 +61,12 @@ final class NotchViewModel: ObservableObject {
 
     init(notchRect: CGRect) {
         self.notchRect = notchRect
+        // 恢复保存的标签顺序；数据不完整（如未来增减标签）则回退默认
+        let saved = (UserDefaults.standard.stringArray(forKey: "tabOrder") ?? [])
+            .compactMap(Tab.init(rawValue:))
+        let order = Set(saved) == Set(Tab.allCases) ? saved : Tab.allCases
+        tabOrder = order
+        activeTab = order.first ?? .launcher
     }
 
     // MARK: - 几何
