@@ -102,7 +102,7 @@ struct ExpandedContentView: View {
                     chatStore.showSettings.toggle()
                 } label: {
                     Text(chatStore.model)
-                        .font(.system(size: 11))
+                        .font(.system(size: 12, weight: .light))
                         .foregroundColor(.white.opacity(0.4))
                 }
                 .buttonStyle(.plain)
@@ -280,7 +280,7 @@ private struct TabButton: View {
                 Image(systemName: tab.icon)
                     .font(.system(size: 11))
                 Text(tab.rawValue)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 12, weight: .light))
             }
             .foregroundColor(isActive ? .white : .white.opacity(hovering ? 0.85 : 0.55))
             .padding(.horizontal, 12)
