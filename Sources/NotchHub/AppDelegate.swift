@@ -28,6 +28,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestLaunch),
             name: NSNotification.Name("com.jiliang.NotchHub.testlaunch"), object: nil)
+
+        // 调试入口：循环切换标签页 / 把历史第一条复制回剪贴板
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(debugNextTab),
+            name: NSNotification.Name("com.jiliang.NotchHub.nexttab"), object: nil)
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(debugTestPaste),
+            name: NSNotification.Name("com.jiliang.NotchHub.testpaste"), object: nil)
+    }
+
+    @objc private func debugNextTab() {
+        windowController?.debugNextTab()
+    }
+
+    @objc private func debugTestPaste() {
+        windowController?.debugTestPaste()
     }
 
     @objc private func debugTestLaunch() {

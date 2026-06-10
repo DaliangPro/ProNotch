@@ -22,8 +22,7 @@ struct ExpandedContentView: View {
                 case .launcher:
                     LauncherView()
                 case .clipboard:
-                    PlaceholderView(icon: "doc.on.clipboard",
-                                    title: "剪贴板历史", note: "M2 实现")
+                    ClipboardView()
                 case .chat:
                     PlaceholderView(icon: "sparkles",
                                     title: "AI 对话", note: "M3 实现")

@@ -101,16 +101,6 @@ struct LauncherView: View {
     }
 }
 
-private struct SectionHeader: View {
-    let title: String
-
-    var body: some View {
-        Text(title)
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundColor(.white.opacity(0.4))
-    }
-}
-
 /// 置顶区空槽位：右键下方应用图标可置顶到此处
 private struct EmptySlotView: View {
     var body: some View {

@@ -8,7 +8,10 @@
 - [x] M1 App 启动台：搜索框（输入即时过滤，回车启动第一个结果）+
       置顶槽位区（右键应用图标置顶/取消，默认留空）+ 全部应用滚动网格，
       点击启动并收起面板
-- [ ] M2 剪贴板历史
+- [x] M2 剪贴板历史：0.5s 轮询捕获文本/图片/文件路径，跳过密码管理器
+      标记的敏感内容，相同文本去重置顶，保留 50 条并持久化到
+      `~/Library/Application Support/NotchHub/Clipboard/`，
+      点击回填剪贴板并收起，右键删除单条，支持一键清空
 - [ ] M3 AI 对话（自定义 API URL + Key，流式输出）
 - [ ] M4 打磨：设置面板、开机自启、多显示器、全屏兼容
 
@@ -37,6 +40,11 @@ swift -e 'import Foundation; DistributedNotificationCenter.default().postNotific
 
 - `com.jiliang.NotchHub.snapshot`：把窗口内容渲染成 PNG 存到 `/tmp/notchhub-snapshot.png`
 - `com.jiliang.NotchHub.testlaunch`：走真实代码路径启动计算器并收起面板
+- `com.jiliang.NotchHub.nexttab`：循环切换标签页
+- `com.jiliang.NotchHub.testpaste`：把剪贴板历史第一条回填剪贴板
+
+注意：命令行用 `pbcopy` 测试中文捕获时需带 `LANG=zh_CN.UTF-8`，
+否则 C locale 下 `pbcopy` 会把中文丢成空内容（这是测试管道问题，非应用问题）。
 
 ## 架构
 

@@ -5,6 +5,7 @@ import SwiftUI
 final class NotchWindowController {
     let viewModel: NotchViewModel
     let launcherStore = LauncherStore()
+    let clipboardStore = ClipboardStore()
     private let panel: NotchPanel
 
     init() {
@@ -22,12 +23,14 @@ final class NotchWindowController {
         let hosting = NSHostingView(
             rootView: NotchContainerView()
                 .environmentObject(viewModel)
-                .environmentObject(launcherStore))
+                .environmentObject(launcherStore)
+                .environmentObject(clipboardStore))
         panel.contentView = hosting
         panel.orderFrontRegardless()
         viewModel.startMouseTracking()
         // 启动即预扫描，首次展开面板不用等待
         launcherStore.refreshIfNeeded()
+        clipboardStore.startMonitoring()
         print("[NotchHub] 固定窗口 frame: \(panel.frame)")
     }
 
@@ -45,7 +48,25 @@ final class NotchWindowController {
 
     func close() {
         viewModel.stop()
+        clipboardStore.stop()
         panel.close()
+    }
+
+    /// 调试用：循环切换标签页
+    func debugNextTab() {
+        let all = NotchViewModel.Tab.allCases
+        guard let index = all.firstIndex(of: viewModel.activeTab) else { return }
+        viewModel.activeTab = all[(index + 1) % all.count]
+        print("[NotchHub] 切换到标签: \(viewModel.activeTab.rawValue)")
+    }
+
+    /// 调试用：把历史第一条复制回剪贴板，验证回填路径
+    func debugTestPaste() {
+        guard let first = clipboardStore.items.first else {
+            print("[NotchHub] 剪贴板历史为空")
+            return
+        }
+        clipboardStore.copyToPasteboard(first)
     }
 
     /// 调试用：把窗口内容渲染成 PNG 保存到 /tmp，用于无屏幕录制权限时的 UI 验证
