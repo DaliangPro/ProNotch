@@ -24,10 +24,10 @@ struct LauncherSearchField: View {
                     focused = false
                 }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
         .background(Capsule().fill(Color.white.opacity(focused ? 0.14 : 0.08)))
-        .frame(width: 180)
+        .frame(width: 190)
         .help("回车启动第一个结果，Esc 清空")
         .onChange(of: focused) { vm.keyboardHold = $0 }
         .onDisappear { vm.keyboardHold = false }

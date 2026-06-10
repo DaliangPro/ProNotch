@@ -51,35 +51,68 @@ struct ExpandedContentView: View {
         case .clipboard:
             if !clipboardStore.items.isEmpty {
                 Text("\(clipboardStore.items.count) 条")
-                    .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.3))
-                Button("清空") { clipboardStore.clear() }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.45))
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.4))
+                AccessoryButton(title: "清空") { clipboardStore.clear() }
             }
         case .chat:
             if chatStore.isConfigured {
                 Text(chatStore.model)
-                    .font(.system(size: 9))
-                    .foregroundColor(.white.opacity(0.3))
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.4))
             }
             if !chatStore.messages.isEmpty {
-                Button("新对话") { chatStore.clearConversation() }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.45))
+                AccessoryButton(title: "新对话") { chatStore.clearConversation() }
             }
-            Button {
+            AccessoryIconButton(systemName: "gearshape", help: "API 设置") {
                 chatStore.showSettings.toggle()
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 11))
-                    .foregroundColor(.white.opacity(0.45))
             }
-            .buttonStyle(.plain)
-            .help("API 设置")
         }
+    }
+}
+
+/// 顶行功能区文字按钮：与标签按钮同风格，整个胶囊区域可点击、悬停高亮
+private struct AccessoryButton: View {
+    let title: String
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.white.opacity(hovering ? 0.9 : 0.55))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Capsule().fill(Color.white.opacity(hovering ? 0.12 : 0)))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}
+
+/// 顶行功能区图标按钮：圆形可点击区域、悬停高亮
+private struct AccessoryIconButton: View {
+    let systemName: String
+    let help: String
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 12))
+                .foregroundColor(.white.opacity(hovering ? 0.9 : 0.55))
+                .padding(6)
+                .background(Circle().fill(Color.white.opacity(hovering ? 0.12 : 0)))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(help)
     }
 }
 
@@ -87,6 +120,8 @@ private struct TabButton: View {
     let tab: NotchViewModel.Tab
     let isActive: Bool
     let action: () -> Void
+
+    @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
@@ -96,11 +131,14 @@ private struct TabButton: View {
                 Text(tab.rawValue)
                     .font(.system(size: 12, weight: .medium))
             }
-            .foregroundColor(isActive ? .white : .white.opacity(0.55))
+            .foregroundColor(isActive ? .white : .white.opacity(hovering ? 0.85 : 0.55))
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
-            .background(Capsule().fill(Color.white.opacity(isActive ? 0.18 : 0)))
+            .background(Capsule().fill(
+                Color.white.opacity(isActive ? 0.18 : (hovering ? 0.08 : 0))))
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }
