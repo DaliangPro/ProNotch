@@ -15,7 +15,15 @@ struct ChatView: View {
                 ChatSettingsForm(showSettings: $store.showSettings,
                                  onFocusChange: { vm.keyboardHold = $0 })
             } else {
-                messageList
+                if store.messages.isEmpty, store.errorText == nil {
+                    // 空状态提示在整个消息区居中
+                    Text("想和我聊点什么？")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.35))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    messageList
+                }
                 inputBar
             }
         }
@@ -27,12 +35,6 @@ struct ChatView: View {
         ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 6) {
-                    if store.messages.isEmpty {
-                        Text("想和我聊点什么？")
-                            .font(.system(size: 11))
-                            .foregroundColor(.white.opacity(0.35))
-                            .padding(.top, 40)
-                    }
                     ForEach(store.messages) { message in
                         MessageBubble(message: message,
                                       streaming: store.isStreaming
