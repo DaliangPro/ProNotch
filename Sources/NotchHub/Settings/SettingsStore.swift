@@ -14,11 +14,11 @@ final class SettingsStore: ObservableObject {
     }
     @Published private(set) var loginItemHint: String?
 
-    /// 当前屏幕有全屏应用时禁用悬停展开
-    @Published var disableHoverInFullscreen: Bool {
+    /// 当前屏幕有全屏应用时隐藏整个刘海（默认开启：外接屏假刘海会遮挡全屏内容）
+    @Published var hideNotchInFullscreen: Bool {
         didSet {
-            UserDefaults.standard.set(disableHoverInFullscreen,
-                                      forKey: "disableHoverInFullscreen")
+            UserDefaults.standard.set(hideNotchInFullscreen,
+                                      forKey: "hideNotchInFullscreen")
         }
     }
 
@@ -28,7 +28,8 @@ final class SettingsStore: ObservableObject {
 
     init() {
         launchAtLogin = Self.serviceStatus == .enabled
-        disableHoverInFullscreen = UserDefaults.standard.bool(forKey: "disableHoverInFullscreen")
+        UserDefaults.standard.register(defaults: ["hideNotchInFullscreen": true])
+        hideNotchInFullscreen = UserDefaults.standard.bool(forKey: "hideNotchInFullscreen")
     }
 
     private func applyLaunchAtLogin() {

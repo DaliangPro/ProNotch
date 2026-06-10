@@ -41,9 +41,9 @@ final class NotchWindowController {
                 .environmentObject(quickActions))
         panel.contentView = hosting
         panel.orderFrontRegardless()
-        // 「全屏时禁用悬停」：仅在即将展开那一刻检测，无常驻开销
-        viewModel.shouldSuppressExpand = { [weak settingsStore] in
-            guard settingsStore?.disableHoverInFullscreen == true else { return false }
+        // 「全屏时隐藏刘海」：每秒检测一次，全屏时整窗隐藏、退出后恢复
+        viewModel.shouldHideForFullscreen = { [weak settingsStore] in
+            guard settingsStore?.hideNotchInFullscreen == true else { return false }
             return FullscreenDetector.hasFullscreenWindow(on: NotchGeometry.targetScreen())
         }
         viewModel.startMouseTracking()
