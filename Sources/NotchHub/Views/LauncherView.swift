@@ -134,14 +134,15 @@ private struct AppCell: View {
     var body: some View {
         Button {
             store.launch(app)
-            // Dock 同款跳动反馈：图标弹起落回，让用户确认点击成功后再收起
-            withAnimation(.easeOut(duration: 0.12)) { jumping = true }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                withAnimation(.spring(response: 0.25, dampingFraction: 0.55)) {
+            // Dock 同款跳动反馈：图标弹起落回，让用户确认点击成功后再收起；
+            // 节奏对齐 Dock（上弹约 0.28s、回落约 0.4s）
+            withAnimation(.easeOut(duration: 0.28)) { jumping = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) {
                     jumping = false
                 }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.78) {
                 vm.collapseNow()
             }
         } label: {
