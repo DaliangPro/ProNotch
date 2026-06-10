@@ -28,15 +28,10 @@ struct ChatView: View {
             ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 6) {
                     if store.messages.isEmpty {
-                        VStack(spacing: 8) {
-                            Image(systemName: "sparkles")
-                                .font(.system(size: 24))
-                                .foregroundColor(.white.opacity(0.25))
-                            Text("问点什么吧，回车发送")
-                                .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.35))
-                        }
-                        .padding(.top, 40)
+                        Text("想和我聊点什么？")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.35))
+                            .padding(.top, 40)
                     }
                     ForEach(store.messages) { message in
                         MessageBubble(message: message,
