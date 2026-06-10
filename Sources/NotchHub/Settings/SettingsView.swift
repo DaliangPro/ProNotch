@@ -69,7 +69,7 @@ struct SettingsView: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     CardDivider()
-                    fieldRow("闪记收件箱") {
+                    fieldRow("妙记收件箱") {
                         themedField("~/path/to/收件箱.md",
                                     text: $settings.captureInboxPath)
                         Button("选择…") { chooseInboxFile() }
@@ -80,14 +80,14 @@ struct SettingsView: View {
                             .padding(.vertical, 4)
                             .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
                                 .fill(Color.white.opacity(0.12)))
-                            .help("选择 .md 文件；选择文件夹则在其中使用 闪记.md")
+                            .help("选择 .md 文件；选择文件夹则在其中使用 妙记.md")
                     }
                 }
                 if let hint = settings.loginItemHint {
                     noteText(hint, color: .orange)
                 }
 
-                sectionTitle("AI 对话")
+                sectionTitle("AI 闪问")
                 SettingsCard {
                     fieldRow("API 地址") {
                         themedField("https://api.deepseek.com", text: $chatStore.draftBaseURL)
@@ -214,7 +214,7 @@ struct SettingsView: View {
         .preferredColorScheme(.dark)
     }
 
-    /// 系统文件选择器：选 .md 文件直接采用；选文件夹则在其中使用 闪记.md
+    /// 系统文件选择器：选 .md 文件直接采用；选文件夹则在其中使用 妙记.md
     private func chooseInboxFile() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = true
@@ -224,7 +224,7 @@ struct SettingsView: View {
             panel.allowedContentTypes = [markdown, .plainText]
         }
         panel.prompt = "选择"
-        panel.message = "选择闪记收件箱文件（.md），或选择一个文件夹（将在其中使用 闪记.md）"
+        panel.message = "选择妙记收件箱文件（.md），或选择一个文件夹（将在其中使用 妙记.md）"
         let expanded = (settings.captureInboxPath as NSString).expandingTildeInPath
         panel.directoryURL = URL(fileURLWithPath: (expanded as NSString).deletingLastPathComponent)
         guard panel.runModal() == .OK, let url = panel.url else { return }
@@ -233,7 +233,7 @@ struct SettingsView: View {
         var isDirectory: ObjCBool = false
         FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
         if isDirectory.boolValue {
-            path += "/闪记.md"
+            path += "/妙记.md"
         }
         // 家目录前缀还原为 ~，路径更易读
         let home = NSHomeDirectory()

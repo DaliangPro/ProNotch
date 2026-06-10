@@ -8,19 +8,31 @@ import SwiftUI
 @MainActor
 final class NotchViewModel: ObservableObject {
     enum Tab: String, CaseIterable {
-        case launcher = "启动台"
-        case clipboard = "剪贴板"
-        case chat = "AI 对话"
-        case capture = "闪记"
+        case launcher, clipboard, chat, capture
+
+        var title: String {
+            switch self {
+            case .launcher: return "启动台"
+            case .clipboard: return "剪贴板"
+            case .chat: return "AI 闪问"
+            case .capture: return "妙记"
+            }
+        }
 
         var icon: String {
             switch self {
-            case .launcher: return "square.grid.3x3.fill"
-            case .clipboard: return "doc.on.clipboard"
-            case .chat: return "sparkles"
-            case .capture: return "square.and.pencil"
+            case .launcher: return "square.grid.2x2"
+            case .clipboard: return "clipboard"
+            case .chat: return "bubble"
+            case .capture: return "pencil.line"
             }
         }
+
+        /// 历次中文 rawValue 的兼容映射，老用户已保存的拖动顺序不丢
+        static let legacyNames: [String: Tab] = [
+            "启动台": .launcher, "剪贴板": .clipboard,
+            "AI 对话": .chat, "闪记": .capture, "速记": .capture,
+        ]
     }
 
     @Published private(set) var isExpanded = false
@@ -65,7 +77,7 @@ final class NotchViewModel: ObservableObject {
         self.notchRect = notchRect
         // 恢复保存的标签顺序；数据不完整（如未来增减标签）则回退默认
         let saved = (UserDefaults.standard.stringArray(forKey: "tabOrder") ?? [])
-            .compactMap(Tab.init(rawValue:))
+            .compactMap { Tab(rawValue: $0) ?? Tab.legacyNames[$0] }
         let order = Set(saved) == Set(Tab.allCases) ? saved : Tab.allCases
         tabOrder = order
         activeTab = order.first ?? .launcher

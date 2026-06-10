@@ -128,7 +128,7 @@ final class NotchWindowController {
         let all = NotchViewModel.Tab.allCases
         guard let index = all.firstIndex(of: viewModel.activeTab) else { return }
         viewModel.activeTab = all[(index + 1) % all.count]
-        print("[NotchHub] 切换到标签: \(viewModel.activeTab.rawValue)")
+        print("[NotchHub] 切换到标签: \(viewModel.activeTab.title)")
     }
 
     /// 调试用：把历史第一条复制回剪贴板，验证回填路径

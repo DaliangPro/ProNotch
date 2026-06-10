@@ -41,7 +41,7 @@ final class SettingsStore: ObservableObject {
 
     static let clipboardLimitOptions = [50, 100, 200, 500]
 
-    /// 灵感速记的收件箱文件路径（支持 ~ 缩写）
+    /// 妙记的收件箱文件路径（支持 ~ 缩写）
     @Published var captureInboxPath: String {
         didSet {
             UserDefaults.standard.set(captureInboxPath, forKey: "captureInboxPath")
@@ -53,12 +53,12 @@ final class SettingsStore: ObservableObject {
         UserDefaults.standard.register(defaults: [
             "hideNotchInFullscreen": true,
             "clipboardLimit": 200,
-            "captureInboxPath": "~/Documents/OrbitOS Vault/00_收件箱/闪记.md",
+            "captureInboxPath": "~/Documents/OrbitOS Vault/00_收件箱/妙记.md",
         ])
         hideNotchInFullscreen = UserDefaults.standard.bool(forKey: "hideNotchInFullscreen")
         clipboardLimit = UserDefaults.standard.integer(forKey: "clipboardLimit")
         captureInboxPath = UserDefaults.standard.string(forKey: "captureInboxPath")
-            ?? "~/Documents/OrbitOS Vault/00_收件箱/闪记.md"
+            ?? "~/Documents/OrbitOS Vault/00_收件箱/妙记.md"
     }
 
     private func applyLaunchAtLogin() {

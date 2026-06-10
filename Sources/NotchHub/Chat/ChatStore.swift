@@ -14,7 +14,7 @@ struct ChatMessage: Identifiable, Equatable {
     var searchResultCount: Int? = nil
 }
 
-/// AI 对话数据源：OpenAI 兼容接口 + SSE 流式输出。
+/// AI 闪问数据源：OpenAI 兼容接口 + SSE 流式输出。
 /// 会话仅存内存（面板收起保留，应用重启清空）；设置持久化到 UserDefaults。
 @MainActor
 final class ChatStore: ObservableObject {

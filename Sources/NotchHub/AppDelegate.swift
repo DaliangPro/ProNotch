@@ -98,9 +98,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: NSNotification.Name("com.jiliang.NotchHub.testcapture"), object: nil)
     }
 
-    /// 调试用：写入一条测试速记
+    /// 调试用：写入一条测试妙记
     @objc private func debugTestCapture() {
-        captureStore.capture("测试速记：验证写入格式与今日列表解析")
+        captureStore.capture("测试妙记：验证写入格式与今日列表解析")
     }
 
     /// 调试用：切换剪贴板页的「历史/话术」子视图

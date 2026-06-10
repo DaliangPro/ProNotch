@@ -9,7 +9,7 @@ struct CaptureEntry: Identifiable, Equatable {
     let rawBlock: String
 }
 
-/// 灵感速记：直接追加写入 Obsidian vault 的收件箱文件（按天分节、带时间戳）。
+/// 妙记：直接追加写入 Obsidian vault 的收件箱文件（按天分节、带时间戳）。
 /// 不唤起 Obsidian、不打断当前工作；Obsidian 监听文件变化会实时刷新
 @MainActor
 final class CaptureStore: ObservableObject {
@@ -18,8 +18,12 @@ final class CaptureStore: ObservableObject {
     /// 输入草稿放 Store，面板收起重开不丢失
     @Published var draft = ""
 
-    private static let defaultPath = "~/Documents/OrbitOS Vault/00_收件箱/闪记.md"
-    private static let legacyDefaultPath = "~/Documents/OrbitOS Vault/00_收件箱/速记.md"
+    private static let defaultPath = "~/Documents/OrbitOS Vault/00_收件箱/妙记.md"
+    /// 功能历次更名留下的旧默认路径（速记 → 闪记 → 妙记）
+    private static let legacyDefaultPaths = [
+        "~/Documents/OrbitOS Vault/00_收件箱/闪记.md",
+        "~/Documents/OrbitOS Vault/00_收件箱/速记.md",
+    ]
 
     private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -51,18 +55,23 @@ final class CaptureStore: ObservableObject {
         refresh()
     }
 
-    /// 功能更名 速记→闪记：默认收件箱文件随之改名，老文件存在则原地重命名
+    /// 功能更名（速记 → 闪记 → 妙记）：默认收件箱文件随之改名，
+    /// 老文件存在则原地重命名；用户自定义路径不受影响
     private func migrateLegacyFileIfNeeded() {
-        if inboxPath == Self.legacyDefaultPath {
+        if Self.legacyDefaultPaths.contains(inboxPath) {
             UserDefaults.standard.set(Self.defaultPath, forKey: "captureInboxPath")
         }
         guard inboxPath == Self.defaultPath else { return }
         let fm = FileManager.default
-        let oldPath = (Self.legacyDefaultPath as NSString).expandingTildeInPath
         let newPath = (Self.defaultPath as NSString).expandingTildeInPath
-        if fm.fileExists(atPath: oldPath), !fm.fileExists(atPath: newPath) {
-            try? fm.moveItem(atPath: oldPath, toPath: newPath)
-            print("[NotchHub] 收件箱文件已更名: 速记.md → 闪记.md")
+        guard !fm.fileExists(atPath: newPath) else { return }
+        for legacy in Self.legacyDefaultPaths {
+            let oldPath = (legacy as NSString).expandingTildeInPath
+            if fm.fileExists(atPath: oldPath) {
+                try? fm.moveItem(atPath: oldPath, toPath: newPath)
+                print("[NotchHub] 收件箱文件已更名: \((oldPath as NSString).lastPathComponent) → 妙记.md")
+                return
+            }
         }
     }
 
@@ -90,7 +99,7 @@ final class CaptureStore: ObservableObject {
         }
     }
 
-    /// 追加一条速记，返回是否成功
+    /// 追加一条妙记，返回是否成功
     @discardableResult
     func capture(_ text: String) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -100,7 +109,7 @@ final class CaptureStore: ObservableObject {
         let parent = (path as NSString).deletingLastPathComponent
         guard FileManager.default.fileExists(atPath: parent) else {
             lastError = "目录不存在：\(parent)"
-            print("[NotchHub] 速记失败：目录不存在 \(parent)")
+            print("[NotchHub] 妙记失败：目录不存在 \(parent)")
             return false
         }
 
@@ -128,24 +137,13 @@ final class CaptureStore: ObservableObject {
             try content.write(toFile: path, atomically: true, encoding: .utf8)
         } catch {
             lastError = "写入失败：\(error.localizedDescription)"
-            print("[NotchHub] 速记写入失败: \(error.localizedDescription)")
+            print("[NotchHub] 妙记写入失败: \(error.localizedDescription)")
             return false
         }
         lastError = nil
         refresh()
-        print("[NotchHub] 速记已存入 \(inboxFileName)（今天共 \(todayEntries.count) 条）")
+        print("[NotchHub] 妙记已存入 \(inboxFileName)（今天共 \(todayEntries.count) 条）")
         return true
-    }
-
-    /// 把当前剪贴板文本直接入库
-    @discardableResult
-    func captureClipboard() -> Bool {
-        guard let text = NSPasteboard.general.string(forType: .string),
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            lastError = "剪贴板里没有文本"
-            return false
-        }
-        return capture(text)
     }
 
     func delete(_ entry: CaptureEntry) {

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// AI 对话：未配置时显示设置表单；配置后为消息列表 + 输入框，流式输出
+/// AI 闪问：未配置时显示设置表单；配置后为消息列表 + 输入框，流式输出
 struct ChatView: View {
     @EnvironmentObject var vm: NotchViewModel
     @EnvironmentObject var store: ChatStore

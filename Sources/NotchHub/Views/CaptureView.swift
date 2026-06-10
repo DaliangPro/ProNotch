@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 灵感速记页：输入即存 Obsidian 收件箱 + 今天已记列表
+/// 妙记页：输入即存 Obsidian 收件箱 + 今天已记列表
 struct CaptureView: View {
     @EnvironmentObject var vm: NotchViewModel
     @EnvironmentObject var store: CaptureStore
@@ -13,41 +13,29 @@ struct CaptureView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             // 输入区：回车存入，⌥+回车换行
-            HStack(alignment: .bottom, spacing: 8) {
-                ZStack(alignment: .topLeading) {
-                    // 自绘占位文字：比正文小一号且用细体（prompt 不支持自定字体）
-                    if store.draft.isEmpty {
-                        Text("记下一闪而过的灵感，回车存入 Obsidian（⌥+回车换行）")
-                            .font(.system(size: 12, weight: .light))
-                            .foregroundColor(.white.opacity(0.3))
-                            .allowsHitTesting(false)
-                    }
-                    TextField("", text: $store.draft, axis: .vertical)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13))
-                        .foregroundColor(.white)
-                        .lineLimit(3...6)
-                        .focused($focused)
-                        .onSubmit { submitDraft() }
-                        .onChange(of: focused) { vm.keyboardHold = $0 }
+            ZStack(alignment: .topLeading) {
+                // 自绘占位文字：比正文小一号且用细体（prompt 不支持自定字体）
+                if store.draft.isEmpty {
+                    Text("记下一闪而过的灵感，回车存入 Obsidian（⌥+回车换行）")
+                        .font(.system(size: 12, weight: .light))
+                        .foregroundColor(.white.opacity(0.3))
+                        .allowsHitTesting(false)
                 }
-                Button {
-                    if store.captureClipboard() { flashSaved() }
-                } label: {
-                    Text("剪贴板入库")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.85))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(Color.white.opacity(0.12)))
-                }
-                .buttonStyle(.plain)
-                .help("把当前剪贴板里的文本存入收件箱文件")
+                TextField("", text: $store.draft, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .foregroundColor(.white)
+                    .lineLimit(3...6)
+                    .focused($focused)
+                    .onSubmit { submitDraft() }
+                    .onChange(of: focused) { vm.keyboardHold = $0 }
             }
             .padding(12)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.white.opacity(0.08)))
+            // 整张输入卡片任意位置点击都能唤起光标，不限于文字所在的第一行
+            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .onTapGesture { focused = true }
             .padding(.horizontal, edgeInset)
 
             HStack {

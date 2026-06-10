@@ -437,8 +437,8 @@ private struct TabButton: View {
         Button(action: action) {
             HStack(spacing: 4) {
                 Image(systemName: tab.icon)
-                    .font(.system(size: 10))
-                Text(tab.rawValue)
+                    .font(.system(size: 10, weight: .light))
+                Text(tab.title)
                     .font(.system(size: 11, weight: .light))
             }
             .foregroundColor(isActive ? .white : .white.opacity(hovering ? 0.85 : 0.55))
