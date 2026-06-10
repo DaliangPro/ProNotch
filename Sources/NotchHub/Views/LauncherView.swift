@@ -82,17 +82,18 @@ struct LauncherView: View {
                             AppCell(app: app)
                         }
                     }
-                    // 上下留白与渐隐高度匹配，静止时首末行不被遮挡
-                    .padding(.top, 8)
+                    // 底部留白与渐隐高度匹配；顶部不留白，
+                    // 保证分割线上下与图标的间距一致（各约 12pt）
                     .padding(.bottom, 14)
                 }
             }
-            // 滚动到边缘的图标渐隐消失，替代生硬截断
+            // 滚动到边缘的图标渐隐消失，替代生硬截断；
+            // 顶部渐隐压窄到 5pt，只覆盖格子内边距，静止时首行不受影响
             .mask(
                 VStack(spacing: 0) {
                     LinearGradient(colors: [.clear, .black],
                                    startPoint: .top, endPoint: .bottom)
-                        .frame(height: 8)
+                        .frame(height: 5)
                     Rectangle().fill(Color.black)
                     LinearGradient(colors: [.black, .clear],
                                    startPoint: .top, endPoint: .bottom)
