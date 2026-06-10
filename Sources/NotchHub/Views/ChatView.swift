@@ -239,6 +239,14 @@ private struct ChatSettingsForm: View {
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
                 .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.08)))
+                // 下拉列表用 overlay 悬浮在表单上层：贴字段下沿弹出、
+                // 盖住下方内容，不参与布局（不会把表单顶开）
+                .overlay(alignment: .topLeading) {
+                    if showModelList, !store.availableModels.isEmpty {
+                        modelDropdown
+                            .offset(y: 27)
+                    }
+                }
                 Button {
                     store.fetchModels()
                 } label: {
@@ -258,26 +266,8 @@ private struct ChatSettingsForm: View {
                 .disabled(!canFetchModels)
                 .help("从服务端读取可用模型列表（需先填地址和 Key）")
             }
-
-            // 模型列表：在模型框正下方展开，对齐输入框左缘
-            if showModelList, !store.availableModels.isEmpty {
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(store.availableModels, id: \.self) { name in
-                            ModelOptionRow(name: name,
-                                           isSelected: name == store.draftModel) {
-                                store.draftModel = name
-                                withAnimation(.easeIn(duration: 0.1)) {
-                                    showModelList = false
-                                }
-                            }
-                        }
-                    }
-                }
-                .frame(maxHeight: 130)
-                .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.06)))
-                .padding(.leading, 56)
-            }
+            // 保证悬浮下拉盖在后续兄弟行（提示与保存按钮）之上
+            .zIndex(10)
 
             if let fetchError = store.fetchError {
                 Text(fetchError)
@@ -317,6 +307,34 @@ private struct ChatSettingsForm: View {
     private func save() {
         store.saveSettings()
         showSettings = false
+    }
+
+    /// 悬浮下拉：不透明深色背景 + 描边 + 阴影，视觉上明确是覆盖层
+    private var modelDropdown: some View {
+        let rowHeight: CGFloat = 24
+        let height = min(CGFloat(store.availableModels.count) * rowHeight + 6, 130)
+        return ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(store.availableModels, id: \.self) { name in
+                    ModelOptionRow(name: name,
+                                   isSelected: name == store.draftModel) {
+                        store.draftModel = name
+                        withAnimation(.easeIn(duration: 0.1)) {
+                            showModelList = false
+                        }
+                    }
+                }
+            }
+            .padding(.vertical, 3)
+        }
+        .frame(height: height)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(red: 0.11, green: 0.11, blue: 0.12)))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+        .shadow(color: .black.opacity(0.5), radius: 10, y: 4)
     }
 
     private struct ModelOptionRow: View {
