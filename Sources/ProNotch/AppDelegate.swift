@@ -127,7 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .environmentObject(chatStore!)
         let hosting = NSHostingView(rootView: root)
         hosting.appearance = NSAppearance(named: .darkAqua)
-        hosting.frame = NSRect(x: 0, y: 0, width: 500, height: 536)
+        hosting.frame = NSRect(x: 0, y: 0, width: 500, height: 524)
         hosting.layoutSubtreeIfNeeded()
         guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { return }
         hosting.cacheDisplay(in: hosting.bounds, to: rep)
@@ -222,6 +222,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsWindow.show(settings: settingsStore, chatStore: chatStore)
     }
 
+    /// 系统标准关于面板：图标、名称、版本来自 Info.plist，
+    /// 署名与可点击的 GitHub 链接放在 credits 区
+    @objc private func showAbout() {
+        NSApp.activate(ignoringOtherApps: true)
+        let credits = NSMutableAttributedString(
+            string: "作者：Daliang\n",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ])
+        credits.append(NSAttributedString(
+            string: "github.com/DaliangPro/ProNotch",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 11),
+                .link: URL(string: "https://github.com/DaliangPro/ProNotch")!,
+            ]))
+        NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
+    }
+
     @objc private func screenParametersChanged() {
         // 系统会成批发送参数变更通知（应用启动、色彩配置切换都可能触发），
         // 刘海几何没变就不重建，避免面板使用中突然消失
@@ -314,6 +333,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         settingsItem.target = self
         settingsItem.image = emptyImage
         menu.addItem(settingsItem)
+        menu.addItem(.separator())
+        let aboutItem = NSMenuItem(title: "关于 ProNotch",
+                                   action: #selector(showAbout), keyEquivalent: "")
+        aboutItem.target = self
+        aboutItem.image = emptyImage
+        menu.addItem(aboutItem)
         menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "退出 ProNotch",
                                   action: #selector(NSApplication.terminate(_:)),

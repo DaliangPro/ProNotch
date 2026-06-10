@@ -206,11 +206,12 @@ struct SettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 24)
-            .padding(.top, 40)
+            // 顶部留白只需让出标题栏红绿灯的高度
+            .padding(.top, 28)
             .padding(.bottom, 18)
             .frame(maxHeight: .infinity, alignment: .top)
         }
-        .frame(width: 500, height: 536)
+        .frame(width: 500, height: 524)
         .preferredColorScheme(.dark)
     }
 
