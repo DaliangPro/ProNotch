@@ -54,7 +54,7 @@ final class NotchWindowController {
         viewModel.stop()
         clipboardStore.stop()
         chatStore.stopStreaming()
-        quickActions.stopCaffeinate()
+        quickActions.stop()
         panel.close()
     }
 

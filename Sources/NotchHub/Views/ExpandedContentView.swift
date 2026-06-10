@@ -12,7 +12,9 @@ struct ExpandedContentView: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            // 刘海两侧的快捷操作区（中间给真实刘海让位）
+            // 刘海两侧的快捷操作区（中间给真实刘海让位）：
+            // 左侧动作类用图标（截图放角落，误触代价高的锁屏放内侧）；
+            // 右侧开关类用文字胶囊卡（呼应 macOS 状态区在右上的习惯）
             HStack(spacing: 0) {
                 HStack(spacing: 4) {
                     StripButton(icon: "camera.viewfinder",
@@ -25,25 +27,31 @@ struct ExpandedContentView: View {
                         quickActions.openSystemSettings()
                         vm.collapseNow()
                     }
+                    StripButton(icon: "lock",
+                                help: "熄屏锁定") {
+                        vm.collapseNow()
+                        quickActions.lockScreen()
+                    }
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
 
                 Color.clear.frame(width: vm.notchRect.width + 24)
 
-                HStack(spacing: 4) {
+                HStack(spacing: 6) {
                     Spacer()
-                    StripButton(icon: quickActions.caffeinateActive
-                                    ? "cup.and.saucer.fill" : "cup.and.saucer",
-                                help: quickActions.caffeinateActive
-                                    ? "防休眠已开启（点击关闭）" : "防休眠：保持 Mac 不锁屏不休眠",
-                                active: quickActions.caffeinateActive) {
-                        quickActions.toggleCaffeinate()
+                    StripCapsule(icon: quickActions.isDarkMode ? "moon.fill" : "sun.max.fill",
+                                 title: "深浅色",
+                                 help: "切换深色/浅色模式（首次需授权控制 System Events）") {
+                        quickActions.toggleAppearance()
                     }
-                    StripButton(icon: "lock",
-                                help: "熄屏锁定") {
-                        vm.collapseNow()
-                        quickActions.lockScreen()
+                    StripCapsule(icon: quickActions.caffeinateActive
+                                     ? "cup.and.saucer.fill" : "cup.and.saucer",
+                                 title: "防休眠",
+                                 help: quickActions.caffeinateActive
+                                     ? "防休眠已开启（点击关闭）" : "保持 Mac 不锁屏不休眠",
+                                 active: quickActions.caffeinateActive) {
+                        quickActions.toggleCaffeinate()
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -127,6 +135,38 @@ private struct AccessoryButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+    }
+}
+
+/// 刘海两侧开关类胶囊卡：图标 + 短词，激活态整体点亮青色
+private struct StripCapsule: View {
+    let icon: String
+    let title: String
+    let help: String
+    var active: Bool = false
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 10))
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .foregroundColor(active ? .cyan : .white.opacity(hovering ? 0.9 : 0.55))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(Capsule().fill(
+                active ? Color.cyan.opacity(0.15)
+                       : Color.white.opacity(hovering ? 0.12 : 0.06)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(help)
     }
 }
 
