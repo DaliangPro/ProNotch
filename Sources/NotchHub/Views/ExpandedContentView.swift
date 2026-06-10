@@ -174,7 +174,7 @@ struct ExpandedContentView: View {
                 .font(.system(size: 11))
                 .foregroundColor(.white.opacity(0.4))
             AccessoryButton(title: "打开") {
-                NSWorkspace.shared.open(captureStore.inboxFileURL)
+                captureStore.openInbox()
                 vm.collapseNow()
             }
         }

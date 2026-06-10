@@ -53,12 +53,12 @@ final class SettingsStore: ObservableObject {
         UserDefaults.standard.register(defaults: [
             "hideNotchInFullscreen": true,
             "clipboardLimit": 200,
-            "captureInboxPath": "~/Documents/OrbitOS Vault/00_收件箱/速记.md",
+            "captureInboxPath": "~/Documents/OrbitOS Vault/00_收件箱/闪记.md",
         ])
         hideNotchInFullscreen = UserDefaults.standard.bool(forKey: "hideNotchInFullscreen")
         clipboardLimit = UserDefaults.standard.integer(forKey: "clipboardLimit")
         captureInboxPath = UserDefaults.standard.string(forKey: "captureInboxPath")
-            ?? "~/Documents/OrbitOS Vault/00_收件箱/速记.md"
+            ?? "~/Documents/OrbitOS Vault/00_收件箱/闪记.md"
     }
 
     private func applyLaunchAtLogin() {

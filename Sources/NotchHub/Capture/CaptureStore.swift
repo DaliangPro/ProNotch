@@ -18,7 +18,8 @@ final class CaptureStore: ObservableObject {
     /// 输入草稿放 Store，面板收起重开不丢失
     @Published var draft = ""
 
-    private static let defaultPath = "~/Documents/OrbitOS Vault/00_收件箱/速记.md"
+    private static let defaultPath = "~/Documents/OrbitOS Vault/00_收件箱/闪记.md"
+    private static let legacyDefaultPath = "~/Documents/OrbitOS Vault/00_收件箱/速记.md"
 
     private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -46,7 +47,47 @@ final class CaptureStore: ObservableObject {
 
     init() {
         UserDefaults.standard.register(defaults: ["captureInboxPath": Self.defaultPath])
+        migrateLegacyFileIfNeeded()
         refresh()
+    }
+
+    /// 功能更名 速记→闪记：默认收件箱文件随之改名，老文件存在则原地重命名
+    private func migrateLegacyFileIfNeeded() {
+        if inboxPath == Self.legacyDefaultPath {
+            UserDefaults.standard.set(Self.defaultPath, forKey: "captureInboxPath")
+        }
+        guard inboxPath == Self.defaultPath else { return }
+        let fm = FileManager.default
+        let oldPath = (Self.legacyDefaultPath as NSString).expandingTildeInPath
+        let newPath = (Self.defaultPath as NSString).expandingTildeInPath
+        if fm.fileExists(atPath: oldPath), !fm.fileExists(atPath: newPath) {
+            try? fm.moveItem(atPath: oldPath, toPath: newPath)
+            print("[NotchHub] 收件箱文件已更名: 速记.md → 闪记.md")
+        }
+    }
+
+    /// 打开收件箱：优先用 Obsidian 定位该笔记，无 Obsidian 时回退系统默认应用；
+    /// 文件尚未创建时先建空文件
+    func openInbox() {
+        let url = inboxFileURL
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: url.path) {
+            guard fm.fileExists(atPath: url.deletingLastPathComponent().path) else {
+                lastError = "目录不存在：\(url.deletingLastPathComponent().path)"
+                return
+            }
+            fm.createFile(atPath: url.path, contents: Data())
+        }
+        var components = URLComponents()
+        components.scheme = "obsidian"
+        components.host = "open"
+        components.queryItems = [URLQueryItem(name: "path", value: url.path)]
+        if let obsidianURL = components.url, NSWorkspace.shared.open(obsidianURL) {
+            print("[NotchHub] 已在 Obsidian 中打开收件箱")
+        } else {
+            NSWorkspace.shared.open(url)
+            print("[NotchHub] 已用默认应用打开收件箱")
+        }
     }
 
     /// 追加一条速记，返回是否成功

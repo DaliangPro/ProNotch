@@ -14,21 +14,27 @@ struct CaptureView: View {
         VStack(alignment: .leading, spacing: 8) {
             // 输入区：回车存入，⌥+回车换行
             HStack(alignment: .bottom, spacing: 8) {
-                TextField("", text: $store.draft,
-                          prompt: Text("记下一闪而过的灵感，回车存入 Obsidian（⌥+回车换行）")
-                              .foregroundColor(.white.opacity(0.3)),
-                          axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .foregroundColor(.white)
-                    .lineLimit(3...6)
-                    .focused($focused)
-                    .onSubmit { submitDraft() }
-                    .onChange(of: focused) { vm.keyboardHold = $0 }
+                ZStack(alignment: .topLeading) {
+                    // 自绘占位文字：比正文小一号且用细体（prompt 不支持自定字体）
+                    if store.draft.isEmpty {
+                        Text("记下一闪而过的灵感，回车存入 Obsidian（⌥+回车换行）")
+                            .font(.system(size: 12, weight: .light))
+                            .foregroundColor(.white.opacity(0.3))
+                            .allowsHitTesting(false)
+                    }
+                    TextField("", text: $store.draft, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13))
+                        .foregroundColor(.white)
+                        .lineLimit(3...6)
+                        .focused($focused)
+                        .onSubmit { submitDraft() }
+                        .onChange(of: focused) { vm.keyboardHold = $0 }
+                }
                 Button {
                     if store.captureClipboard() { flashSaved() }
                 } label: {
-                    Text("存剪贴板")
+                    Text("剪贴板入库")
                         .font(.system(size: 11))
                         .foregroundColor(.white.opacity(0.85))
                         .padding(.horizontal, 10)
@@ -37,7 +43,7 @@ struct CaptureView: View {
                             .fill(Color.white.opacity(0.12)))
                 }
                 .buttonStyle(.plain)
-                .help("把当前剪贴板内容直接存入收件箱")
+                .help("把当前剪贴板里的文本存入收件箱文件")
             }
             .padding(12)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -54,7 +60,9 @@ struct CaptureView: View {
                         .transition(.opacity)
                 }
             }
-            .padding(.horizontal, edgeInset)
+            // 与输入框内文字左对齐（外边距 + 输入框内边距）
+            .padding(.leading, edgeInset + 12)
+            .padding(.trailing, edgeInset)
 
             if let error = store.lastError {
                 Text(error)

@@ -207,10 +207,10 @@ struct SettingsView: View {
             }
             .padding(.horizontal, 24)
             .padding(.top, 40)
-            .padding(.bottom, 22)
+            .padding(.bottom, 18)
             .frame(maxHeight: .infinity, alignment: .top)
         }
-        .frame(width: 500, height: 524)
+        .frame(width: 500, height: 536)
         .preferredColorScheme(.dark)
     }
 
