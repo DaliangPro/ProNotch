@@ -184,33 +184,44 @@ private struct AccessoryButton: View {
     }
 }
 
-/// 剪贴板页「历史 | 话术」子视图切换
+/// 剪贴板页「历史 ⇄ 话术」滑动开关：滑块弹簧滑向当前侧，点击任意位置切换
 private struct ClipboardSectionToggle: View {
     @EnvironmentObject var clipboardStore: ClipboardStore
 
-    var body: some View {
-        HStack(spacing: 2) {
-            segment("历史", showsSnippets: false)
-            segment("话术", showsSnippets: true)
-        }
-        .padding(2)
-        .background(Capsule().fill(Color.white.opacity(0.06)))
-    }
+    @State private var hovering = false
 
-    private func segment(_ title: String, showsSnippets: Bool) -> some View {
-        let selected = clipboardStore.showingSnippets == showsSnippets
-        return Button {
-            clipboardStore.showingSnippets = showsSnippets
+    private var snippets: Bool { clipboardStore.showingSnippets }
+
+    var body: some View {
+        Button {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                clipboardStore.showingSnippets.toggle()
+            }
         } label: {
-            Text(title)
-                .font(.system(size: 11, weight: .light))
-                .foregroundColor(selected ? .white : .white.opacity(0.5))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 3)
-                .background(Capsule().fill(Color.white.opacity(selected ? 0.18 : 0)))
-                .contentShape(Capsule())
+            ZStack(alignment: snippets ? .trailing : .leading) {
+                // 滑块
+                Capsule()
+                    .fill(Color.white.opacity(hovering ? 0.24 : 0.18))
+                    .frame(width: 44, height: 20)
+                // 两端文字
+                HStack(spacing: 0) {
+                    Text("历史")
+                        .font(.system(size: 11, weight: .light))
+                        .foregroundColor(.white.opacity(snippets ? 0.45 : 1))
+                        .frame(width: 44, height: 20)
+                    Text("话术")
+                        .font(.system(size: 11, weight: .light))
+                        .foregroundColor(.white.opacity(snippets ? 1 : 0.45))
+                        .frame(width: 44, height: 20)
+                }
+            }
+            .padding(2)
+            .background(Capsule().fill(Color.white.opacity(0.06)))
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(snippets ? "当前：话术库（点击切到历史）" : "当前：历史（点击切到话术库）")
     }
 }
 

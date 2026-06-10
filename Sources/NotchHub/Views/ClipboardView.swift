@@ -49,6 +49,8 @@ private struct ClipboardRow: View {
 
     @State private var hovering = false
     @State private var justCopied = false
+    @State private var copyHovering = false
+    @State private var deleteHovering = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -89,12 +91,14 @@ private struct ClipboardRow: View {
                 withAnimation(.easeIn(duration: 0.3)) { justCopied = false }
             }
         } label: {
-            Image(systemName: justCopied ? "checkmark" : "doc.on.doc")
+            Image(systemName: justCopied ? "checkmark" : "square.on.square")
                 .font(.system(size: 11))
-                .foregroundColor(justCopied ? .green : .white.opacity(0.6))
-                .frame(width: 18)
+                .foregroundColor((justCopied || copyHovering) ? .green : .white.opacity(0.5))
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { copyHovering = $0 }
         .help("复制")
     }
 
@@ -102,12 +106,14 @@ private struct ClipboardRow: View {
         Button {
             withAnimation(.easeOut(duration: 0.15)) { store.delete(item) }
         } label: {
-            Image(systemName: "trash")
-                .font(.system(size: 11))
-                .foregroundColor(.white.opacity(0.6))
-                .frame(width: 18)
+            Image(systemName: "xmark")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(deleteHovering ? .red : .white.opacity(0.5))
+                .frame(width: 18, height: 18)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { deleteHovering = $0 }
         .help("删除")
     }
 
