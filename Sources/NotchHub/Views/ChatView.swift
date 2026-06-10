@@ -12,7 +12,8 @@ struct ChatView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if store.showSettings || !store.isConfigured {
-                ChatSettingsForm(showSettings: $store.showSettings)
+                ChatSettingsForm(showSettings: $store.showSettings,
+                                 onFocusChange: { vm.keyboardHold = $0 })
             } else {
                 messageList
                 inputBar
@@ -171,11 +172,12 @@ private struct MessageBubble: View {
     }
 }
 
-/// API 设置表单：兼容 OpenAI /v1/chat/completions 格式
-private struct ChatSettingsForm: View {
-    @EnvironmentObject var vm: NotchViewModel
+/// API 设置表单：兼容 OpenAI /v1/chat/completions 格式。
+/// 面板内与设置窗口两处复用；聚焦回调由调用方决定（面板内用于暂停自动收起）
+struct ChatSettingsForm: View {
     @EnvironmentObject var store: ChatStore
     @Binding var showSettings: Bool
+    var onFocusChange: ((Bool) -> Void)? = nil
 
     @State private var showModelList = false
     @FocusState private var focusedField: Field?
@@ -313,8 +315,8 @@ private struct ChatSettingsForm: View {
             }
         }
         .padding(.horizontal, edgeInset)
-        .onChange(of: focusedField) { vm.keyboardHold = ($0 != nil) }
-        .onDisappear { vm.keyboardHold = false }
+        .onChange(of: focusedField) { onFocusChange?($0 != nil) }
+        .onDisappear { onFocusChange?(false) }
     }
 
     private let edgeInset: CGFloat = 14

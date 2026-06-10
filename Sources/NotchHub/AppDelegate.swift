@@ -5,7 +5,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowController: NotchWindowController?
     private var statusItem: NSStatusItem?
 
+    // 数据层在应用级持有：换屏重建刘海窗口时状态不丢失
+    private var launcherStore: LauncherStore!
+    private var clipboardStore: ClipboardStore!
+    private var chatStore: ChatStore!
+    private var quickActions: QuickActionsStore!
+    private var settingsStore: SettingsStore!
+    private let settingsWindow = SettingsWindowController()
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        launcherStore = LauncherStore()
+        clipboardStore = ClipboardStore()
+        chatStore = ChatStore()
+        quickActions = QuickActionsStore()
+        settingsStore = SettingsStore()
+        launcherStore.refreshIfNeeded()
+        clipboardStore.startMonitoring()
+
         setupMainMenu()
         setupStatusItem()
         setupNotchWindow()
@@ -56,10 +72,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(debugTestTheme),
             name: NSNotification.Name("com.jiliang.NotchHub.testtheme"), object: nil)
 
-        // 调试入口：切换防休眠
+        // 调试入口：切换防休眠 / 打开设置窗口
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestCaffeinate),
             name: NSNotification.Name("com.jiliang.NotchHub.testcaffeinate"), object: nil)
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(openSettings),
+            name: NSNotification.Name("com.jiliang.NotchHub.opensettings"), object: nil)
     }
 
     @objc private func debugTestCaffeinate() {
@@ -99,8 +118,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // 退出前清理子进程（caffeinate）与窗口
+        // 退出前清理子进程（caffeinate）、监听与窗口
+        clipboardStore?.stop()
+        chatStore?.stopStreaming()
+        quickActions?.stop()
         windowController?.close()
+    }
+
+    @objc private func openSettings() {
+        settingsWindow.show(settings: settingsStore, chatStore: chatStore)
     }
 
     @objc private func screenParametersChanged() {
@@ -120,7 +146,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setupNotchWindow() {
         windowController?.close()
-        windowController = NotchWindowController()
+        windowController = NotchWindowController(
+            launcherStore: launcherStore,
+            clipboardStore: clipboardStore,
+            chatStore: chatStore,
+            quickActions: quickActions)
     }
 
     /// 代理应用没有可见菜单栏，但 ⌘V/⌘C 等快捷键依赖主菜单路由，
@@ -154,6 +184,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                     action: #selector(debugToggle), keyEquivalent: "t")
         toggleItem.target = self
         menu.addItem(toggleItem)
+        let settingsItem = NSMenuItem(title: "设置…",
+                                      action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        menu.addItem(settingsItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "退出 NotchHub",
                                 action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))

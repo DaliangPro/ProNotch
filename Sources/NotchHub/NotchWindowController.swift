@@ -4,13 +4,22 @@ import SwiftUI
 @MainActor
 final class NotchWindowController {
     let viewModel: NotchViewModel
-    let launcherStore = LauncherStore()
-    let clipboardStore = ClipboardStore()
-    let chatStore = ChatStore()
-    let quickActions = QuickActionsStore()
+    let launcherStore: LauncherStore
+    let clipboardStore: ClipboardStore
+    let chatStore: ChatStore
+    let quickActions: QuickActionsStore
     private let panel: NotchPanel
 
-    init() {
+    /// 数据层由 AppDelegate 持有并传入：换屏重建窗口时对话记录、
+    /// 剪贴板监听等状态不丢失
+    init(launcherStore: LauncherStore,
+         clipboardStore: ClipboardStore,
+         chatStore: ChatStore,
+         quickActions: QuickActionsStore) {
+        self.launcherStore = launcherStore
+        self.clipboardStore = clipboardStore
+        self.chatStore = chatStore
+        self.quickActions = quickActions
         let screen = NotchGeometry.targetScreen()
         let notchRect = NotchGeometry.notchRect(on: screen)
         let hasRealNotch = screen.safeAreaInsets.top > 0
@@ -32,9 +41,6 @@ final class NotchWindowController {
         panel.contentView = hosting
         panel.orderFrontRegardless()
         viewModel.startMouseTracking()
-        // 启动即预扫描，首次展开面板不用等待
-        launcherStore.refreshIfNeeded()
-        clipboardStore.startMonitoring()
         print("[NotchHub] 固定窗口 frame: \(panel.frame)")
     }
 
@@ -51,10 +57,8 @@ final class NotchWindowController {
     }
 
     func close() {
+        // 只清理窗口自身的资源；数据层由 AppDelegate 统一管理生命周期
         viewModel.stop()
-        clipboardStore.stop()
-        chatStore.stopStreaming()
-        quickActions.stop()
         panel.close()
     }
 
