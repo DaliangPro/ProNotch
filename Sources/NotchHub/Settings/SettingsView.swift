@@ -38,7 +38,7 @@ struct SettingsView: View {
                 SettingsCard {
                     toggleRow("开机自动启动", isOn: $settings.launchAtLogin)
                     CardDivider()
-                    toggleRow("全屏应用时隐藏刘海", isOn: $settings.hideNotchInFullscreen)
+                    toggleRow("全屏时隐藏刘海", isOn: $settings.hideNotchInFullscreen)
                     CardDivider()
                     HStack {
                         Text("剪贴板历史上限")
@@ -139,58 +139,61 @@ struct SettingsView: View {
                         themedSecureField("选填：Tavily Key，不填用内置免费搜索",
                                           text: $chatStore.draftTavilyKey)
                     }
+                    CardDivider()
+                    // 连通状态与检测/保存属于 AI 配置，收进卡片内消除归属歧义
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(connectivityColor)
+                            .frame(width: 8, height: 8)
+                        Text(connectivityText)
+                            .font(.system(size: 12))
+                            .foregroundColor(.white.opacity(0.9))
+                        Button {
+                            chatStore.checkConnectivity(force: true)
+                        } label: {
+                            Text("检测")
+                                .font(.system(size: 12))
+                                .foregroundColor(.white.opacity(0.85))
+                                .padding(.horizontal, 14)
+                                .frame(height: 26)
+                                .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .fill(Color.white.opacity(0.12)))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!chatStore.isConfigured)
+
+                        Spacer()
+
+                        if justSaved {
+                            Label("已保存", systemImage: "checkmark")
+                                .font(.system(size: 12))
+                                .foregroundColor(.green)
+                                .transition(.opacity)
+                        }
+                        Button {
+                            chatStore.saveSettings()
+                            withAnimation(.easeOut(duration: 0.15)) { justSaved = true }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                withAnimation(.easeIn(duration: 0.3)) { justSaved = false }
+                            }
+                        } label: {
+                            Text("保存")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(canSave ? .black : .white.opacity(0.4))
+                                .padding(.horizontal, 14)
+                                .frame(height: 26)
+                                .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .fill(Color.white.opacity(canSave ? 0.92 : 0.15)))
+                        }
+                        .buttonStyle(.plain)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!canSave)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
                 }
                 if let error = chatStore.fetchError {
                     noteText(error, color: .red.opacity(0.9))
-                }
-
-                HStack(spacing: 10) {
-                    Circle()
-                        .fill(connectivityColor)
-                        .frame(width: 8, height: 8)
-                    Text(connectivityText)
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.55))
-                    Button {
-                        chatStore.checkConnectivity(force: true)
-                    } label: {
-                        Text("检测")
-                            .font(.system(size: 12))
-                            .foregroundColor(.white.opacity(0.85))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(Color.white.opacity(0.12)))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!chatStore.isConfigured)
-
-                    Spacer()
-
-                    if justSaved {
-                        Label("已保存", systemImage: "checkmark")
-                            .font(.system(size: 12))
-                            .foregroundColor(.green)
-                            .transition(.opacity)
-                    }
-                    Button {
-                        chatStore.saveSettings()
-                        withAnimation(.easeOut(duration: 0.15)) { justSaved = true }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                            withAnimation(.easeIn(duration: 0.3)) { justSaved = false }
-                        }
-                    } label: {
-                        Text("保存")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(canSave ? .black : .white.opacity(0.4))
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 5)
-                            .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                .fill(Color.white.opacity(canSave ? 0.92 : 0.15)))
-                    }
-                    .buttonStyle(.plain)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(!canSave)
                 }
 
                 Text("兼容 OpenAI /v1/chat/completions 格式；API 地址填到域名或 /v1 即可。联网搜索在对话输入框左侧地球图标开关。")
@@ -258,10 +261,7 @@ struct SettingsView: View {
                 .font(.system(size: 13))
                 .foregroundColor(.white.opacity(0.9))
             Spacer()
-            Toggle("", isOn: isOn)
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
+            ThemedSwitch(isOn: isOn)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -272,7 +272,7 @@ struct SettingsView: View {
         HStack(spacing: 10) {
             Text(label)
                 .font(.system(size: 13))
-                .foregroundColor(.white.opacity(0.55))
+                .foregroundColor(.white.opacity(0.9))
                 .frame(width: 84, alignment: .leading)
             content()
         }
@@ -312,6 +312,32 @@ struct SettingsView: View {
         case .ok: return "连接正常"
         case .failed: return "连接失败"
         }
+    }
+}
+
+/// 自绘开关：轨道恒定 38×22，开/关只变颜色与滑块位置，不变形
+private struct ThemedSwitch: View {
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Button {
+            withAnimation(.spring(response: 0.25, dampingFraction: 0.9)) {
+                isOn.toggle()
+            }
+        } label: {
+            ZStack(alignment: isOn ? .trailing : .leading) {
+                Capsule()
+                    .fill(isOn ? Color.accentColor : Color.white.opacity(0.18))
+                    .frame(width: 38, height: 22)
+                Circle()
+                    .fill(.white)
+                    .frame(width: 18, height: 18)
+                    .padding(2)
+                    .shadow(color: .black.opacity(0.25), radius: 1, y: 0.5)
+            }
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 }
 
