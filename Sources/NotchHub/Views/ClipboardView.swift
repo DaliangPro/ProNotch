@@ -8,9 +8,8 @@ private let relativeFormatter: RelativeDateTimeFormatter = {
     return formatter
 }()
 
-/// 剪贴板历史：点击条目复制回剪贴板并收起，右键删除
+/// 剪贴板历史：每条带复制/删除按钮，操作后面板保持展开
 struct ClipboardView: View {
-    @EnvironmentObject var vm: NotchViewModel
     @EnvironmentObject var store: ClipboardStore
 
     private let edgeInset: CGFloat = 14
@@ -54,40 +53,68 @@ struct ClipboardView: View {
 }
 
 private struct ClipboardRow: View {
-    @EnvironmentObject var vm: NotchViewModel
     @EnvironmentObject var store: ClipboardStore
     let item: ClipboardItem
 
     @State private var hovering = false
+    @State private var justCopied = false
 
     var body: some View {
-        Button {
-            store.copyToPasteboard(item)
-            vm.collapseNow()
-        } label: {
-            HStack(spacing: 8) {
-                preview
-                Text(previewText)
-                    .font(.system(size: 11))
-                    .foregroundColor(.white.opacity(0.85))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: 8)
-                Text(relativeFormatter.localizedString(for: item.date, relativeTo: Date()))
-                    .font(.system(size: 9))
-                    .foregroundColor(.white.opacity(0.3))
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color.white.opacity(hovering ? 0.12 : 0.05)))
+        HStack(spacing: 8) {
+            preview
+            Text(previewText)
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.85))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 8)
+            Text(relativeFormatter.localizedString(for: item.date, relativeTo: Date()))
+                .font(.system(size: 9))
+                .foregroundColor(.white.opacity(0.3))
+            copyButton
+            deleteButton
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(justCopied
+                    ? Color.green.opacity(0.18)
+                    : Color.white.opacity(hovering ? 0.12 : 0.05)))
         .onHover { hovering = $0 }
         .contextMenu {
             Button("删除") { store.delete(item) }
         }
+    }
+
+    private var copyButton: some View {
+        Button {
+            store.copyToPasteboard(item)
+            withAnimation(.easeOut(duration: 0.15)) { justCopied = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                withAnimation(.easeIn(duration: 0.3)) { justCopied = false }
+            }
+        } label: {
+            Image(systemName: justCopied ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 11))
+                .foregroundColor(justCopied ? .green : .white.opacity(0.6))
+                .frame(width: 18)
+        }
+        .buttonStyle(.plain)
+        .help("复制")
+    }
+
+    private var deleteButton: some View {
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) { store.delete(item) }
+        } label: {
+            Image(systemName: "trash")
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.6))
+                .frame(width: 18)
+        }
+        .buttonStyle(.plain)
+        .help("删除")
     }
 
     @ViewBuilder

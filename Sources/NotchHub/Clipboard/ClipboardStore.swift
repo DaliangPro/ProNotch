@@ -67,9 +67,9 @@ final class ClipboardStore: ObservableObject {
                 pb.writeObjects([image])
             }
         }
-        // 同步 changeCount，避免把自己的写入再捕获一遍
+        // 同步 changeCount，避免把自己的写入再捕获一遍；
+        // 面板保持展开时不调整列表顺序，避免条目在用户眼前跳动
         lastChangeCount = pb.changeCount
-        moveToTop(item)
         print("[NotchHub] 已复制回剪贴板: \(item.kind == .text ? "文本" : "图片")")
     }
 
@@ -158,14 +158,6 @@ final class ClipboardStore: ObservableObject {
     }
 
     // MARK: - 维护
-
-    private func moveToTop(_ item: ClipboardItem) {
-        guard let index = items.firstIndex(where: { $0.id == item.id }) else { return }
-        var moved = items.remove(at: index)
-        moved.date = Date()
-        items.insert(moved, at: 0)
-        saveIndex()
-    }
 
     private func trimAndSave() {
         while items.count > maxItems {
