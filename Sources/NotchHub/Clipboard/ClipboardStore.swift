@@ -18,6 +18,8 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
 @MainActor
 final class ClipboardStore: ObservableObject {
     @Published private(set) var items: [ClipboardItem] = []
+    /// 剪贴板页子视图：false=历史，true=话术库
+    @Published var showingSnippets = false
 
     /// 保留条数上限（设置项 clipboardLimit，默认 200）
     private var maxItems: Int {
@@ -87,6 +89,15 @@ final class ClipboardStore: ObservableObject {
         // 面板保持展开时不调整列表顺序，避免条目在用户眼前跳动
         lastChangeCount = pb.changeCount
         print("[NotchHub] 已复制回剪贴板: \(item.kind == .text ? "文本" : "图片")")
+    }
+
+    /// 把任意文本写入剪贴板（话术库等外部来源用），同步 changeCount 不触发自捕获
+    func copyExternal(text: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        lastChangeCount = pb.changeCount
+        print("[NotchHub] 话术已复制到剪贴板")
     }
 
     func delete(_ item: ClipboardItem) {

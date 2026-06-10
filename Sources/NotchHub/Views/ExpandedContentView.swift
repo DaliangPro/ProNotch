@@ -5,6 +5,7 @@ struct ExpandedContentView: View {
     @EnvironmentObject var vm: NotchViewModel
     @EnvironmentObject var launcherStore: LauncherStore
     @EnvironmentObject var clipboardStore: ClipboardStore
+    @EnvironmentObject var snippetStore: SnippetStore
     @EnvironmentObject var chatStore: ChatStore
     @EnvironmentObject var quickActions: QuickActionsStore
 
@@ -90,7 +91,15 @@ struct ExpandedContentView: View {
         case .launcher:
             LauncherSearchField()
         case .clipboard:
-            if !clipboardStore.items.isEmpty {
+            ClipboardSectionToggle()
+            if clipboardStore.showingSnippets {
+                if !snippetStore.snippets.isEmpty {
+                    Text("\(snippetStore.snippets.count) 条")
+                        .font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.4))
+                }
+                AccessoryButton(title: "新增") { snippetStore.beginNew() }
+            } else if !clipboardStore.items.isEmpty {
                 Text("\(clipboardStore.items.count) 条")
                     .font(.system(size: 11))
                     .foregroundColor(.white.opacity(0.4))
@@ -172,6 +181,36 @@ private struct AccessoryButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+    }
+}
+
+/// 剪贴板页「历史 | 话术」子视图切换
+private struct ClipboardSectionToggle: View {
+    @EnvironmentObject var clipboardStore: ClipboardStore
+
+    var body: some View {
+        HStack(spacing: 2) {
+            segment("历史", showsSnippets: false)
+            segment("话术", showsSnippets: true)
+        }
+        .padding(2)
+        .background(Capsule().fill(Color.white.opacity(0.06)))
+    }
+
+    private func segment(_ title: String, showsSnippets: Bool) -> some View {
+        let selected = clipboardStore.showingSnippets == showsSnippets
+        return Button {
+            clipboardStore.showingSnippets = showsSnippets
+        } label: {
+            Text(title)
+                .font(.system(size: 11, weight: .light))
+                .foregroundColor(selected ? .white : .white.opacity(0.5))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(Color.white.opacity(selected ? 0.18 : 0)))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 }
 

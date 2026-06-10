@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // 数据层在应用级持有：换屏重建刘海窗口时状态不丢失
     private var launcherStore: LauncherStore!
     private var clipboardStore: ClipboardStore!
+    private var snippetStore: SnippetStore!
     private var chatStore: ChatStore!
     private var quickActions: QuickActionsStore!
     private var settingsStore: SettingsStore!
@@ -17,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         launcherStore = LauncherStore()
         clipboardStore = ClipboardStore()
+        snippetStore = SnippetStore()
         chatStore = ChatStore()
         quickActions = QuickActionsStore()
         settingsStore = SettingsStore()
@@ -86,6 +88,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugSnapshotSettings),
             name: NSNotification.Name("com.jiliang.NotchHub.snapsettings"), object: nil)
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(debugToggleSnippets),
+            name: NSNotification.Name("com.jiliang.NotchHub.snippets"), object: nil)
+    }
+
+    /// 调试用：切换剪贴板页的「历史/话术」子视图
+    @objc private func debugToggleSnippets() {
+        clipboardStore.showingSnippets.toggle()
+        print("[NotchHub] 剪贴板子视图: \(clipboardStore.showingSnippets ? "话术库" : "历史")")
     }
 
     /// 调试用：离屏渲染设置界面到 PNG（无需打开窗口与屏幕录制权限）
@@ -177,6 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windowController = NotchWindowController(
             launcherStore: launcherStore,
             clipboardStore: clipboardStore,
+            snippetStore: snippetStore,
             chatStore: chatStore,
             quickActions: quickActions,
             settingsStore: settingsStore)

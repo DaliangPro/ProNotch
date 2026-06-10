@@ -16,7 +16,9 @@ struct ClipboardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if store.items.isEmpty {
+            if store.showingSnippets {
+                SnippetListView()
+            } else if store.items.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "doc.on.clipboard")
                         .font(.system(size: 24))
@@ -42,6 +44,7 @@ struct ClipboardView: View {
 
 private struct ClipboardRow: View {
     @EnvironmentObject var store: ClipboardStore
+    @EnvironmentObject var snippetStore: SnippetStore
     let item: ClipboardItem
 
     @State private var hovering = false
@@ -71,6 +74,9 @@ private struct ClipboardRow: View {
                     : Color.white.opacity(hovering ? 0.12 : 0.05)))
         .onHover { hovering = $0 }
         .contextMenu {
+            if item.kind == .text, let text = item.text {
+                Button("存入话术库") { snippetStore.add(content: text) }
+            }
             Button("删除") { store.delete(item) }
         }
     }

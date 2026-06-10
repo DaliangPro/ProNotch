@@ -6,6 +6,7 @@ final class NotchWindowController {
     let viewModel: NotchViewModel
     let launcherStore: LauncherStore
     let clipboardStore: ClipboardStore
+    let snippetStore: SnippetStore
     let chatStore: ChatStore
     let quickActions: QuickActionsStore
     private let panel: NotchPanel
@@ -14,11 +15,13 @@ final class NotchWindowController {
     /// 剪贴板监听等状态不丢失
     init(launcherStore: LauncherStore,
          clipboardStore: ClipboardStore,
+         snippetStore: SnippetStore,
          chatStore: ChatStore,
          quickActions: QuickActionsStore,
          settingsStore: SettingsStore) {
         self.launcherStore = launcherStore
         self.clipboardStore = clipboardStore
+        self.snippetStore = snippetStore
         self.chatStore = chatStore
         self.quickActions = quickActions
         let screen = NotchGeometry.targetScreen()
@@ -37,6 +40,7 @@ final class NotchWindowController {
                 .environmentObject(viewModel)
                 .environmentObject(launcherStore)
                 .environmentObject(clipboardStore)
+                .environmentObject(snippetStore)
                 .environmentObject(chatStore)
                 .environmentObject(quickActions))
         panel.contentView = hosting
