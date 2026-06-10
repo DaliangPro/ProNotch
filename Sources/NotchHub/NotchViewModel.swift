@@ -1,7 +1,10 @@
 import AppKit
 import SwiftUI
 
-/// 展开/收起状态机：负责悬停防抖、窗口尺寸切换与动画时序
+/// 展开/收起状态机。
+/// 架构要点：窗口 frame 固定为展开尺寸、永不变化——位置漂移与"窗口缩放
+/// 和内容动画合帧导致斜向展开"在结构上不可能发生。收起时窗口对鼠标完全
+/// 隐形（ignoresMouseEvents），悬停检测由全局鼠标监听 + 轮询兜底驱动。
 @MainActor
 final class NotchViewModel: ObservableObject {
     enum Tab: String, CaseIterable {
@@ -28,12 +31,13 @@ final class NotchViewModel: ObservableObject {
 
     weak var panel: NSPanel?
 
-    private var pendingWork: DispatchWorkItem?
-    /// 调试展开时固定面板，看门狗不自动收起
+    private var monitors: [Any] = []
+    private var poller: Timer?
+    private var pendingExpand: DispatchWorkItem?
+    private var pendingCollapse: DispatchWorkItem?
+    /// 调试展开时固定面板，自动收起逻辑暂停
     private var debugPinned = false
-    /// 展开期间兜底：移出事件偶尔会丢，定时校验鼠标位置
-    private var watchdog: Timer?
-    private let expandDelay: TimeInterval = 0.08
+    private let expandDelay: TimeInterval = 0.06
     private let collapseDelay: TimeInterval = 0.18
     private let animationDuration: TimeInterval = 0.35
 
@@ -43,16 +47,14 @@ final class NotchViewModel: ObservableObject {
 
     // MARK: - 几何
 
-    var closedWindowFrame: CGRect { notchRect }
-
     /// 展开后黑色形状的整体尺寸（刘海 + 面板）
     var expandedShapeSize: CGSize {
         CGSize(width: max(panelSize.width, notchRect.width),
                height: notchRect.height + panelSize.height)
     }
 
-    /// 展开后的窗口尺寸：四周留白给阴影，顶边与屏幕顶对齐
-    var expandedWindowFrame: CGRect {
+    /// 窗口固定 frame：按展开尺寸四周留白给阴影，顶边贴屏幕顶
+    var windowFrame: CGRect {
         let margin: CGFloat = 24
         let width = expandedShapeSize.width + margin * 2
         let height = expandedShapeSize.height + margin
@@ -62,33 +64,115 @@ final class NotchViewModel: ObservableObject {
                       height: height)
     }
 
-    // MARK: - 交互
+    /// 收起状态的悬停触发区：刘海矩形向屏幕顶边外延伸，
+    /// 避免鼠标贴死顶边时坐标恰好落在边界外
+    private var enterRect: CGRect {
+        var rect = notchRect
+        rect.size.height += 20
+        return rect
+    }
 
-    func hoverChanged(_ hovering: Bool) {
-        // 窗口尺寸变化会产生合成悬停事件，只有鼠标真在窗口内才解除调试固定
-        if mouseInsideWindow() { debugPinned = false }
-        pendingWork?.cancel()
+    /// 展开状态的停留区（鼠标离开它才收起），四周放宽 8pt
+    private var stayRect: CGRect {
+        CGRect(x: notchRect.midX - expandedShapeSize.width / 2,
+               y: notchRect.maxY - expandedShapeSize.height,
+               width: expandedShapeSize.width,
+               height: expandedShapeSize.height + 20)
+            .insetBy(dx: -8, dy: 0)
+    }
+
+    // MARK: - 鼠标检测
+
+    /// 启动全局/本地鼠标监听 + 轮询兜底（监听偶发丢事件时由轮询纠正）
+    func startMouseTracking() {
+        stopMouseTracking()
+        let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] _ in
+            Task { @MainActor [weak self] in self?.evaluateMouse() }
+        }) {
+            monitors.append(global)
+        }
+        if let local = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] event in
+            Task { @MainActor [weak self] in self?.evaluateMouse() }
+            return event
+        }) {
+            monitors.append(local)
+        }
+        poller = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.evaluateMouse() }
+        }
+    }
+
+    /// 窗口重建/退出前调用，移除监听与定时器
+    func stop() {
+        stopMouseTracking()
+        pendingExpand?.cancel()
+        pendingExpand = nil
+        pendingCollapse?.cancel()
+        pendingCollapse = nil
+    }
+
+    private func stopMouseTracking() {
+        monitors.forEach { NSEvent.removeMonitor($0) }
+        monitors.removeAll()
+        poller?.invalidate()
+        poller = nil
+    }
+
+    private func evaluateMouse() {
+        let location = NSEvent.mouseLocation
+        if isExpanded {
+            if stayRect.contains(location) {
+                pendingCollapse?.cancel()
+                pendingCollapse = nil
+                // 鼠标真实进入面板，解除调试固定，交还自动收起控制权
+                debugPinned = false
+            } else if !debugPinned, pendingCollapse == nil {
+                scheduleCollapse()
+            }
+        } else {
+            if enterRect.contains(location) {
+                if pendingExpand == nil { scheduleExpand() }
+            } else {
+                pendingExpand?.cancel()
+                pendingExpand = nil
+            }
+        }
+    }
+
+    private func scheduleExpand() {
         let work = DispatchWorkItem { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                // 窗口尺寸切换会触发虚假的进入/移出事件，统一用真实鼠标位置二次校验
-                if hovering {
-                    if self.mouseInsideWindow() { self.expand() }
-                } else if !self.mouseInsideWindow() {
+                self.pendingExpand = nil
+                // 触发时刻再校验一次，过滤快速划过
+                if self.enterRect.contains(NSEvent.mouseLocation) {
+                    self.expand()
+                }
+            }
+        }
+        pendingExpand = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + expandDelay, execute: work)
+    }
+
+    private func scheduleCollapse() {
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.pendingCollapse = nil
+                if !self.stayRect.contains(NSEvent.mouseLocation) {
                     self.collapse()
                 }
             }
         }
-        pendingWork = work
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + (hovering ? expandDelay : collapseDelay),
-            execute: work)
+        pendingCollapse = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + collapseDelay, execute: work)
     }
 
+    // MARK: - 状态切换
+
     func debugToggle() {
-        pendingWork?.cancel()
         if isExpanded {
-            debugPinned = false
             collapse()
         } else {
             debugPinned = true
@@ -96,56 +180,26 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
-    // MARK: - 私有
-
     private func expand() {
         guard !isExpanded else { return }
         print("[NotchHub] 展开")
-        // 先把窗口放大到展开尺寸，让内容以新窗口坐标完成一次无动画布局
-        panel?.setFrame(expandedWindowFrame, display: true)
-        // 下一个 runloop 再启动内容动画：若与窗口放大落在同一帧，
-        // 形状会从窗口左上角斜向展开，而不是以刘海为中心向外生长
-        DispatchQueue.main.async { [weak self] in
-            guard let self, !self.isExpanded else { return }
-            withAnimation(.spring(response: self.animationDuration, dampingFraction: 0.8)) {
-                self.isExpanded = true
-            }
-            self.startWatchdog()
+        // 展开期间窗口需要接收点击与悬停
+        panel?.ignoresMouseEvents = false
+        withAnimation(.spring(response: animationDuration, dampingFraction: 0.8)) {
+            isExpanded = true
         }
     }
 
     private func collapse() {
         guard isExpanded else { return }
         print("[NotchHub] 收起")
-        watchdog?.invalidate()
-        watchdog = nil
+        debugPinned = false
+        pendingCollapse?.cancel()
+        pendingCollapse = nil
+        // 收起后窗口对鼠标完全隐形，假刘海区域的点击会穿透到下层
+        panel?.ignoresMouseEvents = true
         withAnimation(.spring(response: animationDuration, dampingFraction: 0.9)) {
             isExpanded = false
         }
-        // 等内容动画结束后再缩小窗口
-        DispatchQueue.main.asyncAfter(deadline: .now() + animationDuration + 0.05) { [weak self] in
-            Task { @MainActor [weak self] in
-                guard let self, !self.isExpanded else { return }
-                self.panel?.setFrame(self.closedWindowFrame, display: true)
-            }
-        }
-    }
-
-    private func startWatchdog() {
-        watchdog?.invalidate()
-        watchdog = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                guard let self, self.isExpanded, !self.debugPinned else { return }
-                if !self.mouseInsideWindow() {
-                    print("[NotchHub] 看门狗：鼠标已离开，兜底收起")
-                    self.collapse()
-                }
-            }
-        }
-    }
-
-    private func mouseInsideWindow() -> Bool {
-        guard let panel else { return false }
-        return panel.frame.insetBy(dx: -2, dy: -2).contains(NSEvent.mouseLocation)
     }
 }

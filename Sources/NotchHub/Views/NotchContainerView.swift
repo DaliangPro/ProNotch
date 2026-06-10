@@ -28,7 +28,5 @@ struct NotchContainerView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .contentShape(Rectangle())
-        .onHover { vm.hoverChanged($0) }
     }
 }

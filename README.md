@@ -36,6 +36,9 @@ swift -e 'import Foundation; DistributedNotificationCenter.default().postNotific
 - 纯 SwiftPM 工程，无 .xcodeproj；`Scripts/build-app.sh` 负责封装 .app
 - `NotchGeometry`：刘海定位，跟随主屏——主屏有真实刘海时贴住刘海；外接屏作主屏时在其菜单栏顶部居中模拟热区（高度与菜单栏一致）
 - `NotchPanel`：无边框 NSPanel，窗口层级高于菜单栏，全空间可见
-- `NotchViewModel`：展开/收起状态机（悬停防抖 + 鼠标位置二次校验）
+- `NotchViewModel`：展开/收起状态机
 - `Views/`：SwiftUI 绘制刘海形状（`NotchShape`）与面板内容
-- 展开时序：先瞬时放大窗口 → 内容做弹簧动画；收起反之，动画结束后再缩窗口
+- 交互架构：窗口 frame 固定为展开尺寸、永不调整（杜绝位置漂移与
+  「窗口缩放和内容动画合帧导致斜向展开」）；收起时 `ignoresMouseEvents = true`
+  使透明窗口对鼠标完全隐形（假刘海区域点击穿透到下层菜单栏）；
+  悬停检测 = 全局/本地鼠标监听 + 0.2s 轮询兜底，按屏幕坐标判定进出

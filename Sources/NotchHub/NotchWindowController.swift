@@ -13,16 +13,21 @@ final class NotchWindowController {
         print("[NotchHub] 屏幕: \(screen.localizedName)，真实刘海: \(hasRealNotch ? "是" : "否（模拟热区）")，刘海区域: \(notchRect)")
 
         viewModel = NotchViewModel(notchRect: notchRect)
-        panel = NotchPanel(frame: notchRect)
+        // 窗口 frame 固定为展开尺寸，永不调整；收起时对鼠标隐形
+        panel = NotchPanel(frame: viewModel.windowFrame)
+        panel.ignoresMouseEvents = true
         viewModel.panel = panel
 
         let hosting = NSHostingView(
             rootView: NotchContainerView().environmentObject(viewModel))
         panel.contentView = hosting
         panel.orderFrontRegardless()
+        viewModel.startMouseTracking()
+        print("[NotchHub] 固定窗口 frame: \(panel.frame)")
     }
 
     func close() {
+        viewModel.stop()
         panel.close()
     }
 
