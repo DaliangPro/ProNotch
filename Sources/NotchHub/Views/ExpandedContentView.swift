@@ -347,8 +347,9 @@ private struct StripToggle: View {
             Text(title)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundColor(active ? .cyan : .white.opacity(hovering ? 0.9 : 0.55))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
+                .padding(.horizontal, 12)
+                // 与外观滑动开关等高（26pt），并排不突兀
+                .frame(height: 26)
                 .background(Capsule().fill(
                     active ? Color.cyan.opacity(0.18)
                            : Color.white.opacity(hovering ? 0.12 : 0.06)))

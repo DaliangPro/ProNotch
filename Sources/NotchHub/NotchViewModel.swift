@@ -11,7 +11,7 @@ final class NotchViewModel: ObservableObject {
         case launcher = "启动台"
         case clipboard = "剪贴板"
         case chat = "AI 对话"
-        case capture = "速记"
+        case capture = "闪记"
 
         var icon: String {
             switch self {

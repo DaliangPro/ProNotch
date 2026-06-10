@@ -232,17 +232,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.button?.title = "凹"
         }
         let menu = NSMenu()
-        let toggleItem = NSMenuItem(title: "展开 / 收起（调试）",
+        let toggleItem = NSMenuItem(title: "展开 / 收起",
                                     action: #selector(debugToggle), keyEquivalent: "t")
         toggleItem.target = self
+        toggleItem.image = nil
         menu.addItem(toggleItem)
         let settingsItem = NSMenuItem(title: "设置…",
                                       action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
+        settingsItem.image = nil
         menu.addItem(settingsItem)
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "退出 NotchHub",
-                                action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        let quitItem = NSMenuItem(title: "退出 NotchHub",
+                                  action: #selector(NSApplication.terminate(_:)),
+                                  keyEquivalent: "q")
+        quitItem.image = nil
+        menu.addItem(quitItem)
         item.menu = menu
         statusItem = item
     }

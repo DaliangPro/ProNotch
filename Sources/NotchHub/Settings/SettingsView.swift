@@ -68,7 +68,7 @@ struct SettingsView: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                     CardDivider()
-                    fieldRow("速记收件箱") {
+                    fieldRow("闪记收件箱") {
                         themedField("~/path/to/收件箱.md",
                                     text: $settings.captureInboxPath)
                     }

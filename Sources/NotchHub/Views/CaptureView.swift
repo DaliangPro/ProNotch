@@ -19,9 +19,9 @@ struct CaptureView: View {
                               .foregroundColor(.white.opacity(0.3)),
                           axis: .vertical)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 12))
+                    .font(.system(size: 13))
                     .foregroundColor(.white)
-                    .lineLimit(1...4)
+                    .lineLimit(3...6)
                     .focused($focused)
                     .onSubmit { submitDraft() }
                     .onChange(of: focused) { vm.keyboardHold = $0 }
@@ -39,7 +39,7 @@ struct CaptureView: View {
                 .buttonStyle(.plain)
                 .help("把当前剪贴板内容直接存入收件箱")
             }
-            .padding(10)
+            .padding(12)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.white.opacity(0.08)))
             .padding(.horizontal, edgeInset)
