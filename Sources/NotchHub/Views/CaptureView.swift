@@ -12,26 +12,20 @@ struct CaptureView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // 输入区：回车只换行（避免误触把半截内容存进去），点「存入」才入库
+            // 输入区：回车只换行（避免误触把半截内容存进去），点「存入」才入库。
+            // 编辑器铺满整张卡片，点卡片任意位置都落在文本视图上、直接唤起光标
             ZStack(alignment: .topLeading) {
-                VStack(alignment: .trailing, spacing: 4) {
-                    TextEditor(text: $store.draft)
-                        .font(.system(size: 13))
-                        .foregroundColor(.white)
-                        .scrollContentBackground(.hidden)
-                        .frame(height: 56)
-                        // 编辑器自带 5pt 文字内边距，补 7pt 凑齐卡片的 12pt
-                        .padding(.horizontal, 7)
-                        .padding(.top, 10)
-                        .focused($focused)
-                        .onChange(of: focused) { vm.keyboardHold = $0 }
-                    SaveButton(enabled: !store.draft
-                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
-                        submitDraft()
-                    }
-                    .padding(.trailing, 10)
-                    .padding(.bottom, 10)
-                }
+                TextEditor(text: $store.draft)
+                    .font(.system(size: 13))
+                    .foregroundColor(.white)
+                    .scrollContentBackground(.hidden)
+                    .frame(height: 84)
+                    // 编辑器自带 5pt 文字内边距，补 7pt 凑齐卡片的 12pt
+                    .padding(.horizontal, 7)
+                    .padding(.top, 10)
+                    .padding(.bottom, 8)
+                    .focused($focused)
+                    .onChange(of: focused) { vm.keyboardHold = $0 }
                 // 自绘占位文字：比正文小一号且用细体，与正文起点对齐
                 if store.draft.isEmpty {
                     Text("记下一闪而过的灵感，回车换行，写完点存入")
@@ -44,9 +38,19 @@ struct CaptureView: View {
             }
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.white.opacity(0.08)))
-            // 整张输入卡片任意位置点击都能唤起光标，不限于文字所在的第一行
+            .overlay(alignment: .bottomTrailing) {
+                SaveButton(enabled: !store.draft
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+                    submitDraft()
+                }
+                .padding(8)
+            }
+            // 兜底：点到卡片边距等非文本区域时，先让面板成为键盘焦点窗口再聚焦
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .onTapGesture { focused = true }
+            .onTapGesture {
+                vm.panel?.makeKey()
+                focused = true
+            }
             .padding(.horizontal, edgeInset)
 
             HStack {
