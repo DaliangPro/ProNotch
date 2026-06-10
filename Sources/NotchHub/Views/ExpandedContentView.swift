@@ -276,15 +276,15 @@ private struct TabButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 5) {
+            HStack(spacing: 4) {
                 Image(systemName: tab.icon)
-                    .font(.system(size: 11))
+                    .font(.system(size: 10))
                 Text(tab.rawValue)
-                    .font(.system(size: 12, weight: .light))
+                    .font(.system(size: 11, weight: .light))
             }
             .foregroundColor(isActive ? .white : .white.opacity(hovering ? 0.85 : 0.55))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
             .background(Capsule().fill(
                 Color.white.opacity(isActive ? 0.18 : (hovering ? 0.08 : 0))))
             .contentShape(Capsule())
