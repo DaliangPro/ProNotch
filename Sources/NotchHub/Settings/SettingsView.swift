@@ -94,7 +94,8 @@ struct SettingsView: View {
                     }
                     CardDivider()
                     fieldRow("API Key") {
-                        themedSecureField("sk-…", text: $chatStore.draftAPIKey)
+                        MaskedSecureField(placeholder: "sk-…",
+                                          text: $chatStore.draftAPIKey)
                     }
                     CardDivider()
                     fieldRow("模型") {
@@ -136,7 +137,7 @@ struct SettingsView: View {
                     }
                     CardDivider()
                     fieldRow("搜索 Key") {
-                        themedSecureField("选填：Tavily Key，不填用内置免费搜索",
+                        MaskedSecureField(placeholder: "选填：Tavily Key，不填用内置免费搜索",
                                           text: $chatStore.draftTavilyKey)
                     }
                     CardDivider()
@@ -154,8 +155,8 @@ struct SettingsView: View {
                             Text("检测")
                                 .font(.system(size: 12))
                                 .foregroundColor(.white.opacity(0.85))
-                                .padding(.horizontal, 14)
-                                .frame(height: 26)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
                                 .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
                                     .fill(Color.white.opacity(0.12)))
                         }
@@ -180,8 +181,8 @@ struct SettingsView: View {
                             Text("保存")
                                 .font(.system(size: 12, weight: .semibold))
                                 .foregroundColor(canSave ? .black : .white.opacity(0.4))
-                                .padding(.horizontal, 14)
-                                .frame(height: 26)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
                                 .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
                                     .fill(Color.white.opacity(canSave ? 0.92 : 0.15)))
                         }
@@ -196,11 +197,13 @@ struct SettingsView: View {
                     noteText(error, color: .red.opacity(0.9))
                 }
 
-                Text("兼容 OpenAI /v1/chat/completions 格式；API 地址填到域名或 /v1 即可。联网搜索在对话输入框左侧地球图标开关。")
-                    .font(.system(size: 11))
-                    .foregroundColor(.white.opacity(0.35))
-                    .lineSpacing(3)
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("兼容 OpenAI /v1/chat/completions 格式；API 地址填到域名或 /v1 即可。")
+                    Text("联网搜索在对话输入框左侧地球图标开关。")
+                }
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.35))
+                .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 24)
             .padding(.top, 40)
@@ -288,12 +291,39 @@ struct SettingsView: View {
             .foregroundColor(.white)
     }
 
-    private func themedSecureField(_ placeholder: String, text: Binding<String>) -> some View {
-        SecureField("", text: text,
-                    prompt: Text(placeholder).foregroundColor(.white.opacity(0.28)))
-            .textFieldStyle(.plain)
-            .font(.system(size: 13))
-            .foregroundColor(.white)
+    /// 密钥字段：未编辑时显示固定 16 个圆点（右缘整齐、不泄露密钥长度），
+    /// 点击切回真实输入框编辑
+    private struct MaskedSecureField: View {
+        let placeholder: String
+        @Binding var text: String
+
+        @FocusState private var focused: Bool
+        @State private var editing = false
+
+        var body: some View {
+            if editing || text.isEmpty {
+                SecureField("", text: $text,
+                            prompt: Text(placeholder).foregroundColor(.white.opacity(0.28)))
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13))
+                    .foregroundColor(.white)
+                    .focused($focused)
+                    .onChange(of: focused) { if !$0 { editing = false } }
+            } else {
+                Button {
+                    editing = true
+                    DispatchQueue.main.async { focused = true }
+                } label: {
+                    Text(String(repeating: "•", count: 16))
+                        .font(.system(size: 13))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("点击修改")
+            }
+        }
     }
 
     private var connectivityColor: Color {
