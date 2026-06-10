@@ -12,25 +12,36 @@ struct CaptureView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // 输入区：回车存入，⌥+回车换行
+            // 输入区：回车只换行（避免误触把半截内容存进去），点「存入」才入库
             ZStack(alignment: .topLeading) {
-                // 自绘占位文字：比正文小一号且用细体（prompt 不支持自定字体）
+                VStack(alignment: .trailing, spacing: 4) {
+                    TextEditor(text: $store.draft)
+                        .font(.system(size: 13))
+                        .foregroundColor(.white)
+                        .scrollContentBackground(.hidden)
+                        .frame(height: 56)
+                        // 编辑器自带 5pt 文字内边距，补 7pt 凑齐卡片的 12pt
+                        .padding(.horizontal, 7)
+                        .padding(.top, 10)
+                        .focused($focused)
+                        .onChange(of: focused) { vm.keyboardHold = $0 }
+                    SaveButton(enabled: !store.draft
+                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+                        submitDraft()
+                    }
+                    .padding(.trailing, 10)
+                    .padding(.bottom, 10)
+                }
+                // 自绘占位文字：比正文小一号且用细体，与正文起点对齐
                 if store.draft.isEmpty {
-                    Text("记下一闪而过的灵感，回车存入 Obsidian（⌥+回车换行）")
+                    Text("记下一闪而过的灵感，回车换行，写完点存入")
                         .font(.system(size: 12, weight: .light))
                         .foregroundColor(.white.opacity(0.3))
                         .allowsHitTesting(false)
+                        .padding(.leading, 12)
+                        .padding(.top, 10)
                 }
-                TextField("", text: $store.draft, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .foregroundColor(.white)
-                    .lineLimit(3...6)
-                    .focused($focused)
-                    .onSubmit { submitDraft() }
-                    .onChange(of: focused) { vm.keyboardHold = $0 }
             }
-            .padding(12)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color.white.opacity(0.08)))
             // 整张输入卡片任意位置点击都能唤起光标，不限于文字所在的第一行
@@ -97,6 +108,31 @@ struct CaptureView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             withAnimation(.easeIn(duration: 0.3)) { savedFlash = false }
         }
+    }
+}
+
+/// 输入卡片右下角的存入按钮：整个按钮形状可点击、悬停高亮，内容为空时置灰
+private struct SaveButton: View {
+    let enabled: Bool
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text("存入")
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(enabled ? 0.85 : 0.35))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.white.opacity(hovering && enabled ? 0.2 : 0.12)))
+                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .onHover { hovering = $0 }
+        .help("存入收件箱文件（回车只换行，不会误存）")
     }
 }
 
