@@ -281,6 +281,8 @@ struct SettingsView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
+        // 行级兜底裁剪：任何控件都不允许画出行边界
+        .clipped()
     }
 
     private func themedField(_ placeholder: String, text: Binding<String>) -> some View {
@@ -289,6 +291,8 @@ struct SettingsView: View {
             .textFieldStyle(.plain)
             .font(.system(size: 13))
             .foregroundColor(.white)
+            // 朴素样式输入框内容超长时会撑爆行宽，显式约束在可用宽度内
+            .frame(maxWidth: .infinity)
     }
 
     /// 密钥字段：未编辑时显示固定 16 个圆点（右缘整齐、不泄露密钥长度），
@@ -307,6 +311,8 @@ struct SettingsView: View {
                     .textFieldStyle(.plain)
                     .font(.system(size: 13))
                     .foregroundColor(.white)
+                    // 长密钥的圆点串会撑爆行宽越过右边界，约束在可用宽度内
+                    .frame(maxWidth: .infinity)
                     .focused($focused)
                     .onChange(of: focused) { if !$0 { editing = false } }
             } else {
