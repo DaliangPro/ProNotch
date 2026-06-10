@@ -18,12 +18,7 @@ final class CaptureStore: ObservableObject {
     /// 输入草稿放 Store，面板收起重开不丢失
     @Published var draft = ""
 
-    private static let defaultPath = "~/Documents/OrbitOS Vault/00_收件箱/妙记.md"
-    /// 功能历次更名留下的旧默认路径（速记 → 闪记 → 妙记）
-    private static let legacyDefaultPaths = [
-        "~/Documents/OrbitOS Vault/00_收件箱/闪记.md",
-        "~/Documents/OrbitOS Vault/00_收件箱/速记.md",
-    ]
+    private static let defaultPath = "~/Documents/妙记.md"
 
     private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -51,28 +46,7 @@ final class CaptureStore: ObservableObject {
 
     init() {
         UserDefaults.standard.register(defaults: ["captureInboxPath": Self.defaultPath])
-        migrateLegacyFileIfNeeded()
         refresh()
-    }
-
-    /// 功能更名（速记 → 闪记 → 妙记）：默认收件箱文件随之改名，
-    /// 老文件存在则原地重命名；用户自定义路径不受影响
-    private func migrateLegacyFileIfNeeded() {
-        if Self.legacyDefaultPaths.contains(inboxPath) {
-            UserDefaults.standard.set(Self.defaultPath, forKey: "captureInboxPath")
-        }
-        guard inboxPath == Self.defaultPath else { return }
-        let fm = FileManager.default
-        let newPath = (Self.defaultPath as NSString).expandingTildeInPath
-        guard !fm.fileExists(atPath: newPath) else { return }
-        for legacy in Self.legacyDefaultPaths {
-            let oldPath = (legacy as NSString).expandingTildeInPath
-            if fm.fileExists(atPath: oldPath) {
-                try? fm.moveItem(atPath: oldPath, toPath: newPath)
-                print("[NotchHub] 收件箱文件已更名: \((oldPath as NSString).lastPathComponent) → 妙记.md")
-                return
-            }
-        }
     }
 
     /// 打开收件箱：优先用 Obsidian 定位该笔记，无 Obsidian 时回退系统默认应用；

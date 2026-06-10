@@ -36,6 +36,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self, selector: #selector(screenParametersChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
 
+        // 调试通道仅存在于开发构建：正式版不暴露任何可被本机其他进程
+        // 远程触发的接口
+        #if DEBUG
         // 调试入口：命令行可触发展开/收起，便于不靠鼠标悬停验证
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugToggle),
@@ -84,10 +87,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(openSettings),
             name: NSNotification.Name("com.jiliang.NotchHub.opensettings"), object: nil)
-        // 面板内齿轮按钮打开设置窗口（窗口由本类持有，进程内通知解耦）
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(openSettings),
-            name: NSNotification.Name("NotchHubOpenSettings"), object: nil)
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestFullscreen),
             name: NSNotification.Name("com.jiliang.NotchHub.testfullscreen"), object: nil)
@@ -100,6 +99,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestCapture),
             name: NSNotification.Name("com.jiliang.NotchHub.testcapture"), object: nil)
+        #endif
+
+        // 面板内齿轮按钮打开设置窗口（窗口由本类持有，进程内通知解耦）——
+        // 正式功能，必须在调试块之外
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(openSettings),
+            name: NSNotification.Name("NotchHubOpenSettings"), object: nil)
     }
 
     /// 调试用：写入一条测试妙记

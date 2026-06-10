@@ -66,8 +66,12 @@ final class ChatStore: ObservableObject {
 
     init() {
         let defaults = UserDefaults.standard
+        Self.migrateKeysToKeychainIfNeeded()
         let savedURL = defaults.string(forKey: "chatBaseURL") ?? ""
-        let savedKey = defaults.string(forKey: "chatAPIKey") ?? ""
+        // 迁移后 UserDefaults 里只剩测试参数域（-chatAPIKey）可能有值，
+        // 真实 Key 一律从钥匙串读取
+        let savedKey = defaults.string(forKey: "chatAPIKey")
+            ?? KeychainStore.read("chatAPIKey") ?? ""
         let savedModel = defaults.string(forKey: "chatModel") ?? ""
         baseURL = savedURL
         apiKey = savedKey
@@ -75,10 +79,25 @@ final class ChatStore: ObservableObject {
         draftBaseURL = savedURL
         draftAPIKey = savedKey
         draftModel = savedModel
-        let savedTavily = defaults.string(forKey: "chatTavilyKey") ?? ""
+        let savedTavily = defaults.string(forKey: "chatTavilyKey")
+            ?? KeychainStore.read("chatTavilyKey") ?? ""
         tavilyKey = savedTavily
         draftTavilyKey = savedTavily
         webSearchEnabled = defaults.bool(forKey: "chatWebSearchEnabled")
+    }
+
+    /// 历史版本把 Key 明文存在 UserDefaults：首次启动搬进钥匙串并抹掉明文
+    private static func migrateKeysToKeychainIfNeeded() {
+        guard let bundleID = Bundle.main.bundleIdentifier,
+              let persisted = UserDefaults.standard.persistentDomain(forName: bundleID)
+        else { return }
+        for account in ["chatAPIKey", "chatTavilyKey"] {
+            if let legacy = persisted[account] as? String, !legacy.isEmpty {
+                KeychainStore.save(legacy, account: account)
+                UserDefaults.standard.removeObject(forKey: account)
+                print("[NotchHub] \(account) 已从明文配置迁入钥匙串")
+            }
+        }
     }
 
     /// 把表单草稿提交为正式设置并持久化
@@ -93,9 +112,10 @@ final class ChatStore: ObservableObject {
         draftTavilyKey = tavilyKey
         let defaults = UserDefaults.standard
         defaults.set(baseURL, forKey: "chatBaseURL")
-        defaults.set(apiKey, forKey: "chatAPIKey")
         defaults.set(model, forKey: "chatModel")
-        defaults.set(tavilyKey, forKey: "chatTavilyKey")
+        // Key 只进钥匙串，不落明文配置
+        KeychainStore.save(apiKey, account: "chatAPIKey")
+        KeychainStore.save(tavilyKey, account: "chatTavilyKey")
         print("[NotchHub] 已保存 AI 设置，端点: \((try? endpointURL())?.absoluteString ?? "无效")")
         checkConnectivity(force: true)
     }
