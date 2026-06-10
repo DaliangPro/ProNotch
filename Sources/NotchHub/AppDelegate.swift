@@ -84,6 +84,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(openSettings),
             name: NSNotification.Name("com.jiliang.NotchHub.opensettings"), object: nil)
+        // 面板内齿轮按钮打开设置窗口（窗口由本类持有，进程内通知解耦）
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(openSettings),
+            name: NSNotification.Name("NotchHubOpenSettings"), object: nil)
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestFullscreen),
             name: NSNotification.Name("com.jiliang.NotchHub.testfullscreen"), object: nil)

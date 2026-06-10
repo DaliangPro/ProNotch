@@ -108,10 +108,10 @@ struct ExpandedContentView: View {
                 vm.collapseNow()
                 quickActions.screenshotToClipboard()
             }
-        case .systemSettings:
+        case .appSettings:
             StripButton(icon: "gearshape",
-                        help: "打开系统设置") {
-                quickActions.openSystemSettings()
+                        help: "打开 NotchHub 设置") {
+                quickActions.openAppSettings()
                 vm.collapseNow()
             }
         case .lockScreen:

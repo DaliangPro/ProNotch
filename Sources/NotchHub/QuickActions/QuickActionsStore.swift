@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// 刘海两侧快捷操作：区域截图、系统设置、熄屏锁定、防休眠、外观切换
+/// 刘海两侧快捷操作：区域截图、应用设置、熄屏锁定、防休眠、外观切换
 @MainActor
 final class QuickActionsStore: ObservableObject {
     enum AppearanceMode: String {
@@ -13,8 +13,11 @@ final class QuickActionsStore: ObservableObject {
     /// 左侧快捷动作（可拖动排序）
     enum ActionKind: String, CaseIterable {
         case screenshot
-        case systemSettings
+        case appSettings
         case lockScreen
+
+        /// 旧 rawValue 兼容映射（系统设置 → 应用设置），保留已存的拖动顺序
+        static let legacyNames: [String: ActionKind] = ["systemSettings": .appSettings]
     }
 
     /// 快捷动作顺序（持久化）
@@ -46,7 +49,7 @@ final class QuickActionsStore: ObservableObject {
 
     init() {
         let saved = (UserDefaults.standard.stringArray(forKey: "quickActionOrder") ?? [])
-            .compactMap(ActionKind.init(rawValue:))
+            .compactMap { ActionKind(rawValue: $0) ?? ActionKind.legacyNames[$0] }
         actionOrder = Set(saved) == Set(ActionKind.allCases) ? saved : ActionKind.allCases
         appearanceMode = Self.readAppearanceMode()
         // 系统外观变化（无论谁触发）都同步分段控件状态
@@ -129,10 +132,11 @@ final class QuickActionsStore: ObservableObject {
         }
     }
 
-    func openSystemSettings() {
-        let url = URL(fileURLWithPath: "/System/Applications/System Settings.app")
-        NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
-        print("[NotchHub] 打开系统设置")
+    /// 打开 NotchHub 自己的设置窗口（窗口由 AppDelegate 持有，走通知解耦）
+    func openAppSettings() {
+        NotificationCenter.default.post(
+            name: NSNotification.Name("NotchHubOpenSettings"), object: nil)
+        print("[NotchHub] 打开应用设置")
     }
 
     /// 熄屏锁定：CGSession 在新版 macOS 已移除，用 pmset 熄屏替代；
