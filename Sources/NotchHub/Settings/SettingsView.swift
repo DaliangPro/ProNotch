@@ -38,6 +38,35 @@ struct SettingsView: View {
                     toggleRow("开机自动启动", isOn: $settings.launchAtLogin)
                     CardDivider()
                     toggleRow("全屏应用时隐藏刘海", isOn: $settings.hideNotchInFullscreen)
+                    CardDivider()
+                    HStack {
+                        Text("剪贴板历史上限")
+                            .font(.system(size: 13))
+                            .foregroundColor(.white.opacity(0.9))
+                        Spacer()
+                        Menu {
+                            ForEach(SettingsStore.clipboardLimitOptions, id: \.self) { option in
+                                Button("\(option) 条") { settings.clipboardLimit = option }
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Text("\(settings.clipboardLimit) 条")
+                                    .font(.system(size: 12))
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.system(size: 9))
+                            }
+                            .foregroundColor(.white.opacity(0.85))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(Color.white.opacity(0.12)))
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
                 }
                 if let hint = settings.loginItemHint {
                     noteText(hint, color: .orange)

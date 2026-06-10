@@ -143,7 +143,7 @@ private struct MessageBubble: View {
                     }
                     .padding(4)
                 } else {
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: 4) {
                         if let count = message.searchResultCount {
                             HStack(spacing: 3) {
                                 Image(systemName: "globe")
@@ -153,10 +153,15 @@ private struct MessageBubble: View {
                             }
                             .foregroundColor(.cyan.opacity(0.75))
                         }
-                        Text(message.content)
-                            .font(.system(size: 12))
-                            .foregroundColor(.white.opacity(0.9))
-                            .textSelection(.enabled)
+                        if message.role == .assistant {
+                            // AI 回复按 Markdown 排版；用户消息保持纯文本
+                            MarkdownMessageView(text: message.content)
+                        } else {
+                            Text(message.content)
+                                .font(.system(size: 12))
+                                .foregroundColor(.white.opacity(0.9))
+                                .textSelection(.enabled)
+                        }
                     }
                 }
             }

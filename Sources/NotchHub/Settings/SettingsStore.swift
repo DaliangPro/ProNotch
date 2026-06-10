@@ -29,10 +29,26 @@ final class SettingsStore: ObservableObject {
         SMAppService.mainApp.status
     }
 
+    /// 剪贴板历史保留条数
+    @Published var clipboardLimit: Int {
+        didSet {
+            UserDefaults.standard.set(clipboardLimit, forKey: "clipboardLimit")
+            // 通知剪贴板数据源立即按新上限裁剪
+            NotificationCenter.default.post(
+                name: NSNotification.Name("NotchHubClipboardLimitChanged"), object: nil)
+        }
+    }
+
+    static let clipboardLimitOptions = [50, 100, 200, 500]
+
     init() {
         launchAtLogin = Self.serviceStatus == .enabled
-        UserDefaults.standard.register(defaults: ["hideNotchInFullscreen": true])
+        UserDefaults.standard.register(defaults: [
+            "hideNotchInFullscreen": true,
+            "clipboardLimit": 200,
+        ])
         hideNotchInFullscreen = UserDefaults.standard.bool(forKey: "hideNotchInFullscreen")
+        clipboardLimit = UserDefaults.standard.integer(forKey: "clipboardLimit")
     }
 
     private func applyLaunchAtLogin() {

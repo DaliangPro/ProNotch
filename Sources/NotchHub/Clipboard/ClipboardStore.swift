@@ -19,7 +19,13 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
 final class ClipboardStore: ObservableObject {
     @Published private(set) var items: [ClipboardItem] = []
 
-    private let maxItems = 50
+    /// 保留条数上限（设置项 clipboardLimit，默认 200）
+    private var maxItems: Int {
+        let value = UserDefaults.standard.integer(forKey: "clipboardLimit")
+        return value > 0 ? value : 200
+    }
+
+    private var limitObserver: Any?
     /// 单张图片超过此大小不入历史，避免磁盘膨胀
     private let maxImageBytes = 5 * 1024 * 1024
     private var timer: Timer?
@@ -48,11 +54,21 @@ final class ClipboardStore: ObservableObject {
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.poll() }
         }
+        // 设置里调小上限时立即裁剪
+        limitObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("NotchHubClipboardLimitChanged"),
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.trimAndSave() }
+        }
     }
 
     func stop() {
         timer?.invalidate()
         timer = nil
+        if let observer = limitObserver {
+            NotificationCenter.default.removeObserver(observer)
+            limitObserver = nil
+        }
     }
 
     func copyToPasteboard(_ item: ClipboardItem) {
