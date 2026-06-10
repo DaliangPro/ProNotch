@@ -14,6 +14,19 @@ final class QuickActionsStore: ObservableObject {
     /// 当前外观模式（跟随系统，外部切换也会同步）
     @Published private(set) var appearanceMode: AppearanceMode
 
+    /// 当前实际是否深色（自动档时按系统实际呈现判断），滑动开关用
+    var isEffectivelyDark: Bool {
+        switch appearanceMode {
+        case .dark:
+            return true
+        case .light:
+            return false
+        case .system:
+            return NSApp?.effectiveAppearance
+                .bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        }
+    }
+
     private var caffeinateProcess: Process?
     private var themeObserver: Any?
 
@@ -24,7 +37,9 @@ final class QuickActionsStore: ObservableObject {
             forName: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.appearanceMode = Self.readAppearanceMode()
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                    self?.appearanceMode = Self.readAppearanceMode()
+                }
             }
         }
     }

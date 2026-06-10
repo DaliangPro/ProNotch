@@ -40,7 +40,7 @@ struct ExpandedContentView: View {
 
                 HStack(spacing: 6) {
                     Spacer()
-                    AppearanceSegments()
+                    AppearanceSlider()
                     StripToggle(title: "防休眠",
                                 active: quickActions.caffeinateActive,
                                 help: quickActions.caffeinateActive
@@ -159,53 +159,45 @@ private struct StripToggle: View {
     }
 }
 
-/// 外观三段式切换（图标样式，参照系统外观选择器）：系统 / 浅色 / 深色
-private struct AppearanceSegments: View {
+/// 深浅色滑动开关：太阳/月亮固定两端，高亮滑块弹簧动画滑向当前侧，
+/// 点击任意位置切换（首次使用需授权自动化）
+private struct AppearanceSlider: View {
     @EnvironmentObject var quickActions: QuickActionsStore
-
-    var body: some View {
-        HStack(spacing: 2) {
-            segment(.system, icon: "display",
-                    help: "跟随系统（macOS 未开放接口，点击打开设置面板选择）")
-            segment(.light, icon: "sun.max",
-                    help: "浅色模式")
-            segment(.dark, icon: "moon",
-                    help: "深色模式")
-        }
-        .padding(2)
-        .background(Capsule().fill(Color.white.opacity(0.06)))
-    }
-
-    private func segment(_ mode: QuickActionsStore.AppearanceMode,
-                         icon: String, help: String) -> some View {
-        SegmentButton(icon: icon, help: help,
-                      selected: quickActions.appearanceMode == mode) {
-            quickActions.setAppearance(mode)
-        }
-    }
-}
-
-private struct SegmentButton: View {
-    let icon: String
-    let help: String
-    let selected: Bool
-    let action: () -> Void
 
     @State private var hovering = false
 
+    private var isDark: Bool { quickActions.isEffectivelyDark }
+
     var body: some View {
-        Button(action: action) {
-            Image(systemName: icon)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(selected ? .white : .white.opacity(hovering ? 0.85 : 0.5))
-                .frame(width: 30, height: 22)
-                .background(Capsule().fill(
-                    Color.white.opacity(selected ? 0.18 : (hovering ? 0.08 : 0))))
-                .contentShape(Capsule())
+        Button {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                quickActions.setAppearance(isDark ? .light : .dark)
+            }
+        } label: {
+            ZStack(alignment: isDark ? .trailing : .leading) {
+                // 滑块
+                Capsule()
+                    .fill(Color.white.opacity(hovering ? 0.25 : 0.18))
+                    .frame(width: 30, height: 22)
+                // 两端图标
+                HStack(spacing: 0) {
+                    Image(systemName: "sun.max")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(isDark ? 0.45 : 1))
+                        .frame(width: 30, height: 22)
+                    Image(systemName: "moon")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(isDark ? 1 : 0.45))
+                        .frame(width: 30, height: 22)
+                }
+            }
+            .padding(2)
+            .background(Capsule().fill(Color.white.opacity(0.06)))
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .help(help)
+        .help(isDark ? "深色模式（点击切换为浅色）" : "浅色模式（点击切换为深色）")
     }
 }
 
