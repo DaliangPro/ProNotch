@@ -11,6 +11,8 @@ final class NotchPanel: NSPanel {
                    backing: .buffered,
                    defer: false)
         isFloatingPanel = true
+        // 只在需要时（点击搜索框）才成为 key window，普通按钮点击不抢键盘
+        becomesKeyOnlyIfNeeded = true
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false

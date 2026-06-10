@@ -22,14 +22,16 @@ enum AppIconCache {
     }
 }
 
-/// 启动台数据源：扫描已安装应用、维护常用固定列表、启动应用
+/// 启动台数据源：扫描已安装应用、维护置顶列表、启动应用
 @MainActor
 final class LauncherStore: ObservableObject {
     @Published private(set) var pinned: [AppEntry] = []
     @Published private(set) var allApps: [AppEntry] = []
 
-    private let pinnedKey = "pinnedAppPaths"
-    private let prefillKey = "didPrefillPinnedFromDock"
+    /// 置顶区固定槽位数
+    let maxPinned = 8
+
+    private let pinnedKey = "topPinnedAppPaths"
     private var lastScan: Date = .distantPast
 
     /// 扫描应用目录（距上次扫描超过 60 秒才重扫，面板每次展开时调用无负担）
@@ -57,6 +59,7 @@ final class LauncherStore: ObservableObject {
         if isPinned(app) {
             pinned.removeAll { $0.id == app.id }
         } else {
+            guard pinned.count < maxPinned else { return }
             pinned.append(app)
         }
         UserDefaults.standard.set(pinned.map(\.url.path), forKey: pinnedKey)
@@ -67,45 +70,14 @@ final class LauncherStore: ObservableObject {
     private func apply(_ apps: [AppEntry]) {
         allApps = apps
         let fm = FileManager.default
+        // 按保存顺序恢复置顶列表，剔除已卸载的应用；默认留空
         let saved = UserDefaults.standard.stringArray(forKey: pinnedKey) ?? []
-        if !saved.isEmpty {
-            // 已有用户固定列表：按保存顺序恢复，剔除已卸载的应用
-            pinned = saved.compactMap { path in
-                guard fm.fileExists(atPath: path) else { return nil }
-                return apps.first { $0.url.path == path }
-                    ?? AppEntry(url: URL(fileURLWithPath: path), name: fm.displayName(atPath: path))
-            }
-        } else {
-            prefillFromDockIfNeeded()
+        pinned = saved.prefix(maxPinned).compactMap { path in
+            guard fm.fileExists(atPath: path) else { return nil }
+            return apps.first { $0.url.path == path }
+                ?? AppEntry(url: URL(fileURLWithPath: path), name: fm.displayName(atPath: path))
         }
-        print("[NotchHub] 应用扫描完成：全部 \(allApps.count) 个，常用 \(pinned.count) 个")
-    }
-
-    /// 首次启动时把 Dock 里的应用预填充为常用，提供开箱即用的默认值
-    private func prefillFromDockIfNeeded() {
-        let defaults = UserDefaults.standard
-        guard !defaults.bool(forKey: prefillKey) else { return }
-        defaults.set(true, forKey: prefillKey)
-
-        guard let dock = UserDefaults(suiteName: "com.apple.dock"),
-              let items = dock.array(forKey: "persistent-apps") as? [[String: Any]] else { return }
-        let fm = FileManager.default
-        var entries: [AppEntry] = []
-        for item in items {
-            guard let tile = item["tile-data"] as? [String: Any],
-                  let file = tile["file-data"] as? [String: Any],
-                  let urlString = file["_CFURLString"] as? String,
-                  let url = URL(string: urlString), url.isFileURL else { continue }
-            let path = url.path
-            guard path.hasSuffix(".app"), fm.fileExists(atPath: path) else { continue }
-            entries.append(AppEntry(url: URL(fileURLWithPath: path),
-                                    name: fm.displayName(atPath: path)))
-        }
-        if !entries.isEmpty {
-            pinned = Array(entries.prefix(8))
-            defaults.set(pinned.map(\.url.path), forKey: pinnedKey)
-            print("[NotchHub] 已从 Dock 预填充 \(pinned.count) 个常用应用")
-        }
+        print("[NotchHub] 应用扫描完成：全部 \(allApps.count) 个，置顶 \(pinned.count) 个")
     }
 
     private nonisolated static func scanApplications() -> [AppEntry] {

@@ -27,7 +27,10 @@ final class NotchViewModel: ObservableObject {
     /// 刘海矩形（全局坐标）
     let notchRect: CGRect
     /// 展开后刘海下方面板的内容尺寸
-    let panelSize = CGSize(width: 720, height: 300)
+    let panelSize = CGSize(width: 720, height: 340)
+
+    /// 搜索框聚焦期间为 true，暂停鼠标离开触发的自动收起
+    var keyboardHold = false
 
     weak var panel: NSPanel?
 
@@ -127,7 +130,7 @@ final class NotchViewModel: ObservableObject {
                 pendingCollapse = nil
                 // 鼠标真实进入面板，解除调试固定，交还自动收起控制权
                 debugPinned = false
-            } else if !debugPinned, pendingCollapse == nil {
+            } else if !debugPinned, !keyboardHold, pendingCollapse == nil {
                 scheduleCollapse()
             }
         } else {
@@ -199,12 +202,23 @@ final class NotchViewModel: ObservableObject {
         guard isExpanded else { return }
         print("[NotchHub] 收起")
         debugPinned = false
+        keyboardHold = false
         pendingCollapse?.cancel()
         pendingCollapse = nil
         // 收起后窗口对鼠标完全隐形，假刘海区域的点击会穿透到下层
         panel?.ignoresMouseEvents = true
         withAnimation(.spring(response: animationDuration, dampingFraction: 0.9)) {
             isExpanded = false
+        }
+        // 若面板曾因搜索框成为 key window，收起后快速 orderOut/orderFront
+        // 一次，把键盘焦点还给原前台应用（动画结束后执行，避免打断动画）
+        DispatchQueue.main.asyncAfter(deadline: .now() + animationDuration + 0.05) { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, !self.isExpanded,
+                      let panel = self.panel, panel.isKeyWindow else { return }
+                panel.orderOut(nil)
+                panel.orderFrontRegardless()
+            }
         }
     }
 }
