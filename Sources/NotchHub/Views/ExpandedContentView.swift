@@ -84,6 +84,13 @@ struct ExpandedContentView: View {
         .onDisappear { launcherStore.searchText = "" }
     }
 
+    private var clipboardCountText: String {
+        if clipboardStore.showingSnippets {
+            return snippetStore.snippets.isEmpty ? "" : "\(snippetStore.snippets.count) 条"
+        }
+        return clipboardStore.items.isEmpty ? "" : "\(clipboardStore.items.count) 条"
+    }
+
     /// 顶行右侧：随当前标签页切换的功能区
     @ViewBuilder
     private var accessory: some View {
@@ -91,20 +98,22 @@ struct ExpandedContentView: View {
         case .launcher:
             LauncherSearchField()
         case .clipboard:
+            // 滑块固定不动：右侧计数与按钮用固定宽度槽位占位，
+            // 内容变宽变窄、出现消失都不推挤滑块
             ClipboardSectionToggle()
-            if clipboardStore.showingSnippets {
-                if !snippetStore.snippets.isEmpty {
-                    Text("\(snippetStore.snippets.count) 条")
-                        .font(.system(size: 11))
-                        .foregroundColor(.white.opacity(0.4))
+            Text(clipboardCountText)
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.4))
+                .lineLimit(1)
+                .frame(width: 56, alignment: .trailing)
+            Group {
+                if clipboardStore.showingSnippets {
+                    AccessoryButton(title: "新增") { snippetStore.beginNew() }
+                } else if !clipboardStore.items.isEmpty {
+                    AccessoryButton(title: "清空") { clipboardStore.clear() }
                 }
-                AccessoryButton(title: "新增") { snippetStore.beginNew() }
-            } else if !clipboardStore.items.isEmpty {
-                Text("\(clipboardStore.items.count) 条")
-                    .font(.system(size: 11))
-                    .foregroundColor(.white.opacity(0.4))
-                AccessoryButton(title: "清空") { clipboardStore.clear() }
             }
+            .frame(width: 52, alignment: .trailing)
         case .chat:
             if chatStore.isConfigured {
                 Button {
