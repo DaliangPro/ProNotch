@@ -233,14 +233,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = mainMenu
     }
 
+    /// 菜单栏图标：自绘「屏幕轮廓 + 顶部实心刘海」，模板图自动适配深浅菜单栏
+    private static func makeStatusIcon() -> NSImage {
+        let image = NSImage(size: NSSize(width: 18, height: 14), flipped: false) { _ in
+            let screen = NSRect(x: 1, y: 1.25, width: 16, height: 11.5)
+            let outline = NSBezierPath(roundedRect: screen, xRadius: 3.5, yRadius: 3.5)
+            outline.lineWidth = 1.5
+            NSColor.black.setStroke()
+            outline.stroke()
+            // 刘海：从屏幕顶边向内悬挂的圆角小块
+            let nw: CGFloat = 7, nh: CGFloat = 3.6, r: CGFloat = 1.4
+            let nx = screen.midX - nw / 2, ny = screen.maxY
+            let notch = NSBezierPath()
+            notch.move(to: NSPoint(x: nx, y: ny))
+            notch.line(to: NSPoint(x: nx, y: ny - nh + r))
+            notch.appendArc(withCenter: NSPoint(x: nx + r, y: ny - nh + r),
+                            radius: r, startAngle: 180, endAngle: 270, clockwise: false)
+            notch.line(to: NSPoint(x: nx + nw - r, y: ny - nh))
+            notch.appendArc(withCenter: NSPoint(x: nx + nw - r, y: ny - nh + r),
+                            radius: r, startAngle: 270, endAngle: 360, clockwise: false)
+            notch.line(to: NSPoint(x: nx + nw, y: ny))
+            notch.close()
+            NSColor.black.setFill()
+            notch.fill()
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }
+
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        if let image = NSImage(systemSymbolName: "sparkles.rectangle.stack",
-                               accessibilityDescription: "NotchHub") {
-            item.button?.image = image
-        } else {
-            item.button?.title = "凹"
-        }
+        item.button?.image = Self.makeStatusIcon()
         let menu = NSMenu()
         // macOS 26 会按标题词汇给菜单项自动配图标（设置→齿轮、退出→叉），
         // image 为 nil 时才会注入；显式塞 1×1 透明空图占住槽位即可禁用
