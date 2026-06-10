@@ -232,21 +232,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             item.button?.title = "凹"
         }
         let menu = NSMenu()
+        // macOS 26 会按标题词汇给菜单项自动配图标（设置→齿轮、退出→叉），
+        // image 为 nil 时才会注入；显式塞 1×1 透明空图占住槽位即可禁用
+        let emptyImage = NSImage(size: NSSize(width: 1, height: 1))
+
         let toggleItem = NSMenuItem(title: "展开 / 收起",
                                     action: #selector(debugToggle), keyEquivalent: "t")
         toggleItem.target = self
-        toggleItem.image = nil
+        toggleItem.image = emptyImage
         menu.addItem(toggleItem)
         let settingsItem = NSMenuItem(title: "设置…",
                                       action: #selector(openSettings), keyEquivalent: ",")
         settingsItem.target = self
-        settingsItem.image = nil
+        settingsItem.image = emptyImage
         menu.addItem(settingsItem)
         menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "退出 NotchHub",
                                   action: #selector(NSApplication.terminate(_:)),
                                   keyEquivalent: "q")
-        quitItem.image = nil
+        quitItem.image = emptyImage
         menu.addItem(quitItem)
         item.menu = menu
         statusItem = item
