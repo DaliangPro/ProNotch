@@ -129,16 +129,27 @@ private struct AppCell: View {
     var showsName = true
 
     @State private var hovering = false
+    @State private var jumping = false
 
     var body: some View {
         Button {
             store.launch(app)
-            vm.collapseNow()
+            // Dock 同款跳动反馈：图标弹起落回，让用户确认点击成功后再收起
+            withAnimation(.easeOut(duration: 0.12)) { jumping = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                withAnimation(.spring(response: 0.25, dampingFraction: 0.55)) {
+                    jumping = false
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
+                vm.collapseNow()
+            }
         } label: {
             VStack(spacing: 3) {
                 Image(nsImage: AppIconCache.icon(for: app.url))
                     .resizable()
                     .frame(width: 48, height: 48)
+                    .offset(y: jumping ? -10 : 0)
                 if showsName {
                     Text(app.name)
                         .font(.system(size: 10))
