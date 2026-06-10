@@ -13,6 +13,9 @@ final class NotchPanel: NSPanel {
         isFloatingPanel = true
         // 只在需要时（点击搜索框）才成为 key window，普通按钮点击不抢键盘
         becomesKeyOnlyIfNeeded = true
+        // 面板是纯黑设计，外观锁定深色：系统切浅色时输入框占位符、
+        // 光标等控件配色不随之变暗
+        appearance = NSAppearance(named: .darkAqua)
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
