@@ -10,6 +10,7 @@ struct ExpandedContentView: View {
     @EnvironmentObject var quickActions: QuickActionsStore
 
     @State private var draggedTab: NotchViewModel.Tab?
+    @State private var draggedAction: QuickActionsStore.ActionKind?
 
     private let edgeInset: CGFloat = 14
 
@@ -20,20 +21,19 @@ struct ExpandedContentView: View {
             // 右侧开关类用文字胶囊卡（呼应 macOS 状态区在右上的习惯）
             HStack(spacing: 0) {
                 HStack(spacing: 4) {
-                    StripButton(icon: "camera.viewfinder",
-                                help: "区域截图，自动进剪贴板历史（首次需授权屏幕录制）") {
-                        vm.collapseNow()
-                        quickActions.screenshotToClipboard()
-                    }
-                    StripButton(icon: "gearshape",
-                                help: "打开系统设置") {
-                        quickActions.openSystemSettings()
-                        vm.collapseNow()
-                    }
-                    StripButton(icon: "lock",
-                                help: "熄屏锁定") {
-                        vm.collapseNow()
-                        quickActions.lockScreen()
+                    // 快捷动作可拖动排序（与标签同款交互）
+                    ForEach(quickActions.actionOrder, id: \.self) { kind in
+                        stripButton(for: kind)
+                            .opacity(draggedAction == kind ? 0.35 : 1)
+                            .onDrag {
+                                draggedAction = kind
+                                return NSItemProvider(object: kind.rawValue as NSString)
+                            }
+                            .onDrop(of: [.text],
+                                    delegate: QuickActionDropDelegate(
+                                        kind: kind,
+                                        dragged: $draggedAction,
+                                        store: quickActions))
                     }
                     Spacer()
                 }
@@ -94,6 +94,30 @@ struct ExpandedContentView: View {
         .padding(.horizontal, 20)
         .padding(.bottom, 16)
         .onDisappear { launcherStore.searchText = "" }
+    }
+
+    @ViewBuilder
+    private func stripButton(for kind: QuickActionsStore.ActionKind) -> some View {
+        switch kind {
+        case .screenshot:
+            StripButton(icon: "camera.viewfinder",
+                        help: "区域截图，自动进剪贴板历史（首次需授权屏幕录制）") {
+                vm.collapseNow()
+                quickActions.screenshotToClipboard()
+            }
+        case .systemSettings:
+            StripButton(icon: "gearshape",
+                        help: "打开系统设置") {
+                quickActions.openSystemSettings()
+                vm.collapseNow()
+            }
+        case .lockScreen:
+            StripButton(icon: "lock",
+                        help: "熄屏锁定") {
+                vm.collapseNow()
+                quickActions.lockScreen()
+            }
+        }
     }
 
     private var clipboardCountText: String {
@@ -218,6 +242,32 @@ private struct TabDropDelegate: DropDelegate {
         withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
             vm.tabOrder.move(fromOffsets: IndexSet(integer: from),
                              toOffset: to > from ? to + 1 : to)
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragged = nil
+        return true
+    }
+}
+
+/// 快捷动作拖动换位：拖入目标图标时实时交换位置（带弹簧动画）
+private struct QuickActionDropDelegate: DropDelegate {
+    let kind: QuickActionsStore.ActionKind
+    @Binding var dragged: QuickActionsStore.ActionKind?
+    let store: QuickActionsStore
+
+    func dropEntered(info: DropInfo) {
+        guard let dragged, dragged != kind,
+              let from = store.actionOrder.firstIndex(of: dragged),
+              let to = store.actionOrder.firstIndex(of: kind) else { return }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+            store.actionOrder.move(fromOffsets: IndexSet(integer: from),
+                                   toOffset: to > from ? to + 1 : to)
         }
     }
 

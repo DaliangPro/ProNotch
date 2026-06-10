@@ -10,6 +10,20 @@ final class QuickActionsStore: ObservableObject {
         case light = "浅色"
     }
 
+    /// 左侧快捷动作（可拖动排序）
+    enum ActionKind: String, CaseIterable {
+        case screenshot
+        case systemSettings
+        case lockScreen
+    }
+
+    /// 快捷动作顺序（持久化）
+    @Published var actionOrder: [ActionKind] {
+        didSet {
+            UserDefaults.standard.set(actionOrder.map(\.rawValue), forKey: "quickActionOrder")
+        }
+    }
+
     @Published private(set) var caffeinateActive = false
     /// 当前外观模式（跟随系统，外部切换也会同步）
     @Published private(set) var appearanceMode: AppearanceMode
@@ -31,6 +45,9 @@ final class QuickActionsStore: ObservableObject {
     private var themeObserver: Any?
 
     init() {
+        let saved = (UserDefaults.standard.stringArray(forKey: "quickActionOrder") ?? [])
+            .compactMap(ActionKind.init(rawValue:))
+        actionOrder = Set(saved) == Set(ActionKind.allCases) ? saved : ActionKind.allCases
         appearanceMode = Self.readAppearanceMode()
         // 系统外观变化（无论谁触发）都同步分段控件状态
         themeObserver = DistributedNotificationCenter.default().addObserver(
