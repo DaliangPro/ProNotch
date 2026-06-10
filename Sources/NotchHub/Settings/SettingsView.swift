@@ -1,6 +1,19 @@
 import SwiftUI
 
-/// 设置窗口内容：macOS 原生分组表单风格（自动适配深浅色与系统排版）
+/// 毛玻璃背景（深色半透明，与刘海面板气质一致）
+private struct VisualEffectBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .hudWindow
+        view.state = .active
+        view.blendingMode = .behindWindow
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+}
+
+/// 设置窗口：深色半透明风格，统一 84pt 标签列 / 13pt 字号 / 卡片分组
 struct SettingsView: View {
     @EnvironmentObject var settings: SettingsStore
     @EnvironmentObject var chatStore: ChatStore
@@ -14,111 +27,201 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        Form {
-            Section("通用") {
-                Toggle("开机自动启动", isOn: $settings.launchAtLogin)
+        ZStack {
+            VisualEffectBackground().ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 18) {
+                sectionTitle("通用")
+                SettingsCard {
+                    toggleRow("开机自动启动", isOn: $settings.launchAtLogin)
+                    CardDivider()
+                    toggleRow("全屏应用时隐藏刘海", isOn: $settings.hideNotchInFullscreen)
+                }
                 if let hint = settings.loginItemHint {
-                    Label(hint, systemImage: "exclamationmark.triangle")
-                        .font(.callout)
-                        .foregroundStyle(.orange)
+                    noteText(hint, color: .orange)
                 }
-                Toggle("全屏应用时隐藏刘海", isOn: $settings.hideNotchInFullscreen)
-            }
 
-            Section {
-                TextField("API 地址", text: $chatStore.draftBaseURL,
-                          prompt: Text("https://api.deepseek.com"))
-                SecureField("API Key", text: $chatStore.draftAPIKey,
-                            prompt: Text("sk-…"))
-                HStack(spacing: 8) {
-                    TextField("模型", text: $chatStore.draftModel,
-                              prompt: Text("deepseek-chat"))
-                    if !chatStore.availableModels.isEmpty {
-                        // 设置窗口是标准窗口，系统菜单定位正常，可放心用原生 Menu
-                        Menu {
-                            ForEach(chatStore.availableModels, id: \.self) { name in
-                                Button(name) { chatStore.draftModel = name }
+                sectionTitle("AI 对话")
+                SettingsCard {
+                    fieldRow("API 地址") {
+                        themedField("https://api.deepseek.com", text: $chatStore.draftBaseURL)
+                    }
+                    CardDivider()
+                    fieldRow("API Key") {
+                        themedSecureField("sk-…", text: $chatStore.draftAPIKey)
+                    }
+                    CardDivider()
+                    fieldRow("模型") {
+                        themedField("deepseek-chat", text: $chatStore.draftModel)
+                        if !chatStore.availableModels.isEmpty {
+                            Menu {
+                                ForEach(chatStore.availableModels, id: \.self) { name in
+                                    Button(name) { chatStore.draftModel = name }
+                                }
+                            } label: {
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.6))
                             }
+                            .menuStyle(.borderlessButton)
+                            .menuIndicator(.hidden)
+                            .fixedSize()
+                        }
+                        Button {
+                            chatStore.fetchModels()
                         } label: {
-                            Image(systemName: "chevron.up.chevron.down")
+                            Group {
+                                if chatStore.fetchingModels {
+                                    ProgressView().controlSize(.small)
+                                } else {
+                                    Text("获取模型").font(.system(size: 12))
+                                }
+                            }
+                            .foregroundColor(.white.opacity(0.85))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(Color.white.opacity(0.12)))
                         }
-                        .menuStyle(.borderlessButton)
-                        .fixedSize()
-                        .help("从已获取的 \(chatStore.availableModels.count) 个模型中选择")
+                        .buttonStyle(.plain)
+                        .disabled(chatStore.draftBaseURL.isEmpty
+                                  || chatStore.draftAPIKey.isEmpty
+                                  || chatStore.fetchingModels)
                     }
-                    Button {
-                        chatStore.fetchModels()
-                    } label: {
-                        if chatStore.fetchingModels {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Text("获取模型")
-                        }
+                    CardDivider()
+                    fieldRow("搜索 Key") {
+                        themedSecureField("选填：Tavily Key，不填用内置免费搜索",
+                                          text: $chatStore.draftTavilyKey)
                     }
-                    .disabled(chatStore.draftBaseURL.isEmpty
-                              || chatStore.draftAPIKey.isEmpty
-                              || chatStore.fetchingModels)
                 }
-                SecureField("搜索 Key（选填）", text: $chatStore.draftTavilyKey,
-                            prompt: Text("Tavily Key，不填则用内置免费搜索"))
-
                 if let error = chatStore.fetchError {
-                    Label(error, systemImage: "xmark.octagon")
-                        .font(.callout)
-                        .foregroundStyle(.red)
-                        .lineLimit(2)
+                    noteText(error, color: .red.opacity(0.9))
                 }
 
-                HStack {
-                    connectivityStatus
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(connectivityColor)
+                        .frame(width: 8, height: 8)
+                    Text(connectivityText)
+                        .font(.system(size: 12))
+                        .foregroundColor(.white.opacity(0.55))
+                    Button {
+                        chatStore.checkConnectivity(force: true)
+                    } label: {
+                        Text("检测")
+                            .font(.system(size: 12))
+                            .foregroundColor(.white.opacity(0.85))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(Capsule().fill(Color.white.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!chatStore.isConfigured)
+
                     Spacer()
+
                     if justSaved {
                         Label("已保存", systemImage: "checkmark")
-                            .font(.callout)
-                            .foregroundStyle(.green)
+                            .font(.system(size: 12))
+                            .foregroundColor(.green)
                             .transition(.opacity)
                     }
-                    Button("保存") {
+                    Button {
                         chatStore.saveSettings()
-                        withAnimation { justSaved = true }
+                        withAnimation(.easeOut(duration: 0.15)) { justSaved = true }
                         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                            withAnimation { justSaved = false }
+                            withAnimation(.easeIn(duration: 0.3)) { justSaved = false }
                         }
+                    } label: {
+                        Text("保存")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(canSave ? .black : .white.opacity(0.4))
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 5)
+                            .background(Capsule().fill(
+                                Color.white.opacity(canSave ? 0.92 : 0.15)))
                     }
+                    .buttonStyle(.plain)
                     .keyboardShortcut(.defaultAction)
                     .disabled(!canSave)
                 }
-            } header: {
-                Text("AI 对话")
-            } footer: {
-                Text("兼容 OpenAI /v1/chat/completions 格式；API 地址填到域名或 /v1 即可。联网搜索可在对话输入框左侧地球图标开关。")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+
+                Text("兼容 OpenAI /v1/chat/completions 格式；API 地址填到域名或 /v1 即可。联网搜索在对话输入框左侧地球图标开关。")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.35))
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            .padding(.horizontal, 24)
+            .padding(.top, 40)
+            .padding(.bottom, 22)
+            .frame(maxHeight: .infinity, alignment: .top)
         }
-        .formStyle(.grouped)
-        .frame(width: 520, height: 440)
+        .frame(width: 500, height: 478)
+        .preferredColorScheme(.dark)
     }
 
-    /// 连通状态行：彩色圆点 + 文案 + 重测按钮
-    private var connectivityStatus: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(connectivityColor)
-                .frame(width: 8, height: 8)
-            Text(connectivityText)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Button("检测") { chatStore.checkConnectivity(force: true) }
+    // MARK: - 组件
+
+    private func sectionTitle(_ title: String) -> some View {
+        Text(title)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundColor(.white.opacity(0.9))
+    }
+
+    private func noteText(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.system(size: 11))
+            .foregroundColor(color)
+            .lineLimit(2)
+    }
+
+    private func toggleRow(_ title: String, isOn: Binding<Bool>) -> some View {
+        HStack {
+            Text(title)
+                .font(.system(size: 13))
+                .foregroundColor(.white.opacity(0.9))
+            Spacer()
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
                 .controlSize(.small)
-                .disabled(!chatStore.isConfigured)
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    private func fieldRow(_ label: String,
+                          @ViewBuilder content: () -> some View) -> some View {
+        HStack(spacing: 10) {
+            Text(label)
+                .font(.system(size: 13))
+                .foregroundColor(.white.opacity(0.55))
+                .frame(width: 84, alignment: .leading)
+            content()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+    }
+
+    private func themedField(_ placeholder: String, text: Binding<String>) -> some View {
+        TextField("", text: text,
+                  prompt: Text(placeholder).foregroundColor(.white.opacity(0.28)))
+            .textFieldStyle(.plain)
+            .font(.system(size: 13))
+            .foregroundColor(.white)
+    }
+
+    private func themedSecureField(_ placeholder: String, text: Binding<String>) -> some View {
+        SecureField("", text: text,
+                    prompt: Text(placeholder).foregroundColor(.white.opacity(0.28)))
+            .textFieldStyle(.plain)
+            .font(.system(size: 13))
+            .foregroundColor(.white)
     }
 
     private var connectivityColor: Color {
         switch chatStore.connectivity {
-        case .unknown: return .gray
+        case .unknown: return .white.opacity(0.3)
         case .checking: return .yellow
         case .ok: return .green
         case .failed: return .red
@@ -132,5 +235,26 @@ struct SettingsView: View {
         case .ok: return "连接正常"
         case .failed: return "连接失败"
         }
+    }
+}
+
+/// 深色卡片：白色低透明度填充 + 细描边，与面板组件同语言
+private struct SettingsCard<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        VStack(spacing: 0) { content }
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.07)))
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
+    }
+}
+
+private struct CardDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.07))
+            .frame(height: 1)
+            .padding(.leading, 14)
     }
 }

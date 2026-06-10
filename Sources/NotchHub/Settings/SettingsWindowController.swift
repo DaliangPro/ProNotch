@@ -14,7 +14,13 @@ final class SettingsWindowController {
             let hosting = NSHostingController(rootView: root)
             let newWindow = NSWindow(contentViewController: hosting)
             newWindow.title = "NotchHub 设置"
-            newWindow.styleMask = [.titled, .closable]
+            newWindow.styleMask = [.titled, .closable, .fullSizeContentView]
+            // 深色半透明风格：透明标题栏 + 毛玻璃背景由内容视图提供
+            newWindow.titlebarAppearsTransparent = true
+            newWindow.appearance = NSAppearance(named: .darkAqua)
+            newWindow.backgroundColor = .clear
+            newWindow.isOpaque = false
+            newWindow.isMovableByWindowBackground = true
             newWindow.isReleasedWhenClosed = false
             newWindow.center()
             window = newWindow
