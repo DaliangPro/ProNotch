@@ -27,9 +27,17 @@
 要求：macOS 13+，Xcode 命令行工具（含 Swift 工具链）。
 
 ```bash
+./Scripts/install.sh          # 构建并安装到 /Applications（日用推荐，旧版进废纸篓）
+```
+
+开发调试可只构建不安装：
+
+```bash
 ./Scripts/build-app.sh        # 构建 release 并封装 build/NotchHub.app
 open build/NotchHub.app       # 启动（菜单栏出现图标，无 Dock 图标）
 ```
+
+注意：安装路径变化后，需在 设置 → 通用 里重新拨一次「开机自启」开关。
 
 退出：点击菜单栏图标 → 退出 NotchHub。
 
