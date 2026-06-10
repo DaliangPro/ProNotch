@@ -40,17 +40,11 @@ struct ExpandedContentView: View {
 
                 HStack(spacing: 6) {
                     Spacer()
-                    StripCapsule(icon: quickActions.isDarkMode ? "moon.fill" : "sun.max.fill",
-                                 title: "深浅色",
-                                 help: "切换深色/浅色模式（首次需授权控制 System Events）") {
-                        quickActions.toggleAppearance()
-                    }
-                    StripCapsule(icon: quickActions.caffeinateActive
-                                     ? "cup.and.saucer.fill" : "cup.and.saucer",
-                                 title: "防休眠",
-                                 help: quickActions.caffeinateActive
-                                     ? "防休眠已开启（点击关闭）" : "保持 Mac 不锁屏不休眠",
-                                 active: quickActions.caffeinateActive) {
+                    AppearanceSegments()
+                    StripToggle(title: "防休眠",
+                                active: quickActions.caffeinateActive,
+                                help: quickActions.caffeinateActive
+                                    ? "防休眠已开启（点击关闭）" : "保持 Mac 不锁屏不休眠") {
                         quickActions.toggleCaffeinate()
                     }
                 }
@@ -138,31 +132,26 @@ private struct AccessoryButton: View {
     }
 }
 
-/// 刘海两侧开关类胶囊卡：图标 + 短词，激活态整体点亮青色
-private struct StripCapsule: View {
-    let icon: String
+/// 纯文字开关胶囊：开启时整体点亮青色
+private struct StripToggle: View {
     let title: String
+    let active: Bool
     let help: String
-    var active: Bool = false
     let action: () -> Void
 
     @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 10))
-                Text(title)
-                    .font(.system(size: 11, weight: .medium))
-            }
-            .foregroundColor(active ? .cyan : .white.opacity(hovering ? 0.9 : 0.55))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Capsule().fill(
-                active ? Color.cyan.opacity(0.15)
-                       : Color.white.opacity(hovering ? 0.12 : 0.06)))
-            .contentShape(Capsule())
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(active ? .cyan : .white.opacity(hovering ? 0.9 : 0.55))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(
+                    active ? Color.cyan.opacity(0.18)
+                           : Color.white.opacity(hovering ? 0.12 : 0.06)))
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -170,11 +159,56 @@ private struct StripCapsule: View {
     }
 }
 
-/// 刘海两侧快捷操作按钮：圆形可点击区域、悬停高亮，激活态青色
+/// 外观三段式切换：系统 / 深色 / 浅色
+private struct AppearanceSegments: View {
+    @EnvironmentObject var quickActions: QuickActionsStore
+
+    var body: some View {
+        HStack(spacing: 2) {
+            segment(.system)
+            segment(.dark)
+            segment(.light)
+        }
+        .padding(2)
+        .background(Capsule().fill(Color.white.opacity(0.06)))
+        .help("切换系统外观")
+    }
+
+    private func segment(_ mode: QuickActionsStore.AppearanceMode) -> some View {
+        SegmentButton(title: mode.rawValue,
+                      selected: quickActions.appearanceMode == mode) {
+            quickActions.setAppearance(mode)
+        }
+    }
+}
+
+private struct SegmentButton: View {
+    let title: String
+    let selected: Bool
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(selected ? .white : .white.opacity(hovering ? 0.85 : 0.5))
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(Capsule().fill(
+                    Color.white.opacity(selected ? 0.18 : (hovering ? 0.08 : 0))))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}
+
+/// 刘海两侧快捷操作按钮：圆形可点击区域、悬停高亮
 private struct StripButton: View {
     let icon: String
     let help: String
-    var active: Bool = false
     let action: () -> Void
 
     @State private var hovering = false
@@ -182,9 +216,9 @@ private struct StripButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 11))
-                .foregroundColor(active ? .cyan : .white.opacity(hovering ? 0.9 : 0.45))
-                .frame(width: 24, height: 24)
+                .font(.system(size: 14))
+                .foregroundColor(.white.opacity(hovering ? 0.9 : 0.5))
+                .frame(width: 28, height: 28)
                 .background(Circle().fill(Color.white.opacity(hovering ? 0.12 : 0)))
                 .contentShape(Circle())
         }

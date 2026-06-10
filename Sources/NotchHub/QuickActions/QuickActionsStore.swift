@@ -1,23 +1,69 @@
 import AppKit
 import SwiftUI
 
-/// 刘海两侧快捷操作：区域截图、系统设置、防休眠、锁屏
+/// SkyLight 私有框架封装：免授权即时切换系统外观（含「自动」档）。
+/// 符号缺失时 available 为 false，上层自动降级到 osascript（仅深/浅）
+private final class SkyLight {
+    static let shared = SkyLight()
+
+    private typealias ConnectionFn = @convention(c) () -> Int32
+    private typealias SetBoolFn = @convention(c) (Int32, Bool) -> Void
+
+    private var connection: Int32 = 0
+    private var setLegacy: SetBoolFn?
+    private var setAuto: SetBoolFn?
+
+    var available: Bool { setLegacy != nil && setAuto != nil }
+
+    private init() {
+        guard let handle = dlopen(
+            "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight", RTLD_LAZY) else {
+            return
+        }
+        if let symbol = dlsym(handle, "SLSMainConnectionID") {
+            connection = unsafeBitCast(symbol, to: ConnectionFn.self)()
+        }
+        if let symbol = dlsym(handle, "SLSSetAppearanceThemeLegacy") {
+            setLegacy = unsafeBitCast(symbol, to: SetBoolFn.self)
+        }
+        if let symbol = dlsym(handle, "SLSSetAppearanceThemeSwitchesAutomatically") {
+            setAuto = unsafeBitCast(symbol, to: SetBoolFn.self)
+        }
+    }
+
+    func setDark(_ dark: Bool) {
+        setLegacy?(connection, dark)
+    }
+
+    func setAutoSwitch(_ auto: Bool) {
+        setAuto?(connection, auto)
+    }
+}
+
+/// 刘海两侧快捷操作：区域截图、系统设置、熄屏锁定、防休眠、外观切换
 @MainActor
 final class QuickActionsStore: ObservableObject {
+    enum AppearanceMode: String {
+        case system = "系统"
+        case dark = "深色"
+        case light = "浅色"
+    }
+
     @Published private(set) var caffeinateActive = false
-    /// 当前是否深色模式（跟随系统，外部切换也会同步）
-    @Published private(set) var isDarkMode: Bool
+    /// 当前外观模式（跟随系统，外部切换也会同步）
+    @Published private(set) var appearanceMode: AppearanceMode
+
     private var caffeinateProcess: Process?
     private var themeObserver: Any?
 
     init() {
-        isDarkMode = Self.readSystemDarkMode()
-        // 系统外观变化（无论谁触发）都同步更新图标
+        appearanceMode = Self.readAppearanceMode()
+        // 系统外观变化（无论谁触发）都同步分段控件状态
         themeObserver = DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.isDarkMode = Self.readSystemDarkMode()
+                self?.appearanceMode = Self.readAppearanceMode()
             }
         }
     }
@@ -31,23 +77,57 @@ final class QuickActionsStore: ObservableObject {
         }
     }
 
-    private nonisolated static func readSystemDarkMode() -> Bool {
-        UserDefaults.standard.string(forKey: "AppleInterfaceStyle") == "Dark"
+    // MARK: - 外观切换
+
+    private nonisolated static func readAppearanceMode() -> AppearanceMode {
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: "AppleInterfaceStyleSwitchesAutomatically") {
+            return .system
+        }
+        return defaults.string(forKey: "AppleInterfaceStyle") == "Dark" ? .dark : .light
     }
 
-    /// 深浅色切换：走 System Events 自动化接口，首次使用系统会请求授权
-    func toggleAppearance() {
+    func setAppearance(_ mode: AppearanceMode) {
+        if SkyLight.shared.available {
+            switch mode {
+            case .system:
+                SkyLight.shared.setAutoSwitch(true)
+            case .dark:
+                SkyLight.shared.setAutoSwitch(false)
+                SkyLight.shared.setDark(true)
+            case .light:
+                SkyLight.shared.setAutoSwitch(false)
+                SkyLight.shared.setDark(false)
+            }
+            appearanceMode = mode
+            print("[NotchHub] 外观切换为: \(mode.rawValue)（SkyLight）")
+            return
+        }
+        // 降级：osascript 只能切深/浅，「系统」档不可用
+        guard mode != .system else {
+            print("[NotchHub] 当前系统不支持「跟随系统」档（SkyLight 不可用）")
+            return
+        }
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         task.arguments = ["-e",
-            "tell application \"System Events\" to tell appearance preferences to set dark mode to not dark mode"]
+            "tell application \"System Events\" to tell appearance preferences to set dark mode to \(mode == .dark)"]
         do {
             try task.run()
-            print("[NotchHub] 切换深浅色模式")
+            appearanceMode = mode
+            print("[NotchHub] 外观切换为: \(mode.rawValue)（osascript）")
         } catch {
-            print("[NotchHub] 深浅色切换失败: \(error.localizedDescription)")
+            print("[NotchHub] 外观切换失败: \(error.localizedDescription)")
         }
     }
+
+    /// 调试用：打印 SkyLight 可用性并以当前值安全回写一次（不改变实际外观）
+    func debugProbeAppearance() {
+        print("[NotchHub] SkyLight 可用: \(SkyLight.shared.available)，当前模式: \(appearanceMode.rawValue)")
+        setAppearance(appearanceMode)
+    }
+
+    // MARK: - 其他快捷操作
 
     /// 区域截图到剪贴板（-i 交互选区 -c 进剪贴板，配合剪贴板历史自动入列）。
     /// 首次使用系统会请求屏幕录制权限

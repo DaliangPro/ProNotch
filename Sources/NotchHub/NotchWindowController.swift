@@ -63,6 +63,11 @@ final class NotchWindowController {
         chatStore.fetchModels()
     }
 
+    /// 调试用：探测 SkyLight 外观接口可用性（以当前值安全回写，不改变外观）
+    func debugTestTheme() {
+        quickActions.debugProbeAppearance()
+    }
+
     /// 调试用：执行一次联网搜索（不调用大模型），验证搜索链路
     func debugTestSearch() {
         let key = chatStore.tavilyKey

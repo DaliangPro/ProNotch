@@ -50,6 +50,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestSearch),
             name: NSNotification.Name("com.jiliang.NotchHub.testsearch"), object: nil)
+
+        // 调试入口：探测 SkyLight 外观接口可用性
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(debugTestTheme),
+            name: NSNotification.Name("com.jiliang.NotchHub.testtheme"), object: nil)
+    }
+
+    @objc private func debugTestTheme() {
+        windowController?.debugTestTheme()
     }
 
     @objc private func debugTestSearch() {
