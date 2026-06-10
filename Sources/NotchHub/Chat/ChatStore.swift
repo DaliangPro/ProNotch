@@ -71,6 +71,44 @@ final class ChatStore: ObservableObject {
         errorText = nil
     }
 
+    /// 拉取服务端可用模型列表（GET /v1/models，OpenAI 兼容）。
+    /// 用表单当场填写的地址和 Key，不要求先保存
+    static func fetchAvailableModels(baseURL: String, apiKey: String) async throws -> [String] {
+        var raw = baseURL.trimmingCharacters(in: .whitespaces)
+        while raw.hasSuffix("/") { raw.removeLast() }
+        if raw.hasSuffix("/chat/completions") {
+            raw = String(raw.dropLast("/chat/completions".count))
+        }
+        if !raw.hasSuffix("/v1") { raw += "/v1" }
+        raw += "/models"
+        guard let url = URL(string: raw), url.scheme?.hasPrefix("http") == true else {
+            throw NSError(domain: "NotchHub", code: -1,
+                          userInfo: [NSLocalizedDescriptionKey: "API 地址无效: \(raw)"])
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 20
+        request.setValue("Bearer \(apiKey.trimmingCharacters(in: .whitespaces))",
+                         forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            let detail = String(data: data, encoding: .utf8) ?? ""
+            throw NSError(domain: "NotchHub", code: http.statusCode,
+                          userInfo: [NSLocalizedDescriptionKey:
+                              "HTTP \(http.statusCode) \(detail.prefix(200))"])
+        }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let list = object["data"] as? [[String: Any]] else {
+            throw NSError(domain: "NotchHub", code: -2,
+                          userInfo: [NSLocalizedDescriptionKey: "返回格式不是 OpenAI 模型列表"])
+        }
+        let ids = list.compactMap { $0["id"] as? String }.sorted()
+        guard !ids.isEmpty else {
+            throw NSError(domain: "NotchHub", code: -3,
+                          userInfo: [NSLocalizedDescriptionKey: "服务端未返回任何模型"])
+        }
+        return ids
+    }
+
     // MARK: - 私有
 
     /// 端点规范化：已带 /chat/completions 直接用；带 /v1 补 /chat/completions；

@@ -176,10 +176,19 @@ private struct ChatSettingsForm: View {
     @State private var baseURL = ""
     @State private var apiKey = ""
     @State private var model = ""
+    @State private var availableModels: [String] = []
+    @State private var fetchingModels = false
+    @State private var fetchError: String?
     @FocusState private var focusedField: Field?
 
     private enum Field {
         case url, key, model
+    }
+
+    private var canFetchModels: Bool {
+        !baseURL.trimmingCharacters(in: .whitespaces).isEmpty
+            && !apiKey.trimmingCharacters(in: .whitespaces).isEmpty
+            && !fetchingModels
     }
 
     var body: some View {
@@ -201,8 +210,69 @@ private struct ChatSettingsForm: View {
                     .padding(.vertical, 4)
                     .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.08)))
             }
-            settingField("模型", text: $model,
-                         placeholder: "如 deepseek-chat / gpt-4o-mini", field: .model)
+            HStack(spacing: 6) {
+                Text("模型")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.5))
+                    .frame(width: 50, alignment: .leading)
+                TextField("", text: $model,
+                          prompt: Text(availableModels.isEmpty
+                                  ? "如 deepseek-chat，或先点「获取模型」"
+                                  : "从右侧菜单选择，或手动输入")
+                              .foregroundColor(.white.opacity(0.3)))
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundColor(.white)
+                    .focused($focusedField, equals: .model)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.08)))
+                if !availableModels.isEmpty {
+                    Menu {
+                        ForEach(availableModels, id: \.self) { name in
+                            Button(name) { model = name }
+                        }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.system(size: 9))
+                            Text("\(availableModels.count) 个可选")
+                                .font(.system(size: 10))
+                        }
+                        .foregroundColor(.white.opacity(0.7))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(Color.white.opacity(0.1)))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+                Button {
+                    fetchModels()
+                } label: {
+                    Group {
+                        if fetchingModels {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("获取模型").font(.system(size: 10))
+                        }
+                    }
+                    .foregroundColor(canFetchModels ? .white.opacity(0.8) : .white.opacity(0.3))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Color.white.opacity(canFetchModels ? 0.12 : 0.05)))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canFetchModels)
+                .help("从服务端读取可用模型列表（需先填地址和 Key）")
+            }
+
+            if let fetchError {
+                Text(fetchError)
+                    .font(.system(size: 9))
+                    .foregroundColor(.red.opacity(0.8))
+                    .lineLimit(2)
+            }
 
             HStack {
                 Text("兼容 OpenAI /v1/chat/completions 格式；地址填到域名或 /v1 即可")
@@ -240,6 +310,28 @@ private struct ChatSettingsForm: View {
     private func save() {
         store.saveSettings(baseURL: baseURL, apiKey: apiKey, model: model)
         showSettings = false
+    }
+
+    private func fetchModels() {
+        fetchingModels = true
+        fetchError = nil
+        let url = baseURL
+        let key = apiKey
+        Task {
+            do {
+                let models = try await ChatStore.fetchAvailableModels(baseURL: url, apiKey: key)
+                availableModels = models
+                // 模型栏为空时自动填入第一个，少点一次
+                if model.trimmingCharacters(in: .whitespaces).isEmpty,
+                   let first = models.first {
+                    model = first
+                }
+                print("[NotchHub] 获取到 \(models.count) 个模型")
+            } catch {
+                fetchError = error.localizedDescription
+            }
+            fetchingModels = false
+        }
     }
 
     private func settingField(_ label: String, text: Binding<String>,
