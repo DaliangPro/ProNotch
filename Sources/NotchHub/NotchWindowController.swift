@@ -7,6 +7,7 @@ final class NotchWindowController {
     let launcherStore = LauncherStore()
     let clipboardStore = ClipboardStore()
     let chatStore = ChatStore()
+    let quickActions = QuickActionsStore()
     private let panel: NotchPanel
 
     init() {
@@ -26,7 +27,8 @@ final class NotchWindowController {
                 .environmentObject(viewModel)
                 .environmentObject(launcherStore)
                 .environmentObject(clipboardStore)
-                .environmentObject(chatStore))
+                .environmentObject(chatStore)
+                .environmentObject(quickActions))
         panel.contentView = hosting
         panel.orderFrontRegardless()
         viewModel.startMouseTracking()
@@ -52,6 +54,7 @@ final class NotchWindowController {
         viewModel.stop()
         clipboardStore.stop()
         chatStore.stopStreaming()
+        quickActions.stopCaffeinate()
         panel.close()
     }
 

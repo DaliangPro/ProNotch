@@ -6,13 +6,50 @@ struct ExpandedContentView: View {
     @EnvironmentObject var launcherStore: LauncherStore
     @EnvironmentObject var clipboardStore: ClipboardStore
     @EnvironmentObject var chatStore: ChatStore
+    @EnvironmentObject var quickActions: QuickActionsStore
 
     private let edgeInset: CGFloat = 14
 
     var body: some View {
         VStack(spacing: 10) {
-            // 给真实刘海让位
-            Color.clear.frame(height: vm.notchRect.height)
+            // 刘海两侧的快捷操作区（中间给真实刘海让位）
+            HStack(spacing: 0) {
+                HStack(spacing: 4) {
+                    StripButton(icon: "camera.viewfinder",
+                                help: "区域截图，自动进剪贴板历史（首次需授权屏幕录制）") {
+                        vm.collapseNow()
+                        quickActions.screenshotToClipboard()
+                    }
+                    StripButton(icon: "gearshape",
+                                help: "打开系统设置") {
+                        quickActions.openSystemSettings()
+                        vm.collapseNow()
+                    }
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
+
+                Color.clear.frame(width: vm.notchRect.width + 24)
+
+                HStack(spacing: 4) {
+                    Spacer()
+                    StripButton(icon: quickActions.caffeinateActive
+                                    ? "cup.and.saucer.fill" : "cup.and.saucer",
+                                help: quickActions.caffeinateActive
+                                    ? "防休眠已开启（点击关闭）" : "防休眠：保持 Mac 不锁屏不休眠",
+                                active: quickActions.caffeinateActive) {
+                        quickActions.toggleCaffeinate()
+                    }
+                    StripButton(icon: "lock",
+                                help: "熄屏锁定") {
+                        vm.collapseNow()
+                        quickActions.lockScreen()
+                    }
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .frame(height: vm.notchRect.height)
+            .padding(.horizontal, edgeInset)
 
             HStack(spacing: 8) {
                 ForEach(NotchViewModel.Tab.allCases, id: \.self) { tab in
@@ -90,6 +127,30 @@ private struct AccessoryButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+    }
+}
+
+/// 刘海两侧快捷操作按钮：圆形可点击区域、悬停高亮，激活态青色
+private struct StripButton: View {
+    let icon: String
+    let help: String
+    var active: Bool = false
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 11))
+                .foregroundColor(active ? .cyan : .white.opacity(hovering ? 0.9 : 0.45))
+                .frame(width: 24, height: 24)
+                .background(Circle().fill(Color.white.opacity(hovering ? 0.12 : 0)))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(help)
     }
 }
 

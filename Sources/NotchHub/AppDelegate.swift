@@ -80,6 +80,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         windowController?.saveSnapshot()
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        // 退出前清理子进程（caffeinate）与窗口
+        windowController?.close()
+    }
+
     @objc private func screenParametersChanged() {
         // 系统会成批发送参数变更通知（应用启动、色彩配置切换都可能触发），
         // 刘海几何没变就不重建，避免面板使用中突然消失
