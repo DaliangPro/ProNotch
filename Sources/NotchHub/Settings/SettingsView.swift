@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// 毛玻璃背景（深色半透明，与刘海面板气质一致）
 private struct VisualEffectBackground: NSViewRepresentable {
@@ -71,6 +72,15 @@ struct SettingsView: View {
                     fieldRow("闪记收件箱") {
                         themedField("~/path/to/收件箱.md",
                                     text: $settings.captureInboxPath)
+                        Button("选择…") { chooseInboxFile() }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 12))
+                            .foregroundColor(.white.opacity(0.85))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 4)
+                            .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(Color.white.opacity(0.12)))
+                            .help("选择 .md 文件；选择文件夹则在其中使用 闪记.md")
                     }
                 }
                 if let hint = settings.loginItemHint {
@@ -194,8 +204,37 @@ struct SettingsView: View {
             .padding(.bottom, 22)
             .frame(maxHeight: .infinity, alignment: .top)
         }
-        .frame(width: 500, height: 478)
+        .frame(width: 500, height: 524)
         .preferredColorScheme(.dark)
+    }
+
+    /// 系统文件选择器：选 .md 文件直接采用；选文件夹则在其中使用 闪记.md
+    private func chooseInboxFile() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        if let markdown = UTType(filenameExtension: "md") {
+            panel.allowedContentTypes = [markdown, .plainText]
+        }
+        panel.prompt = "选择"
+        panel.message = "选择闪记收件箱文件（.md），或选择一个文件夹（将在其中使用 闪记.md）"
+        let expanded = (settings.captureInboxPath as NSString).expandingTildeInPath
+        panel.directoryURL = URL(fileURLWithPath: (expanded as NSString).deletingLastPathComponent)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        var path = url.path
+        var isDirectory: ObjCBool = false
+        FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
+        if isDirectory.boolValue {
+            path += "/闪记.md"
+        }
+        // 家目录前缀还原为 ~，路径更易读
+        let home = NSHomeDirectory()
+        if path.hasPrefix(home) {
+            path = "~" + path.dropFirst(home.count)
+        }
+        settings.captureInboxPath = path
     }
 
     // MARK: - 组件

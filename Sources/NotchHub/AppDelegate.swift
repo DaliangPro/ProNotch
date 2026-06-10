@@ -116,7 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .environmentObject(chatStore!)
         let hosting = NSHostingView(rootView: root)
         hosting.appearance = NSAppearance(named: .darkAqua)
-        hosting.frame = NSRect(x: 0, y: 0, width: 500, height: 478)
+        hosting.frame = NSRect(x: 0, y: 0, width: 500, height: 524)
         hosting.layoutSubtreeIfNeeded()
         guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { return }
         hosting.cacheDisplay(in: hosting.bounds, to: rep)
