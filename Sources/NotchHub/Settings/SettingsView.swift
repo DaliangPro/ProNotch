@@ -29,6 +29,8 @@ struct SettingsView: View {
     var body: some View {
         ZStack {
             VisualEffectBackground().ignoresSafeArea()
+            // 毛玻璃上压一层深色，保留通透感的同时保证文字对比度
+            Color.black.opacity(0.38).ignoresSafeArea()
 
             VStack(alignment: .leading, spacing: 18) {
                 sectionTitle("通用")
@@ -80,7 +82,8 @@ struct SettingsView: View {
                             .foregroundColor(.white.opacity(0.85))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
-                            .background(Capsule().fill(Color.white.opacity(0.12)))
+                            .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(Color.white.opacity(0.12)))
                         }
                         .buttonStyle(.plain)
                         .disabled(chatStore.draftBaseURL.isEmpty
@@ -112,7 +115,8 @@ struct SettingsView: View {
                             .foregroundColor(.white.opacity(0.85))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 4)
-                            .background(Capsule().fill(Color.white.opacity(0.12)))
+                            .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(Color.white.opacity(0.12)))
                     }
                     .buttonStyle(.plain)
                     .disabled(!chatStore.isConfigured)
@@ -137,8 +141,8 @@ struct SettingsView: View {
                             .foregroundColor(canSave ? .black : .white.opacity(0.4))
                             .padding(.horizontal, 16)
                             .padding(.vertical, 5)
-                            .background(Capsule().fill(
-                                Color.white.opacity(canSave ? 0.92 : 0.15)))
+                            .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(Color.white.opacity(canSave ? 0.92 : 0.15)))
                     }
                     .buttonStyle(.plain)
                     .keyboardShortcut(.defaultAction)
@@ -244,8 +248,9 @@ private struct SettingsCard<Content: View>: View {
 
     var body: some View {
         VStack(spacing: 0) { content }
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.07)))
-            .overlay(RoundedRectangle(cornerRadius: 10)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.07)))
+            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
     }
 }
