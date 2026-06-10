@@ -101,12 +101,17 @@ final class NotchViewModel: ObservableObject {
     private func expand() {
         guard !isExpanded else { return }
         print("[NotchHub] 展开")
-        // 先把窗口放大到展开尺寸，再让内容做动画，避免内容被窗口边界裁切
+        // 先把窗口放大到展开尺寸，让内容以新窗口坐标完成一次无动画布局
         panel?.setFrame(expandedWindowFrame, display: true)
-        withAnimation(.spring(response: animationDuration, dampingFraction: 0.8)) {
-            isExpanded = true
+        // 下一个 runloop 再启动内容动画：若与窗口放大落在同一帧，
+        // 形状会从窗口左上角斜向展开，而不是以刘海为中心向外生长
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.isExpanded else { return }
+            withAnimation(.spring(response: self.animationDuration, dampingFraction: 0.8)) {
+                self.isExpanded = true
+            }
+            self.startWatchdog()
         }
-        startWatchdog()
     }
 
     private func collapse() {

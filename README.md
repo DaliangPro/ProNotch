@@ -34,7 +34,7 @@ swift -e 'import Foundation; DistributedNotificationCenter.default().postNotific
 ## 架构
 
 - 纯 SwiftPM 工程，无 .xcodeproj；`Scripts/build-app.sh` 负责封装 .app
-- `NotchGeometry`：刘海定位（无刘海机型自动模拟顶部热区）
+- `NotchGeometry`：刘海定位，跟随主屏——主屏有真实刘海时贴住刘海；外接屏作主屏时在其菜单栏顶部居中模拟热区（高度与菜单栏一致）
 - `NotchPanel`：无边框 NSPanel，窗口层级高于菜单栏，全空间可见
 - `NotchViewModel`：展开/收起状态机（悬停防抖 + 鼠标位置二次校验）
 - `Views/`：SwiftUI 绘制刘海形状（`NotchShape`）与面板内容

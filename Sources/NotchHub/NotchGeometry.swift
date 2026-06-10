@@ -2,15 +2,13 @@ import AppKit
 
 @MainActor
 enum NotchGeometry {
-    /// 优先选择带刘海的内建屏；没有刘海时退回主屏
+    /// 面板跟随主屏（全局坐标原点、菜单栏所在的屏幕）：
+    /// 外接屏作主屏时出现在外接屏顶部中间，仅用内建屏时贴住真实刘海
     static func targetScreen() -> NSScreen {
-        if let notched = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) {
-            return notched
+        guard let primary = NSScreen.screens.first else {
+            fatalError("未检测到任何屏幕")
         }
-        if let main = NSScreen.main ?? NSScreen.screens.first {
-            return main
-        }
-        fatalError("未检测到任何屏幕")
+        return primary
     }
 
     /// 刘海矩形（全局坐标，AppKit 原点在屏幕左下角）
@@ -26,12 +24,12 @@ enum NotchGeometry {
                           width: width,
                           height: topInset)
         }
-        // 无刘海机型：在屏幕顶部居中模拟一个刘海热区
-        let width: CGFloat = 196
-        let height: CGFloat = 32
+        // 无刘海屏幕：在菜单栏顶部居中模拟一个热区，高度与菜单栏一致
+        let width: CGFloat = 200
+        let menuBarHeight = max(frame.maxY - screen.visibleFrame.maxY, 24)
         return CGRect(x: frame.midX - width / 2,
-                      y: frame.maxY - height,
+                      y: frame.maxY - menuBarHeight,
                       width: width,
-                      height: height)
+                      height: menuBarHeight)
     }
 }
