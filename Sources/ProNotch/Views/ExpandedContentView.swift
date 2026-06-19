@@ -18,12 +18,13 @@ struct ExpandedContentView: View {
     var body: some View {
         VStack(spacing: 10) {
             // 刘海两侧的快捷操作区（中间给真实刘海让位）：
-            // 左侧动作类用图标（截图放角落，误触代价高的锁屏放内侧）；
-            // 右侧开关类用文字胶囊卡（呼应 macOS 状态区在右上的习惯）
+            // 左侧 = 一次性动作（截图 / 锁屏）+ 防休眠开关；设置入口已移至菜单栏图标
+            // 右侧 = 系统外观切换 + Agent 完成提醒总开关
             HStack(spacing: 0) {
-                HStack(spacing: 4) {
-                    // 快捷动作可拖动排序（与标签同款交互）
-                    ForEach(quickActions.actionOrder, id: \.self) { kind in
+                HStack(spacing: 6) {
+                    // 快捷动作可拖动排序（与标签同款交互）；设置图标已从面板移除
+                    ForEach(quickActions.actionOrder.filter { $0 != .appSettings },
+                            id: \.self) { kind in
                         stripButton(for: kind)
                             .opacity(draggedAction == kind ? 0.35 : 1)
                             .onDrag {
@@ -36,6 +37,15 @@ struct ExpandedContentView: View {
                                         dragged: $draggedAction,
                                         store: quickActions))
                     }
+                    // 防休眠（状态类开关）从右侧移来，与截图 / 锁屏同列
+                    StripToggle(title: "防休眠",
+                                active: quickActions.caffeinateActive,
+                                help: quickActions.caffeinateActive
+                                    ? "防休眠已开启（点击关闭）"
+                                    : "防止闲置熄屏与休眠；合盖休眠是系统强制行为，"
+                                      + "合盖不睡需接电源 + 外接屏（系统合盖模式）") {
+                        quickActions.toggleCaffeinate()
+                    }
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
@@ -45,14 +55,8 @@ struct ExpandedContentView: View {
                 HStack(spacing: 6) {
                     Spacer()
                     AppearanceSlider()
-                    StripToggle(title: "防休眠",
-                                active: quickActions.caffeinateActive,
-                                help: quickActions.caffeinateActive
-                                    ? "防休眠已开启（点击关闭）"
-                                    : "防止闲置熄屏与休眠；合盖休眠是系统强制行为，"
-                                      + "合盖不睡需接电源 + 外接屏（系统合盖模式）") {
-                        quickActions.toggleCaffeinate()
-                    }
+                    // Agent 完成提醒总开关：橙(Claude)→蓝(Codex)双色描边胶囊
+                    AgentReminderToggle()
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -358,6 +362,59 @@ private struct StripToggle: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .help(help)
+    }
+}
+
+/// 面板右侧「Agent 提醒」总开关：橙(Claude)→蓝(Codex)双色描边胶囊。
+/// 点亮 = 开启 Agent 完成光晕；熄灭 = 全局静音（关闭时正亮着的光晕也会随之
+/// 熄灭——由 GlowController 监听 glowEnabled 变更统一处理）。
+private struct AgentReminderToggle: View {
+    @EnvironmentObject var settings: SettingsStore
+
+    @State private var hovering = false
+    @State private var breathing = false
+
+    private var on: Bool { settings.glowEnabled }
+
+    /// 开启时描边在 0.45↔1 之间呼吸；关闭时恒定（灰描边不呼吸）
+    private var strokeOpacity: Double {
+        guard on else { return 1 }
+        return breathing ? 1 : 0.45
+    }
+
+    var body: some View {
+        Button {
+            settings.glowEnabled.toggle()
+        } label: {
+            Text("Agent 提醒")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(on ? .white : .white.opacity(hovering ? 0.6 : 0.4))
+                .padding(.horizontal, 12)
+                .frame(height: 26)
+                .background(Capsule().fill(Color.white.opacity(hovering ? 0.08 : 0.04)))
+                .overlay(
+                    Capsule()
+                        .strokeBorder(borderStyle, lineWidth: 1.5)
+                        .opacity(strokeOpacity)
+                        .animation(.easeInOut(duration: max(settings.glowBreathPeriod, 0.6) / 2)
+                            .repeatForever(autoreverses: true), value: breathing)
+                )
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .onAppear { breathing = true }
+        .help(on ? "Agent 完成提醒：开启（点击全局静音屏幕光晕）"
+                 : "Agent 完成提醒：已静音（点击恢复）")
+    }
+
+    /// 开：用真实光晕色做左橙右蓝渐变描边；关：中性灰描边
+    private var borderStyle: AnyShapeStyle {
+        guard on else { return AnyShapeStyle(Color.white.opacity(0.18)) }
+        return AnyShapeStyle(LinearGradient(
+            colors: [Color(hex: settings.glowClaudeColorHex),
+                     Color(hex: settings.glowCodexColorHex)],
+            startPoint: .leading, endPoint: .trailing))
     }
 }
 

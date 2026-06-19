@@ -46,7 +46,8 @@ final class NotchWindowController {
                 .environmentObject(snippetStore)
                 .environmentObject(chatStore)
                 .environmentObject(quickActions)
-                .environmentObject(captureStore))
+                .environmentObject(captureStore)
+                .environmentObject(settingsStore))
         panel.contentView = hosting
         panel.orderFrontRegardless()
         // 「全屏时隐藏刘海」：每秒检测一次，全屏时整窗隐藏、退出后恢复
