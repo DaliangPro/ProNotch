@@ -21,8 +21,7 @@ struct SettingsView: View {
 
     enum Section: String, CaseIterable, Identifiable {
         case general = "通用"
-        case glow = "光晕提醒"
-        case chat = "AI 闪问"
+        case glow = "Agent 提醒"
         case about = "关于"
         var id: String { rawValue }
     }
@@ -48,11 +47,12 @@ struct SettingsView: View {
                 ScrollView {
                     selectedContent
                         .padding(.horizontal, 22)
-                        .padding(.top, 30)
+                        .padding(.top, 26)
                         .padding(.bottom, 22)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+            .ignoresSafeArea()   // 忽略标题栏自动安全区，留白只由下面的 26pt 决定，避免双重叠加
         }
         .frame(width: 660, height: 540)
         .preferredColorScheme(.dark)
@@ -66,7 +66,6 @@ struct SettingsView: View {
         switch selected {
         case .general: generalContent
         case .glow:    glowContent
-        case .chat:    chatContent
         case .about:   aboutContent
         }
     }
@@ -92,7 +91,7 @@ struct SettingsView: View {
         }
         .frame(width: 168)
         .padding(.horizontal, 10)
-        .padding(.top, 34)
+        .padding(.top, 40)
         .padding(.bottom, 14)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(Color.white.opacity(0.025))
@@ -115,6 +114,7 @@ struct SettingsView: View {
             if let hint = settings.loginItemHint {
                 noteText(hint, color: .orange)
             }
+            aiSection
         }
     }
 
@@ -154,7 +154,7 @@ struct SettingsView: View {
     // MARK: - 光晕提醒
     private var glowContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            pageTitle("光晕提醒",
+            pageTitle("Agent 提醒",
                       subtitle: "Claude Code / Codex 完成任务时，屏幕四周亮起呼吸光晕提醒你。")
 
             sectionLabel("提醒来源")
@@ -223,10 +223,10 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - AI 闪问
-    private var chatContent: some View {
+    // MARK: - AI 闪问（并入「通用」页）
+    private var aiSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            pageTitle("AI 闪问")
+            sectionLabel("AI 闪问")
             SettingsCard {
                 fieldRow("API 地址") {
                     themedField("https://api.deepseek.com", text: $chatStore.draftBaseURL)
