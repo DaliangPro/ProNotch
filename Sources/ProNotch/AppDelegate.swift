@@ -5,6 +5,8 @@ import UserNotifications
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var windowControllers: [NotchWindowController] = []
+    /// 屏幕参数变化的防抖重建任务（合并系统成批发送的通知，避开中间态坐标）
+    private var pendingScreenRebuild: DispatchWorkItem?
     private var statusItem: NSStatusItem?
     private var glowController: GlowController?
     private let updateChecker = UpdateChecker()
@@ -276,13 +278,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     @objc private func screenParametersChanged() {
-        // 系统会成批发送参数变更通知（应用启动、色彩配置切换都可能触发），
-        // 所有屏的刘海几何都没变就不重建，避免面板使用中突然消失
-        let rects = NSScreen.screens.map { NotchGeometry.notchRect(on: $0) }
-        if rects == windowControllers.map(\.viewModel.notchRect) {
-            return
+        // 显示器排列 / 分辨率变化时，系统会成批发送通知，且触发瞬间
+        // NSScreen.screens 可能是中间态（坐标尚未稳定）——立即重建会把面板
+        // 定位到错误坐标。故防抖：合并多次通知，延迟到布局稳定后再用最终坐标重建。
+        pendingScreenRebuild?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let rects = NSScreen.screens.map { NotchGeometry.notchRect(on: $0) }
+            if rects == self.windowControllers.map(\.viewModel.notchRect) { return }
+            self.setupNotchWindow()
         }
-        setupNotchWindow()
+        pendingScreenRebuild = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     @objc private func debugToggle() {
