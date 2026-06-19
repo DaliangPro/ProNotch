@@ -5,6 +5,7 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var windowController: NotchWindowController?
     private var statusItem: NSStatusItem?
+    private var glowController: GlowController?
 
     // 数据层在应用级持有：换屏重建刘海窗口时状态不丢失
     private var launcherStore: LauncherStore!
@@ -31,6 +32,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupMainMenu()
         setupStatusItem()
         setupNotchWindow()
+
+        // 光晕提醒：常驻一个覆盖整屏的光晕层（默认不显示，等 pronotch:// 信号点亮）
+        glowController = GlowController()
 
         // 屏幕配置变化（接显示器、合盖等）时重建刘海窗口
         NotificationCenter.default.addObserver(
@@ -107,6 +111,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(openSettings),
             name: NSNotification.Name("ProNotchOpenSettings"), object: nil)
+    }
+
+    // MARK: - 光晕提醒 pronotch:// 入口
+
+    /// 接收 pronotch://done?source=claude|codex —— 点亮对应颜色的「任务完成」光晕。
+    /// Claude Code / Codex 完成时由 hook 执行 `open "pronotch://done?source=…"` 触发。
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls { handleGlowURL(url) }
+    }
+
+    private func handleGlowURL(_ url: URL) {
+        guard url.scheme == "pronotch", url.host == "done" else { return }
+        let source = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "source" })?.value
+        switch source {
+        case "claude": glowController?.notifyCompletion(.claude)
+        case "codex":  glowController?.notifyCompletion(.codex)
+        default: break
+        }
     }
 
     /// 调试用：写入一条测试妙记

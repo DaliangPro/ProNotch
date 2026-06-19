@@ -33,5 +33,16 @@
 	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Daliang · MIT License</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.daliangpro.ProNotch.glow</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>pronotch</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
