@@ -18,6 +18,7 @@ struct SettingsView: View {
     @EnvironmentObject var settings: SettingsStore
     @EnvironmentObject var chatStore: ChatStore
     @EnvironmentObject var glow: GlowController
+    @EnvironmentObject var updates: UpdateChecker
 
     enum Section: String, CaseIterable, Identifiable {
         case general = "通用"
@@ -425,9 +426,11 @@ struct SettingsView: View {
                 HStack {
                     Text("ProNotch").font(.system(size: 14, weight: .semibold)).foregroundColor(.white)
                     Spacer()
-                    Text("版本 1.0.1").font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+                    Text("版本 \(updates.currentVersion)").font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
                 }
                 .padding(.horizontal, 14).padding(.vertical, 11)
+                CardDivider()
+                updateRow
                 CardDivider()
                 HStack {
                     Text("项目主页").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
@@ -441,6 +444,29 @@ struct SettingsView: View {
             Text("把 MacBook 的刘海变成你的效率中心。")
                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.35)).padding(.leading, 2)
         }
+    }
+
+    private var updateRow: some View {
+        HStack(spacing: 10) {
+            Text("软件更新").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+            Spacer()
+            if updates.checking {
+                Text("检查中…").font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+            } else if let release = updates.available {
+                Link("发现 \(release.version)，前往下载", destination: release.url).font(.system(size: 12))
+            } else if updates.checkedUpToDate {
+                Text("已是最新").font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+            } else if updates.lastError != nil {
+                Text("检查失败").font(.system(size: 12)).foregroundColor(.red.opacity(0.8))
+            }
+            Button { updates.check() } label: {
+                Text("检查更新").font(.system(size: 12)).foregroundColor(.white.opacity(0.85))
+                    .padding(.horizontal, 12).padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.12)))
+            }
+            .buttonStyle(.plain).disabled(updates.checking)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 11)
     }
 
     /// 系统文件选择器：选 .md 文件直接采用；选文件夹则在其中使用 妙记.md

@@ -1,11 +1,15 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var windowController: NotchWindowController?
     private var statusItem: NSStatusItem?
     private var glowController: GlowController?
+    private let updateChecker = UpdateChecker()
+    private var updateMenuItem: NSMenuItem?
+    private var updateSeparator: NSMenuItem?
 
     // 数据层在应用级持有：换屏重建刘海窗口时状态不丢失
     private var launcherStore: LauncherStore!
@@ -32,6 +36,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupMainMenu()
         setupStatusItem()
         setupNotchWindow()
+
+        // 启动时静默检查更新：发现新版才提醒（不打扰）
+        UNUserNotificationCenter.current().delegate = self
+        updateChecker.check { [weak self] release in
+            self?.handleUpdate(release, manual: false)
+        }
 
         // 光晕提醒：常驻一个覆盖整屏的光晕层（默认不显示，等 pronotch:// 信号点亮）
         glowController = GlowController(settings: settingsStore)
@@ -243,7 +253,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         guard let glowController else { return }
-        settingsWindow.show(settings: settingsStore, chatStore: chatStore, glow: glowController)
+        settingsWindow.show(settings: settingsStore, chatStore: chatStore, glow: glowController, updates: updateChecker)
     }
 
     /// 系统标准关于面板：图标、名称、版本来自 Info.plist，
@@ -347,6 +357,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // image 为 nil 时才会注入；显式塞 1×1 透明空图占住槽位即可禁用
         let emptyImage = NSImage(size: NSSize(width: 1, height: 1))
 
+        // 顶部「发现新版本」项：默认隐藏，检查到新版才显示
+        let updateItem = NSMenuItem(title: "↓ 发现新版本",
+                                    action: #selector(openLatestRelease), keyEquivalent: "")
+        updateItem.target = self
+        updateItem.image = emptyImage
+        updateItem.isHidden = true
+        menu.addItem(updateItem)
+        let updateSep = NSMenuItem.separator()
+        updateSep.isHidden = true
+        menu.addItem(updateSep)
+        updateMenuItem = updateItem
+        updateSeparator = updateSep
+
         let toggleItem = NSMenuItem(title: "展开 / 收起",
                                     action: #selector(debugToggle), keyEquivalent: "t")
         toggleItem.target = self
@@ -363,6 +386,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         aboutItem.target = self
         aboutItem.image = emptyImage
         menu.addItem(aboutItem)
+        let checkUpdateItem = NSMenuItem(title: "检查更新…",
+                                         action: #selector(checkForUpdatesManually), keyEquivalent: "")
+        checkUpdateItem.target = self
+        checkUpdateItem.image = emptyImage
+        menu.addItem(checkUpdateItem)
         menu.addItem(.separator())
         let quitItem = NSMenuItem(title: "退出 ProNotch",
                                   action: #selector(NSApplication.terminate(_:)),
@@ -371,5 +399,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(quitItem)
         item.menu = menu
         statusItem = item
+    }
+
+    // MARK: - 检查更新
+
+    @objc private func checkForUpdatesManually() {
+        updateChecker.check { [weak self] release in
+            self?.handleUpdate(release, manual: true)
+        }
+    }
+
+    private func handleUpdate(_ release: UpdateChecker.Release?, manual: Bool) {
+        refreshUpdateMenuItem()
+        if let release {
+            notifyUpdate(release)
+        } else if manual {
+            let alert = NSAlert()
+            NSApp.activate(ignoringOtherApps: true)
+            if let err = updateChecker.lastError {
+                alert.messageText = "检查更新失败"
+                alert.informativeText = err
+            } else {
+                alert.messageText = "已是最新版本"
+                alert.informativeText = "当前 \(updateChecker.currentVersion) 已是最新。"
+            }
+            alert.addButton(withTitle: "好")
+            alert.runModal()
+        }
+    }
+
+    private func refreshUpdateMenuItem() {
+        if let release = updateChecker.available {
+            updateMenuItem?.title = "↓ 发现新版本 \(release.version)"
+            updateMenuItem?.isHidden = false
+            updateSeparator?.isHidden = false
+        } else {
+            updateMenuItem?.isHidden = true
+            updateSeparator?.isHidden = true
+        }
+    }
+
+    @objc private func openLatestRelease() {
+        if let url = updateChecker.available?.url {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func notifyUpdate(_ release: UpdateChecker.Release) {
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            let content = UNMutableNotificationContent()
+            content.title = "ProNotch 有新版本"
+            content.body = "\(release.version) 可更新，点击前往下载。"
+            content.userInfo = ["url": release.url.absoluteString]
+            let request = UNNotificationRequest(
+                identifier: "pronotch.update.\(release.version)", content: content, trigger: nil)
+            center.add(request)
+        }
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .sound])
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void) {
+        let urlString = response.notification.request.content.userInfo["url"] as? String
+        Task { @MainActor in
+            if let urlString, let url = URL(string: urlString) {
+                NSWorkspace.shared.open(url)
+            }
+        }
+        completionHandler()
     }
 }

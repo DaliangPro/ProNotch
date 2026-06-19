@@ -6,12 +6,13 @@ import SwiftUI
 final class SettingsWindowController {
     private var window: NSWindow?
 
-    func show(settings: SettingsStore, chatStore: ChatStore, glow: GlowController) {
+    func show(settings: SettingsStore, chatStore: ChatStore, glow: GlowController, updates: UpdateChecker) {
         if window == nil {
             let root = SettingsView()
                 .environmentObject(settings)
                 .environmentObject(chatStore)
                 .environmentObject(glow)
+                .environmentObject(updates)
             let hosting = NSHostingController(rootView: root)
             let newWindow = NSWindow(contentViewController: hosting)
             newWindow.title = "ProNotch 设置"
