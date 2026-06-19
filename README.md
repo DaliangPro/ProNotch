@@ -8,6 +8,10 @@
 
 ## 功能
 
+**Agent 提醒**（新）— 让 Claude Code / Codex 这类 Agent 完成任务时，屏幕四周亮起呼吸光晕提醒你：Claude Code 橙色、Codex 蓝色，颜色与呼吸节奏都可调；切回对应窗口即自动熄灭。在设置里给每个 Agent 一个开关就能接入它的「完成」钩子——跑长任务时人离开，也不会错过它干完活：
+
+![Agent 提醒](docs/screenshot-agent.png)
+
 **启动台** — 全部应用网格 + 即时搜索（回车直接启动第一个结果），常用 App 可右键置顶到顶部专属槽位：
 
 ![启动台](docs/screenshot-launcher.png)
@@ -16,7 +20,7 @@
 
 ![剪贴板](docs/screenshot-clipboard.png)
 
-**AI 闪问** — 自填任意 OpenAI 兼容接口（DeepSeek / Kimi / Ollama 等均可），流式输出、Markdown 渲染、可拉取模型列表；可开启联网搜索（内置免费搜索，选填 Tavily Key 更稳）：
+**AI 闪问** — 自填任意 OpenAI 兼容接口（DeepSeek / Kimi / Ollama 等均可），流式输出、Markdown 渲染、可拉取模型列表；联网搜索可选 **DuckDuckGo（免费、零配置）/ Tavily / Brave**，各自填 Key、一键测试：
 
 ![AI 闪问](docs/screenshot-chat.png)
 
@@ -24,7 +28,7 @@
 
 ![妙记](docs/screenshot-capture.png)
 
-**还有**：刘海两侧快捷区（区域截图、应用设置、熄屏锁定、macOS 系统外观深浅色切换、防休眠开关）；四个标签页和快捷图标都可拖动排序，排第一的标签就是默认页；检测到全屏应用时自动隐藏，不遮挡内容（可在设置关闭）。
+**还有**：菜单栏「检查更新」自动提醒新版本（基于 GitHub Releases，发现新版弹通知 + 菜单标记，引导手动下载）；刘海两侧快捷区（区域截图、应用设置、熄屏锁定、macOS 系统外观深浅色切换、防休眠开关）；四个标签页和快捷图标都可拖动排序，排第一的标签就是默认页；检测到全屏应用时自动隐藏，不遮挡内容（可在设置关闭）。
 
 ## 安装
 
@@ -51,7 +55,7 @@
 
 - 所有数据只存在你的 Mac 本地，应用本身不上传任何内容
 - AI 的 API Key 存放在 macOS 钥匙串，不落明文配置文件
-- 联网行为只有两类，都由你主动触发：调用你自己填的 AI 接口、联网搜索（DuckDuckGo 或你自己的 Tavily Key）
+- 联网行为：调用你自己填的 AI 接口、联网搜索（DuckDuckGo / Tavily / Brave，按你所选）；以及启动时向 GitHub 查询一次最新版本号（仅版本号，不含任何个人数据）
 - 因为是未签名应用，更新版本后首次读取钥匙串可能弹一次确认框，点「允许」即可
 
 ## 从源码构建
