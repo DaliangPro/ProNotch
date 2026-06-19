@@ -22,6 +22,7 @@ struct SettingsView: View {
     enum Section: String, CaseIterable, Identifiable {
         case general = "通用"
         case glow = "Agent 提醒"
+        case chat = "AI 闪问"
         case about = "关于"
         var id: String { rawValue }
     }
@@ -66,6 +67,7 @@ struct SettingsView: View {
         switch selected {
         case .general: generalContent
         case .glow:    glowContent
+        case .chat:    chatContent
         case .about:   aboutContent
         }
     }
@@ -114,7 +116,6 @@ struct SettingsView: View {
             if let hint = settings.loginItemHint {
                 noteText(hint, color: .orange)
             }
-            aiSection
         }
     }
 
@@ -223,10 +224,12 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - AI 闪问（并入「通用」页）
-    private var aiSection: some View {
+    // MARK: - AI 闪问（独立页：对话模型 + 联网搜索，各带测试）
+    private var chatContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            sectionLabel("AI 闪问")
+            pageTitle("AI 闪问")
+
+            sectionLabel("对话模型")
             SettingsCard {
                 fieldRow("API 地址") {
                     themedField("https://api.deepseek.com", text: $chatStore.draftBaseURL)
@@ -265,21 +268,26 @@ struct SettingsView: View {
                     .disabled(chatStore.draftBaseURL.isEmpty || chatStore.draftAPIKey.isEmpty || chatStore.fetchingModels)
                 }
                 CardDivider()
-                searchEngineRow
-                CardDivider()
-                searchKeyRow
-                CardDivider()
-                chatStatusRow
+                modelStatusRow
             }
             if let error = chatStore.fetchError {
                 noteText(error, color: .red.opacity(0.9))
             }
-            VStack(alignment: .leading, spacing: 3) {
-                Text("兼容 OpenAI /v1/chat/completions 格式；API 地址填到域名或 /v1 即可。")
-                Text("联网搜索引擎在上面选：DuckDuckGo 免费零配置，Tavily / Brave 需免费 Key 但更稳。改完记得「保存」。在对话输入框左侧地球图标开关。")
+
+            sectionLabel("联网搜索")
+            SettingsCard {
+                searchEngineRow
+                CardDivider()
+                searchKeyRow
+                CardDivider()
+                searchStatusRow
             }
-            .font(.system(size: 11)).foregroundColor(.white.opacity(0.35))
-            .fixedSize(horizontal: false, vertical: true).padding(.leading, 2)
+
+            saveRow
+
+            Text("对话模型兼容 OpenAI /v1/chat/completions；联网搜索在对话输入框左侧地球图标开关。改完点「保存」生效。")
+                .font(.system(size: 11)).foregroundColor(.white.opacity(0.35))
+                .fixedSize(horizontal: false, vertical: true).padding(.leading, 2)
         }
     }
 
@@ -326,16 +334,66 @@ struct SettingsView: View {
         }
     }
 
-    private var chatStatusRow: some View {
+    // 对话模型卡底部：连接状态 + 检测
+    private var modelStatusRow: some View {
         HStack(spacing: 10) {
             Circle().fill(connectivityColor).frame(width: 8, height: 8)
-            Text(connectivityText).font(.system(size: 12)).foregroundColor(.white.opacity(0.9))
+            Text(connectivityText).font(.system(size: 12)).foregroundColor(.white.opacity(0.85))
+            Spacer()
             Button { chatStore.checkConnectivity(force: true) } label: {
                 Text("检测").font(.system(size: 12)).foregroundColor(.white.opacity(0.85))
-                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .padding(.horizontal, 12).padding(.vertical, 4)
                     .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.12)))
             }
             .buttonStyle(.plain).disabled(!chatStore.isConfigured)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
+    }
+
+    // 联网搜索卡底部：搜索测试状态 + 测试
+    private var searchStatusRow: some View {
+        HStack(spacing: 10) {
+            Circle().fill(searchTestColor).frame(width: 8, height: 8)
+            Text(searchTestText).font(.system(size: 12)).foregroundColor(.white.opacity(0.85))
+                .lineLimit(1).truncationMode(.tail)
+            Spacer()
+            Button { chatStore.testSearch() } label: {
+                Group {
+                    if case .testing = chatStore.searchTest {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Text("测试").font(.system(size: 12))
+                    }
+                }
+                .foregroundColor(.white.opacity(0.85))
+                .padding(.horizontal, 12).padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.12)))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
+    }
+
+    private var searchTestColor: Color {
+        switch chatStore.searchTest {
+        case .unknown: return .white.opacity(0.3)
+        case .testing: return .yellow
+        case .ok:      return .green
+        case .failed:  return .red
+        }
+    }
+    private var searchTestText: String {
+        switch chatStore.searchTest {
+        case .unknown:         return "未测试"
+        case .testing:         return "测试中…"
+        case .ok(let n):       return "搜到 \(n) 条"
+        case .failed(let msg): return "失败：\(msg)"
+        }
+    }
+
+    // 底部统一保存
+    private var saveRow: some View {
+        HStack(spacing: 10) {
             Spacer()
             if justSaved {
                 Label("已保存", systemImage: "checkmark")
@@ -348,15 +406,15 @@ struct SettingsView: View {
                     withAnimation(.easeIn(duration: 0.3)) { justSaved = false }
                 }
             } label: {
-                Text("保存").font(.system(size: 12, weight: .semibold))
+                Text("保存").font(.system(size: 13, weight: .semibold))
                     .foregroundColor(canSave ? .black : .white.opacity(0.4))
-                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .padding(.horizontal, 18).padding(.vertical, 6)
                     .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .fill(Color.white.opacity(canSave ? 0.92 : 0.15)))
             }
             .buttonStyle(.plain).keyboardShortcut(.defaultAction).disabled(!canSave)
         }
-        .padding(.horizontal, 14).padding(.vertical, 9)
+        .padding(.top, 2)
     }
 
     // MARK: - 关于

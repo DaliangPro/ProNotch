@@ -62,6 +62,15 @@ final class ChatStore: ObservableObject {
     @Published private(set) var connectivity: ConnectivityState = .unknown
     private var lastConnectivityCheck: Date = .distantPast
 
+    /// 联网搜索测试结果（联网搜索卡的状态灯）
+    enum SearchTestState {
+        case unknown
+        case testing
+        case ok(Int)
+        case failed(String)
+    }
+    @Published private(set) var searchTest: SearchTestState = .unknown
+
     private var streamTask: Task<Void, Never>?
 
     var isConfigured: Bool {
@@ -156,6 +165,29 @@ final class ChatStore: ObservableObject {
             } catch {
                 self?.connectivity = .failed(error.localizedDescription)
                 print("[ProNotch] API 连通检测失败: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// 用表单里当前选的引擎 + Key 真跑一次搜索，验证搜索链路
+    func testSearch() {
+        if case .testing = searchTest { return }
+        searchTest = .testing
+        let engine = SearchEngine(rawValue: draftSearchEngine) ?? .duckduckgo
+        let key: String
+        switch engine {
+        case .tavily:     key = draftTavilyKey
+        case .brave:      key = draftBraveKey
+        case .duckduckgo: key = ""
+        }
+        Task { [weak self] in
+            do {
+                let results = try await WebSearch.search(query: "OpenAI 最新消息", engine: engine, key: key)
+                self?.searchTest = .ok(results.count)
+                print("[ProNotch] 搜索测试: \(results.count) 条")
+            } catch {
+                self?.searchTest = .failed(error.localizedDescription)
+                print("[ProNotch] 搜索测试失败: \(error.localizedDescription)")
             }
         }
     }
