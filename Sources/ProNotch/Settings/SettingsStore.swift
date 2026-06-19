@@ -48,17 +48,44 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    // MARK: - 光晕提醒
+    @Published var glowEnabled: Bool { didSet { persistGlow(glowEnabled, "glowEnabled") } }
+    @Published var glowClaudeColorHex: String { didSet { persistGlow(glowClaudeColorHex, "glowClaudeColorHex") } }
+    @Published var glowCodexColorHex: String { didSet { persistGlow(glowCodexColorHex, "glowCodexColorHex") } }
+    @Published var glowBreathPeriod: Double { didSet { persistGlow(glowBreathPeriod, "glowBreathPeriod") } }
+    @Published var glowIntensity: Double { didSet { persistGlow(glowIntensity, "glowIntensity") } }
+    @Published var glowThickness: Double { didSet { persistGlow(glowThickness, "glowThickness") } }
+
+    /// 光晕设置统一写入 UserDefaults，并通知 GlowController 即时刷新外观
+    private func persistGlow(_ value: Any, _ key: String) {
+        UserDefaults.standard.set(value, forKey: key)
+        NotificationCenter.default.post(
+            name: NSNotification.Name("ProNotchGlowSettingsChanged"), object: nil)
+    }
+
     init() {
         launchAtLogin = Self.serviceStatus == .enabled
         UserDefaults.standard.register(defaults: [
             "hideNotchInFullscreen": true,
             "clipboardLimit": 200,
             "captureInboxPath": "~/Documents/妙记.md",
+            "glowEnabled": true,
+            "glowClaudeColorHex": "#FF8A00",
+            "glowCodexColorHex": "#0A84FF",
+            "glowBreathPeriod": 3.2,
+            "glowIntensity": 0.9,
+            "glowThickness": 90.0,
         ])
         hideNotchInFullscreen = UserDefaults.standard.bool(forKey: "hideNotchInFullscreen")
         clipboardLimit = UserDefaults.standard.integer(forKey: "clipboardLimit")
         captureInboxPath = UserDefaults.standard.string(forKey: "captureInboxPath")
             ?? "~/Documents/妙记.md"
+        glowEnabled = UserDefaults.standard.bool(forKey: "glowEnabled")
+        glowClaudeColorHex = UserDefaults.standard.string(forKey: "glowClaudeColorHex") ?? "#FF8A00"
+        glowCodexColorHex = UserDefaults.standard.string(forKey: "glowCodexColorHex") ?? "#0A84FF"
+        glowBreathPeriod = UserDefaults.standard.double(forKey: "glowBreathPeriod")
+        glowIntensity = UserDefaults.standard.double(forKey: "glowIntensity")
+        glowThickness = UserDefaults.standard.double(forKey: "glowThickness")
     }
 
     private func applyLaunchAtLogin() {

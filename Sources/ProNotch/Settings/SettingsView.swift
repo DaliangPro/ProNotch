@@ -18,6 +18,7 @@ private struct VisualEffectBackground: NSViewRepresentable {
 struct SettingsView: View {
     @EnvironmentObject var settings: SettingsStore
     @EnvironmentObject var chatStore: ChatStore
+    @EnvironmentObject var glow: GlowController
 
     @State private var justSaved = false
 
@@ -33,7 +34,8 @@ struct SettingsView: View {
             // 毛玻璃上压一层深色，保留通透感的同时保证文字对比度
             Color.black.opacity(0.38).ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: 18) {
+            ScrollView {
+              VStack(alignment: .leading, spacing: 18) {
                 sectionTitle("通用")
                 SettingsCard {
                     toggleRow("开机自动启动", isOn: $settings.launchAtLogin)
@@ -86,6 +88,28 @@ struct SettingsView: View {
                 if let hint = settings.loginItemHint {
                     noteText(hint, color: .orange)
                 }
+
+                sectionTitle("光晕提醒")
+                SettingsCard {
+                    toggleRow("启用光晕提醒", isOn: $settings.glowEnabled)
+                    CardDivider()
+                    glowColorRow("Claude Code 颜色", binding: claudeColorBinding)
+                    CardDivider()
+                    glowColorRow("Codex 颜色", binding: codexColorBinding)
+                    CardDivider()
+                    glowSliderRow("呼吸周期", value: $settings.glowBreathPeriod, range: 1.5...6,
+                                  display: String(format: "%.1f 秒", settings.glowBreathPeriod))
+                    CardDivider()
+                    glowSliderRow("光晕强度", value: $settings.glowIntensity, range: 0.3...1,
+                                  display: "\(Int(settings.glowIntensity * 100))%")
+                    CardDivider()
+                    glowSliderRow("光晕厚度", value: $settings.glowThickness, range: 40...180,
+                                  display: "\(Int(settings.glowThickness)) pt")
+                    CardDivider()
+                    glowButtonsRow
+                }
+                noteText("任务完成时屏幕四周亮起呼吸光晕；切回 Claude / Codex 窗口即熄灭。",
+                         color: .white.opacity(0.35))
 
                 sectionTitle("AI 闪问")
                 SettingsCard {
@@ -207,13 +231,13 @@ struct SettingsView: View {
                 // 与卡片内行文字左对齐
                 .padding(.leading, 14)
             }
-            .padding(.horizontal, 24)
-            // 顶部留白只需让出标题栏红绿灯的高度
-            .padding(.top, 28)
-            .padding(.bottom, 18)
-            .frame(maxHeight: .infinity, alignment: .top)
+              .padding(.horizontal, 24)
+              // 顶部留白只需让出标题栏红绿灯的高度
+              .padding(.top, 28)
+              .padding(.bottom, 18)
+            }
         }
-        .frame(width: 500, height: 524)
+        .frame(width: 500, height: 600)
         .preferredColorScheme(.dark)
     }
 
@@ -354,6 +378,78 @@ struct SettingsView: View {
         case .ok: return "连接正常"
         case .failed: return "连接失败"
         }
+    }
+
+    // MARK: - 光晕提醒组件
+
+    private var claudeColorBinding: Binding<Color> {
+        Binding(get: { Color(hex: settings.glowClaudeColorHex) },
+                set: { settings.glowClaudeColorHex = $0.toHex() })
+    }
+    private var codexColorBinding: Binding<Color> {
+        Binding(get: { Color(hex: settings.glowCodexColorHex) },
+                set: { settings.glowCodexColorHex = $0.toHex() })
+    }
+
+    private func glowColorRow(_ title: String, binding: Binding<Color>) -> some View {
+        HStack {
+            Text(title).font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+            Spacer()
+            ColorPicker("", selection: binding, supportsOpacity: false)
+                .labelsHidden()
+                .fixedSize()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    private func glowSliderRow(_ title: String, value: Binding<Double>,
+                               range: ClosedRange<Double>, display: String) -> some View {
+        HStack(spacing: 12) {
+            Text(title).font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+                .frame(width: 64, alignment: .leading)
+            Slider(value: value, in: range).controlSize(.small)
+            Text(display).font(.system(size: 12)).foregroundColor(.white.opacity(0.55))
+                .frame(width: 52, alignment: .trailing)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+    }
+
+    private var glowButtonsRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("预览（调参用，常亮；切前台不灭）")
+                .font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
+            HStack(spacing: 10) {
+                glowActionButton(glow.previewingSource == .claude ? "停止预览" : "预览 Claude",
+                                 hex: settings.glowClaudeColorHex) { glow.togglePreview(.claude) }
+                glowActionButton(glow.previewingSource == .codex ? "停止预览" : "预览 Codex",
+                                 hex: settings.glowCodexColorHex) { glow.togglePreview(.codex) }
+            }
+            Text("测试真实提醒（模拟完成；切回对应窗口即灭）")
+                .font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
+                .padding(.top, 2)
+            HStack(spacing: 10) {
+                glowActionButton(glow.testingSource == .claude ? "熄灭" : "测试 Claude 完成",
+                                 hex: settings.glowClaudeColorHex) { glow.toggleTest(.claude) }
+                glowActionButton(glow.testingSource == .codex ? "熄灭" : "测试 Codex 完成",
+                                 hex: settings.glowCodexColorHex) { glow.toggleTest(.codex) }
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    private func glowActionButton(_ title: String, hex: String,
+                                  action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color(hex: hex).opacity(settings.glowEnabled ? 0.85 : 0.3)))
+        }
+        .buttonStyle(.plain)
+        .disabled(!settings.glowEnabled)
     }
 }
 

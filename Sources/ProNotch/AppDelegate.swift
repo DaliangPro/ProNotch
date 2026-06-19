@@ -34,7 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         setupNotchWindow()
 
         // 光晕提醒：常驻一个覆盖整屏的光晕层（默认不显示，等 pronotch:// 信号点亮）
-        glowController = GlowController()
+        glowController = GlowController(settings: settingsStore)
 
         // 屏幕配置变化（接显示器、合盖等）时重建刘海窗口
         NotificationCenter.default.addObserver(
@@ -242,7 +242,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openSettings() {
-        settingsWindow.show(settings: settingsStore, chatStore: chatStore)
+        guard let glowController else { return }
+        settingsWindow.show(settings: settingsStore, chatStore: chatStore, glow: glowController)
     }
 
     /// 系统标准关于面板：图标、名称、版本来自 Info.plist，
