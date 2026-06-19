@@ -20,27 +20,32 @@ struct GlowOverlayView: View {
         .allowsHitTesting(false)
     }
 
-    /// 四条边各一道向内渐隐的渐变，四角自然叠加成柔和暗角光圈。
+    /// 四条边各一道「边缘最亮 → 向内缓和拖尾」的渐变，四角自然叠加成柔和光圈。
+    /// 不再用整体模糊：最亮处贴在屏幕物理边缘，只向内侧渗透，没有浮在屏内的亮框。
     @ViewBuilder
     private func edgeGlow(color: Color, thickness: CGFloat) -> some View {
+        let stops: [Gradient.Stop] = [
+            .init(color: color, location: 0.0),               // 屏幕边缘：最亮
+            .init(color: color.opacity(0.32), location: 0.42),
+            .init(color: color.opacity(0.0), location: 1.0),  // 向内渐隐到透明
+        ]
         ZStack {
-            LinearGradient(colors: [color, color.opacity(0)], startPoint: .top, endPoint: .bottom)
+            LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
                 .frame(height: thickness)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-            LinearGradient(colors: [color, color.opacity(0)], startPoint: .bottom, endPoint: .top)
+            LinearGradient(stops: stops, startPoint: .bottom, endPoint: .top)
                 .frame(height: thickness)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
 
-            LinearGradient(colors: [color, color.opacity(0)], startPoint: .leading, endPoint: .trailing)
+            LinearGradient(stops: stops, startPoint: .leading, endPoint: .trailing)
                 .frame(width: thickness)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
 
-            LinearGradient(colors: [color, color.opacity(0)], startPoint: .trailing, endPoint: .leading)
+            LinearGradient(stops: stops, startPoint: .trailing, endPoint: .leading)
                 .frame(width: thickness)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
         }
         .compositingGroup()
-        .blur(radius: 16)
     }
 }
