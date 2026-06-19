@@ -6,6 +6,23 @@ struct SearchResult {
     var url: String
 }
 
+/// 可选搜索引擎
+enum SearchEngine: String, CaseIterable {
+    case duckduckgo
+    case tavily
+    case brave
+
+    var displayName: String {
+        switch self {
+        case .duckduckgo: return "DuckDuckGo（免费）"
+        case .tavily:     return "Tavily"
+        case .brave:      return "Brave Search"
+        }
+    }
+    /// 是否需要 API Key（DuckDuckGo 免费、无需）
+    var needsKey: Bool { self != .duckduckgo }
+}
+
 /// 客户端联网搜索：API 普遍不带联网能力，通用做法是先搜索再把结果注入提示词。
 /// 配置了 Tavily Key 优先用 Tavily 深度搜索（取页面正文），
 /// 否则用 DuckDuckGo 抓取并补抓前几个结果的网页正文
@@ -16,12 +33,12 @@ enum WebSearch {
     private static let userAgent =
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Safari/537.36"
 
-    static func search(query: String, tavilyKey: String) async throws -> [SearchResult] {
-        let key = tavilyKey.trimmingCharacters(in: .whitespaces)
-        if !key.isEmpty {
-            return try await tavily(query: query, key: key)
+    static func search(query: String, engine: SearchEngine, key: String) async throws -> [SearchResult] {
+        switch engine {
+        case .tavily:     return try await tavily(query: query, key: key)
+        case .brave:      return try await brave(query: query, key: key)
+        case .duckduckgo: return try await duckDuckGo(query: query)
         }
-        return try await duckDuckGo(query: query)
     }
 
     // MARK: - Tavily
@@ -62,6 +79,60 @@ enum WebSearch {
                                 snippet: String(body.prefix(perResultCap)),
                                 url: url)
         }
+    }
+
+    // MARK: - Brave Search
+
+    private static func brave(query: String, key: String) async throws -> [SearchResult] {
+        let token = key.trimmingCharacters(in: .whitespaces)
+        guard !token.isEmpty else {
+            throw NSError(domain: "ProNotch", code: -5,
+                          userInfo: [NSLocalizedDescriptionKey: "请先在设置里填写 Brave Search API Key"])
+        }
+        var components = URLComponents(string: "https://api.search.brave.com/res/v1/web/search")!
+        components.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "count", value: "6"),
+        ]
+        var request = URLRequest(url: components.url!)
+        request.timeoutInterval = 20
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(token, forHTTPHeaderField: "X-Subscription-Token")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            let detail = String(data: data, encoding: .utf8) ?? ""
+            throw NSError(domain: "ProNotch", code: http.statusCode,
+                          userInfo: [NSLocalizedDescriptionKey:
+                              "Brave HTTP \(http.statusCode) \(detail.prefix(150))"])
+        }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let web = object["web"] as? [String: Any],
+              let list = web["results"] as? [[String: Any]] else {
+            throw NSError(domain: "ProNotch", code: -6,
+                          userInfo: [NSLocalizedDescriptionKey: "Brave 返回格式异常"])
+        }
+        var results: [SearchResult] = list.prefix(6).compactMap { item in
+            guard let title = item["title"] as? String,
+                  let url = item["url"] as? String else { return nil }
+            let desc = (item["description"] as? String) ?? ""
+            return SearchResult(title: stripHTML(title), snippet: stripHTML(desc), url: url)
+        }
+        guard !results.isEmpty else {
+            throw NSError(domain: "ProNotch", code: -7,
+                          userInfo: [NSLocalizedDescriptionKey: "Brave 未返回结果"])
+        }
+        // 补抓前 3 个结果正文（Brave 摘要较短），提升注入信息量
+        let fetchCount = min(3, results.count)
+        await withTaskGroup(of: (Int, String?).self) { group in
+            for index in 0..<fetchCount {
+                let url = results[index].url
+                group.addTask { (index, await fetchPageText(url: url)) }
+            }
+            for await (index, text) in group {
+                if let text { results[index].snippet = text }
+            }
+        }
+        return results
     }
 
     // MARK: - DuckDuckGo（网页抓取，零配置但稳定性一般）

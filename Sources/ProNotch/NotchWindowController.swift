@@ -99,11 +99,17 @@ final class NotchWindowController {
 
     /// 调试用：执行一次联网搜索（不调用大模型），验证搜索链路
     func debugTestSearch() {
-        let key = chatStore.tavilyKey
+        let engine = SearchEngine(rawValue: chatStore.searchEngine) ?? .duckduckgo
+        let key: String
+        switch engine {
+        case .tavily:     key = chatStore.tavilyKey
+        case .brave:      key = chatStore.braveKey
+        case .duckduckgo: key = ""
+        }
         Task { @MainActor in
             do {
                 let results = try await WebSearch.search(
-                    query: "MacBook 刘海 notch 应用", tavilyKey: key)
+                    query: "MacBook 刘海 notch 应用", engine: engine, key: key)
                 print("[ProNotch] 搜索返回 \(results.count) 条:")
                 for result in results {
                     print("  - \(result.title) | 正文 \(result.snippet.count) 字 | \(result.url)")

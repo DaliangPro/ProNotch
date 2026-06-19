@@ -265,9 +265,9 @@ struct SettingsView: View {
                     .disabled(chatStore.draftBaseURL.isEmpty || chatStore.draftAPIKey.isEmpty || chatStore.fetchingModels)
                 }
                 CardDivider()
-                fieldRow("Tavily Key") {
-                    MaskedSecureField(placeholder: "选填；留空用内置 DuckDuckGo 免费搜索", text: $chatStore.draftTavilyKey)
-                }
+                searchEngineRow
+                CardDivider()
+                searchKeyRow
                 CardDivider()
                 chatStatusRow
             }
@@ -276,10 +276,53 @@ struct SettingsView: View {
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text("兼容 OpenAI /v1/chat/completions 格式；API 地址填到域名或 /v1 即可。")
-                Text("联网搜索默认用内置 DuckDuckGo（免费、零配置）；填 Tavily Key 更稳。在对话输入框左侧地球图标开关。")
+                Text("联网搜索引擎在上面选：DuckDuckGo 免费零配置，Tavily / Brave 需免费 Key 但更稳。改完记得「保存」。在对话输入框左侧地球图标开关。")
             }
             .font(.system(size: 11)).foregroundColor(.white.opacity(0.35))
             .fixedSize(horizontal: false, vertical: true).padding(.leading, 2)
+        }
+    }
+
+    private var searchEngineRow: some View {
+        HStack(spacing: 10) {
+            Text("搜索引擎").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+                .frame(width: 84, alignment: .leading)
+            Menu {
+                ForEach(SearchEngine.allCases, id: \.self) { eng in
+                    Button(eng.displayName) { chatStore.draftSearchEngine = eng.rawValue }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text((SearchEngine(rawValue: chatStore.draftSearchEngine) ?? .duckduckgo).displayName)
+                        .font(.system(size: 12))
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 9))
+                }
+                .foregroundColor(.white.opacity(0.85))
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.12)))
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            Spacer()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
+    }
+
+    @ViewBuilder private var searchKeyRow: some View {
+        switch SearchEngine(rawValue: chatStore.draftSearchEngine) ?? .duckduckgo {
+        case .tavily:
+            fieldRow("Tavily Key") {
+                MaskedSecureField(placeholder: "免费注册即可获取（tavily.com）", text: $chatStore.draftTavilyKey)
+            }
+        case .brave:
+            fieldRow("Brave Key") {
+                MaskedSecureField(placeholder: "免费注册即可获取（brave.com/search/api）", text: $chatStore.draftBraveKey)
+            }
+        case .duckduckgo:
+            fieldRow("搜索 Key") {
+                Text("DuckDuckGo 免费，无需 Key")
+                    .font(.system(size: 12)).foregroundColor(.white.opacity(0.45))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 

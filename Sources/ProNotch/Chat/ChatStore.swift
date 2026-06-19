@@ -40,9 +40,13 @@ final class ChatStore: ObservableObject {
     @Published var webSearchEnabled: Bool {
         didSet { UserDefaults.standard.set(webSearchEnabled, forKey: "chatWebSearchEnabled") }
     }
-    /// Tavily 搜索 Key（选填；为空时用内置 DuckDuckGo 抓取）
+    /// 搜索引擎选择（duckduckgo / tavily / brave）与各自的 Key
+    @Published private(set) var searchEngine: String
+    @Published var draftSearchEngine: String
     @Published private(set) var tavilyKey: String
     @Published var draftTavilyKey: String
+    @Published private(set) var braveKey: String
+    @Published var draftBraveKey: String
     @Published private(set) var isSearching = false
     /// 设置表单显隐（顶行入口与页面内容两处共用）
     @Published var showSettings = false
@@ -83,6 +87,13 @@ final class ChatStore: ObservableObject {
             ?? KeychainStore.read("chatTavilyKey") ?? ""
         tavilyKey = savedTavily
         draftTavilyKey = savedTavily
+        let savedBrave = defaults.string(forKey: "chatBraveKey")
+            ?? KeychainStore.read("chatBraveKey") ?? ""
+        braveKey = savedBrave
+        draftBraveKey = savedBrave
+        let savedEngine = defaults.string(forKey: "chatSearchEngine") ?? SearchEngine.duckduckgo.rawValue
+        searchEngine = savedEngine
+        draftSearchEngine = savedEngine
         webSearchEnabled = defaults.bool(forKey: "chatWebSearchEnabled")
     }
 
@@ -106,16 +117,21 @@ final class ChatStore: ObservableObject {
         apiKey = draftAPIKey.trimmingCharacters(in: .whitespaces)
         model = draftModel.trimmingCharacters(in: .whitespaces)
         tavilyKey = draftTavilyKey.trimmingCharacters(in: .whitespaces)
+        braveKey = draftBraveKey.trimmingCharacters(in: .whitespaces)
+        searchEngine = draftSearchEngine
         draftBaseURL = baseURL
         draftAPIKey = apiKey
         draftModel = model
         draftTavilyKey = tavilyKey
+        draftBraveKey = braveKey
         let defaults = UserDefaults.standard
         defaults.set(baseURL, forKey: "chatBaseURL")
         defaults.set(model, forKey: "chatModel")
+        defaults.set(searchEngine, forKey: "chatSearchEngine")
         // Key 只进钥匙串，不落明文配置
         KeychainStore.save(apiKey, account: "chatAPIKey")
         KeychainStore.save(tavilyKey, account: "chatTavilyKey")
+        KeychainStore.save(braveKey, account: "chatBraveKey")
         print("[ProNotch] 已保存 AI 设置，端点: \((try? endpointURL())?.absoluteString ?? "无效")")
         checkConnectivity(force: true)
     }
@@ -190,7 +206,14 @@ final class ChatStore: ObservableObject {
             do {
                 // 先让模型把口语化问题（含上下文指代）改写成搜索词，失败则用原话
                 let query = await rewriteQuery(history: history) ?? question
-                let results = try await WebSearch.search(query: query, tavilyKey: tavilyKey)
+                let engine = SearchEngine(rawValue: searchEngine) ?? .duckduckgo
+                let searchKey: String
+                switch engine {
+                case .tavily:     searchKey = tavilyKey
+                case .brave:      searchKey = braveKey
+                case .duckduckgo: searchKey = ""
+                }
+                let results = try await WebSearch.search(query: query, engine: engine, key: searchKey)
                 if !results.isEmpty {
                     payload[payload.count - 1]["content"] =
                         Self.augmentedPrompt(question: question, results: results)
