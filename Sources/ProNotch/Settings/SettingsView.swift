@@ -266,7 +266,7 @@ struct SettingsView: View {
                 }
                 CardDivider()
                 fieldRow("搜索 Key") {
-                    MaskedSecureField(placeholder: "选填：Tavily Key，不填用内置免费搜索", text: $chatStore.draftTavilyKey)
+                    MaskedSecureField(placeholder: "选填 Tavily Key；留空用内置 DuckDuckGo 搜索", text: $chatStore.draftTavilyKey)
                 }
                 CardDivider()
                 chatStatusRow
@@ -276,7 +276,7 @@ struct SettingsView: View {
             }
             VStack(alignment: .leading, spacing: 3) {
                 Text("兼容 OpenAI /v1/chat/completions 格式；API 地址填到域名或 /v1 即可。")
-                Text("联网搜索在对话输入框左侧地球图标开关。")
+                Text("联网搜索默认用内置 DuckDuckGo（免费、零配置）；填 Tavily Key 更稳。在对话输入框左侧地球图标开关。")
             }
             .font(.system(size: 11)).foregroundColor(.white.opacity(0.35))
             .fixedSize(horizontal: false, vertical: true).padding(.leading, 2)
