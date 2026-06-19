@@ -265,8 +265,8 @@ struct SettingsView: View {
                     .disabled(chatStore.draftBaseURL.isEmpty || chatStore.draftAPIKey.isEmpty || chatStore.fetchingModels)
                 }
                 CardDivider()
-                fieldRow("搜索 Key") {
-                    MaskedSecureField(placeholder: "选填 Tavily Key；留空用内置 DuckDuckGo 搜索", text: $chatStore.draftTavilyKey)
+                fieldRow("Tavily Key") {
+                    MaskedSecureField(placeholder: "选填；留空用内置 DuckDuckGo 免费搜索", text: $chatStore.draftTavilyKey)
                 }
                 CardDivider()
                 chatStatusRow
