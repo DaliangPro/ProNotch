@@ -4,7 +4,7 @@ import UserNotifications
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
-    private var windowController: NotchWindowController?
+    private var windowControllers: [NotchWindowController] = []
     private var statusItem: NSStatusItem?
     private var glowController: GlowController?
     private let updateChecker = UpdateChecker()
@@ -171,43 +171,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     @objc private func debugTestFullscreen() {
-        windowController?.debugTestFullscreen()
+        windowControllers.first?.debugTestFullscreen()
     }
 
     @objc private func debugTestCaffeinate() {
-        windowController?.debugTestCaffeinate()
+        windowControllers.first?.debugTestCaffeinate()
     }
 
     @objc private func debugTestTheme() {
-        windowController?.debugTestTheme()
+        windowControllers.first?.debugTestTheme()
     }
 
     @objc private func debugTestSearch() {
-        windowController?.debugTestSearch()
+        windowControllers.first?.debugTestSearch()
     }
 
     @objc private func debugTestModels() {
-        windowController?.debugTestModels()
+        windowControllers.first?.debugTestModels()
     }
 
     @objc private func debugTestChat() {
-        windowController?.debugTestChat()
+        windowControllers.first?.debugTestChat()
     }
 
     @objc private func debugNextTab() {
-        windowController?.debugNextTab()
+        windowControllers.first?.debugNextTab()
     }
 
     @objc private func debugTestPaste() {
-        windowController?.debugTestPaste()
+        windowControllers.first?.debugTestPaste()
     }
 
     @objc private func debugTestLaunch() {
-        windowController?.debugTestLaunch()
+        windowControllers.first?.debugTestLaunch()
     }
 
     @objc private func debugSnapshot() {
-        windowController?.saveSnapshot()
+        windowControllers.first?.saveSnapshot()
     }
 
     /// 应用更名（NotchHub → ProNotch，bundle id 一并变更）的一次性数据搬家：
@@ -248,7 +248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         clipboardStore?.stop()
         chatStore?.stopStreaming()
         quickActions?.stop()
-        windowController?.close()
+        windowControllers.forEach { $0.close() }
     }
 
     @objc private func openSettings() {
@@ -277,29 +277,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc private func screenParametersChanged() {
         // 系统会成批发送参数变更通知（应用启动、色彩配置切换都可能触发），
-        // 刘海几何没变就不重建，避免面板使用中突然消失
-        let screen = NotchGeometry.targetScreen()
-        let rect = NotchGeometry.notchRect(on: screen)
-        if let existing = windowController, existing.viewModel.notchRect == rect {
+        // 所有屏的刘海几何都没变就不重建，避免面板使用中突然消失
+        let rects = NSScreen.screens.map { NotchGeometry.notchRect(on: $0) }
+        if rects == windowControllers.map(\.viewModel.notchRect) {
             return
         }
         setupNotchWindow()
     }
 
     @objc private func debugToggle() {
-        windowController?.viewModel.debugToggle()
+        windowControllers.first?.viewModel.debugToggle()
     }
 
+    /// 为每块在线屏幕各建一个刘海面板：有物理刘海的贴刘海，没有的
+    /// （外接屏 / 扩展屏）在顶部正中模拟热区。数据层共享，展开状态各自独立。
     private func setupNotchWindow() {
-        windowController?.close()
-        windowController = NotchWindowController(
-            launcherStore: launcherStore,
-            clipboardStore: clipboardStore,
-            snippetStore: snippetStore,
-            chatStore: chatStore,
-            quickActions: quickActions,
-            captureStore: captureStore,
-            settingsStore: settingsStore)
+        windowControllers.forEach { $0.close() }
+        windowControllers = NSScreen.screens.map { screen in
+            NotchWindowController(
+                screen: screen,
+                launcherStore: launcherStore,
+                clipboardStore: clipboardStore,
+                snippetStore: snippetStore,
+                chatStore: chatStore,
+                quickActions: quickActions,
+                captureStore: captureStore,
+                settingsStore: settingsStore)
+        }
     }
 
     /// 代理应用没有可见菜单栏，但 ⌘V/⌘C 等快捷键依赖主菜单路由，

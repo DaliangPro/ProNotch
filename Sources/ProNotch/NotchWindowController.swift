@@ -14,7 +14,8 @@ final class NotchWindowController {
 
     /// 数据层由 AppDelegate 持有并传入：换屏重建窗口时对话记录、
     /// 剪贴板监听等状态不丢失
-    init(launcherStore: LauncherStore,
+    init(screen: NSScreen,
+         launcherStore: LauncherStore,
          clipboardStore: ClipboardStore,
          snippetStore: SnippetStore,
          chatStore: ChatStore,
@@ -27,7 +28,6 @@ final class NotchWindowController {
         self.chatStore = chatStore
         self.quickActions = quickActions
         self.captureStore = captureStore
-        let screen = NotchGeometry.targetScreen()
         let notchRect = NotchGeometry.notchRect(on: screen)
         let hasRealNotch = screen.safeAreaInsets.top > 0
         print("[ProNotch] 屏幕: \(screen.localizedName)，真实刘海: \(hasRealNotch ? "是" : "否（模拟热区）")，刘海区域: \(notchRect)")
@@ -53,7 +53,8 @@ final class NotchWindowController {
         // 「全屏时隐藏刘海」：每秒检测一次，全屏时整窗隐藏、退出后恢复
         viewModel.shouldHideForFullscreen = { [weak settingsStore] in
             guard settingsStore?.hideNotchInFullscreen == true else { return false }
-            return FullscreenDetector.hasFullscreenWindow(on: NotchGeometry.targetScreen())
+            // 每块屏只检测自己屏的全屏（外接屏假刘海会遮挡全屏内容）
+            return FullscreenDetector.hasFullscreenWindow(on: screen)
         }
         viewModel.startMouseTracking()
         print("[ProNotch] 固定窗口 frame: \(panel.frame)")
