@@ -21,6 +21,7 @@ struct SettingsView: View {
     @EnvironmentObject var glow: GlowController
 
     @State private var justSaved = false
+    @State private var hookStatus: String?
 
     private var canSave: Bool {
         !chatStore.draftBaseURL.trimmingCharacters(in: .whitespaces).isEmpty
@@ -107,6 +108,8 @@ struct SettingsView: View {
                                   display: "\(Int(settings.glowThickness)) pt")
                     CardDivider()
                     glowButtonsRow
+                    CardDivider()
+                    glowHookRow
                 }
                 noteText("任务完成时屏幕四周亮起呼吸光晕；切回 Claude / Codex 窗口即熄灭。",
                          color: .white.opacity(0.35))
@@ -433,6 +436,33 @@ struct SettingsView: View {
                 glowActionButton(glow.testingSource == .codex ? "熄灭" : "测试 Codex 完成",
                                  hex: settings.glowCodexColorHex) { glow.toggleTest(.codex) }
             }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    private var glowHookRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                let r = GlowHookInstaller.install()
+                hookStatus = "Claude — \(r.claude)；Codex — \(r.codex)"
+            } label: {
+                Text("一键接入：完成时自动点亮光晕")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Color.accentColor.opacity(0.9)))
+            }
+            .buttonStyle(.plain)
+            if let hookStatus {
+                Text(hookStatus)
+                    .font(.system(size: 11)).foregroundColor(.white.opacity(0.6))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Text("向 ~/.claude/settings.json 与 ~/.codex/hooks.json 的 Stop 钩子各追加一条命令；保留你已有钩子，写前自动备份 .pronotch.bak。")
+                .font(.system(size: 10)).foregroundColor(.white.opacity(0.35))
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
     }
