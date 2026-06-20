@@ -116,6 +116,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestCapture),
             name: NSNotification.Name("com.daliangpro.ProNotch.testcapture"), object: nil)
+        // 调试入口：驱动 Codex notify 转发器接入 / 卸载，验证软件层接入
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(debugCodexHookOn),
+            name: NSNotification.Name("com.daliangpro.ProNotch.codexhookon"), object: nil)
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(debugCodexHookOff),
+            name: NSNotification.Name("com.daliangpro.ProNotch.codexhookoff"), object: nil)
         #endif
 
         // 面板内齿轮按钮打开设置窗口（窗口由本类持有，进程内通知解耦）——
@@ -147,6 +154,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// 调试用：写入一条测试妙记
     @objc private func debugTestCapture() {
         captureStore.capture("测试妙记：验证写入格式与今日列表解析")
+    }
+
+    /// 调试用：走真实路径接入 / 卸载 Codex 的 notify 转发器，结果写 /tmp 供核对
+    @objc private func debugCodexHookOn() {
+        print("[ProNotch] 调试：Codex notify 接入 = \(GlowHookInstaller.setInstalled(.codex, true))")
+    }
+    @objc private func debugCodexHookOff() {
+        print("[ProNotch] 调试：Codex notify 卸载 = \(GlowHookInstaller.setInstalled(.codex, false))")
     }
 
     /// 调试用：切换剪贴板页的「历史/话术」子视图

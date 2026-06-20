@@ -165,6 +165,11 @@ struct SettingsView: View {
                 CardDivider()
                 sourceRow("Codex", isOn: $codexConnected, source: .codex)
             }
+            Text("Codex 通过系统 notify 接入；若被其他工具（如 computer-use）覆盖而失效，重开上面的开关即可恢复。")
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.4))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 4)
 
             sectionLabel("外观")
             SettingsCard {
@@ -195,8 +200,9 @@ struct SettingsView: View {
             ThemedSwitch(isOn: Binding(
                 get: { isOn.wrappedValue },
                 set: { newValue in
-                    isOn.wrappedValue = newValue
-                    GlowHookInstaller.setInstalled(source, newValue)
+                    // 接入/卸载失败（如未安装该 App）则回滚开关，不误导成「已接入」
+                    isOn.wrappedValue = GlowHookInstaller.setInstalled(source, newValue)
+                        ? newValue : !newValue
                 }))
         }
         .padding(.horizontal, 14).padding(.vertical, 11)
