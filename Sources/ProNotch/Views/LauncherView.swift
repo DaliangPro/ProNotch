@@ -46,20 +46,25 @@ struct LauncherSearchField: View {
 struct LauncherView: View {
     @EnvironmentObject var store: LauncherStore
 
+    @State private var draggingApp: AppEntry?
+    @State private var dragOffset: CGSize = .zero
+
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 10), count: 8)
     /// 图标(48pt)居中于网格单元，分隔线内缩到与首末列图标边缘对齐
     private let edgeInset: CGFloat = 14
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // 置顶区：固定槽位、只显示图标不带名字，给下方腾空间
-            LazyVGrid(columns: columns, spacing: 10) {
-                ForEach(0..<store.maxPinned, id: \.self) { index in
-                    if index < store.pinned.count {
-                        AppCell(app: store.pinned[index], showsName: false)
-                    } else {
-                        EmptySlotView()
-                    }
+            // 置顶区：固定槽位、只显示图标。拖动用 SwiftUI 手势自绘——图标跟手移动、
+            // 其它图标实时让位、松手弹簧弹回，全程动画自控（不走系统拖放的归位动画）
+            HStack(spacing: 10) {
+                ForEach(store.pinned) { app in
+                    DraggablePinnedCell(app: app,
+                                        dragging: $draggingApp,
+                                        dragOffset: $dragOffset)
+                }
+                ForEach(Array(0..<max(0, store.maxPinned - store.pinned.count)), id: \.self) { _ in
+                    EmptySlotView()
                 }
             }
 
@@ -102,6 +107,96 @@ struct LauncherView: View {
             )
         }
         .onAppear { store.refreshIfNeeded() }
+    }
+}
+
+/// 置顶图标：手势自绘拖动重排。一个 DragGesture 同时承担「点击启动」与「拖动换位」——
+/// 移动超过阈值才算拖动，否则按点击处理；拖到覆盖某槽位即实时 move + 让位（弹簧动画），
+/// 松手弹簧把 offset 归零、平滑落到新位置。全程不经系统拖放，故无归位卡顿、无半透明预览。
+private struct DraggablePinnedCell: View {
+    @EnvironmentObject var vm: NotchViewModel
+    @EnvironmentObject var store: LauncherStore
+    let app: AppEntry
+    @Binding var dragging: AppEntry?
+    @Binding var dragOffset: CGSize
+
+    @State private var hovering = false
+    @State private var jumping = false
+    @State private var startIndex = 0
+    @State private var cellW: CGFloat = 0
+
+    private var isDragging: Bool { dragging?.id == app.id }
+    /// 相邻槽位中心间距 = 实测单元宽 + HStack 间距(10)
+    private var stride: CGFloat { cellW + 10 }
+
+    var body: some View {
+        Image(nsImage: AppIconCache.icon(for: app.url))
+            .resizable()
+            .frame(width: 48, height: 48)
+            .offset(y: jumping ? -10 : 0)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 8)
+                .fill(Color.white.opacity(hovering ? 0.12 : 0)))
+            .background(GeometryReader { g in
+                Color.clear.onAppear { cellW = g.size.width }
+            })
+            .contentShape(Rectangle())
+            .offset(isDragging ? dragOffset : .zero)
+            .zIndex(isDragging ? 1 : 0)
+            .onHover { hovering = $0 }
+            .help(app.name)
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                    .onChanged { value in
+                        guard isDragging
+                                || abs(value.translation.width) > 5
+                                || abs(value.translation.height) > 5 else { return }
+                        guard let current = store.pinned.firstIndex(where: { $0.id == app.id }) else { return }
+                        if dragging == nil {
+                            dragging = app
+                            startIndex = current
+                        }
+                        // 目标槽位 = 起始槽位 + 累计位移格数（基于起点，不逐帧漂移）
+                        let target = min(max(startIndex + Int((value.translation.width / stride).rounded()), 0),
+                                         store.pinned.count - 1)
+                        if target != current {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.72)) {
+                                store.movePinned(from: current, to: target)
+                            }
+                        }
+                        // 视觉偏移每帧重算 = 跟手位移 − 当前槽位相对起点的布局位移（让图标始终贴着鼠标）
+                        let nowIndex = store.pinned.firstIndex(where: { $0.id == app.id }) ?? target
+                        dragOffset = CGSize(
+                            width: value.translation.width - CGFloat(nowIndex - startIndex) * stride,
+                            height: value.translation.height)
+                    }
+                    .onEnded { _ in
+                        if isDragging {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) {
+                                dragOffset = .zero
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                if dragging?.id == app.id { dragging = nil }
+                            }
+                        } else {
+                            launch()
+                        }
+                    }
+            )
+            .contextMenu {
+                Button("取消置顶") { store.togglePin(app) }
+            }
+    }
+
+    /// 点击启动：Dock 同款跳动反馈后收起面板
+    private func launch() {
+        store.launch(app)
+        withAnimation(.easeOut(duration: 0.28)) { jumping = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) { jumping = false }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.78) { vm.collapseNow() }
     }
 }
 

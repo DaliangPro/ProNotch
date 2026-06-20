@@ -77,6 +77,13 @@ final class LauncherStore: ObservableObject {
         UserDefaults.standard.set(pinned.map(\.url.path), forKey: pinnedKey)
     }
 
+    /// 置顶图标拖动换位（与标签 / 快捷图标同款交互），顺序持久化
+    func movePinned(from: Int, to: Int) {
+        guard from != to, pinned.indices.contains(from), pinned.indices.contains(to) else { return }
+        pinned.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
+        UserDefaults.standard.set(pinned.map(\.url.path), forKey: pinnedKey)
+    }
+
     // MARK: - 私有
 
     private func apply(_ apps: [AppEntry]) {
