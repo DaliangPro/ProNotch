@@ -159,17 +159,31 @@ struct SettingsView: View {
             pageTitle("Agent 提醒",
                       subtitle: "Claude Code / Codex 完成任务时，屏幕四周亮起呼吸光晕提醒你。")
 
-            sectionLabel("提醒来源")
+            // 总开关：与刘海面板的「Agent 提醒」按钮联动（同一个 glowEnabled）
             SettingsCard {
-                sourceRow("Claude Code", isOn: $claudeConnected, source: .claude)
-                CardDivider()
-                sourceRow("Codex", isOn: $codexConnected, source: .codex)
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("启用 Agent 提醒")
+                            .font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+                        Text("总开关，与刘海面板上的按钮联动")
+                            .font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
+                    }
+                    Spacer()
+                    ThemedSwitch(isOn: $settings.glowEnabled)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 11)
             }
-            Text("Codex 通过系统 notify 接入；若被其他工具（如 computer-use）覆盖而失效，重开上面的开关即可恢复。")
-                .font(.system(size: 11))
-                .foregroundColor(.white.opacity(0.4))
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 4)
+
+            // 完成时提醒：勾选哪些 Agent（并排）；总开关关闭时整块禁用、灰显
+            sectionLabel("完成时提醒")
+            SettingsCard {
+                HStack(spacing: 0) {
+                    sourceRow("Claude Code", isOn: $claudeConnected, source: .claude)
+                    sourceRow("Codex", isOn: $codexConnected, source: .codex)
+                }
+            }
+            .disabled(!settings.glowEnabled)
+            .opacity(settings.glowEnabled ? 1 : 0.4)
 
             sectionLabel("外观")
             SettingsCard {
@@ -187,25 +201,34 @@ struct SettingsView: View {
                               display: "\(Int(settings.glowThickness)) pt")
             }
         }
+        // 总开关变化后（含面板联动触发）刷新勾选，反映 didSet 里的接入/移除结果
+        .onChange(of: settings.glowEnabled) { _, _ in
+            claudeConnected = GlowHookInstaller.isInstalled(.claude)
+            codexConnected = GlowHookInstaller.isInstalled(.codex)
+        }
     }
 
-    /// 提醒来源开关：打开 = 接入该 App 的完成钩子，关闭 = 移出
+    /// 提醒来源勾选（并排、无副文字）：勾上 = 接入完成钩子，取消 = 移出；
+    /// 取消后两个都没勾，总开关自动关。
     private func sourceRow(_ title: String, isOn: Binding<Bool>, source: GlowSource) -> some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 2) {
+        Button {
+            let target = !isOn.wrappedValue
+            // 接入/卸载失败（如未安装该 App）则回滚，不误导成「已接入」
+            isOn.wrappedValue = GlowHookInstaller.setInstalled(source, target) ? target : !target
+            // 勾选变化后总开关跟随「还有没有勾选」：两个都没勾就自动关
+            settings.glowEnabled = claudeConnected || codexConnected
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: isOn.wrappedValue ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 15))
+                    .foregroundColor(.white.opacity(isOn.wrappedValue ? 0.9 : 0.35))
                 Text(title).font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
-                Text("完成任务时亮起光晕").font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
             }
-            Spacer()
-            ThemedSwitch(isOn: Binding(
-                get: { isOn.wrappedValue },
-                set: { newValue in
-                    // 接入/卸载失败（如未安装该 App）则回滚开关，不误导成「已接入」
-                    isOn.wrappedValue = GlowHookInstaller.setInstalled(source, newValue)
-                        ? newValue : !newValue
-                }))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .padding(.horizontal, 14).padding(.vertical, 11)
         }
-        .padding(.horizontal, 14).padding(.vertical, 11)
+        .buttonStyle(.plain)
     }
 
     /// 颜色行：取色器 + 文字「预览」按钮（点亮该色边调边看，再点熄灭）

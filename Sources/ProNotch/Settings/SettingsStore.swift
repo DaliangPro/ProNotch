@@ -49,7 +49,15 @@ final class SettingsStore: ObservableObject {
     }
 
     // MARK: - 光晕提醒
-    @Published var glowEnabled: Bool { didSet { persistGlow(glowEnabled, "glowEnabled") } }
+    @Published var glowEnabled: Bool {
+        didSet {
+            persistGlow(glowEnabled, "glowEnabled")
+            // 总开关：打开默认接入两个 Agent、关闭移除两个（具体勾选谁再由勾选框微调）。
+            // 放 didSet 而非 binding set，避开「set 里改被绑值」的 re-entrancy。
+            GlowHookInstaller.setInstalled(.claude, glowEnabled)
+            GlowHookInstaller.setInstalled(.codex, glowEnabled)
+        }
+    }
     @Published var glowClaudeColorHex: String { didSet { persistGlow(glowClaudeColorHex, "glowClaudeColorHex") } }
     @Published var glowCodexColorHex: String { didSet { persistGlow(glowCodexColorHex, "glowCodexColorHex") } }
     @Published var glowBreathPeriod: Double { didSet { persistGlow(glowBreathPeriod, "glowBreathPeriod") } }
