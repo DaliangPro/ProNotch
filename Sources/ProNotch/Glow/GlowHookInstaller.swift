@@ -28,7 +28,8 @@ enum GlowHookInstaller {
     }
 
     private static func command(for source: GlowSource) -> String {
-        "open \"pronotch://done?source=\(source.rawValue)\""
+        // -g：后台送达 URL，绝不把 ProNotch 激活到前台（否则高频完成信号会抢占前台）
+        "open -g \"pronotch://done?source=\(source.rawValue)\""
     }
 
     private static func backup(_ path: String) {
@@ -188,7 +189,7 @@ enum GlowHookInstaller {
         # PRONOTCH_PREV_B64=\(prevB64)
         payload="$1"
         case "$payload" in
-          *agent-turn-complete*) open "pronotch://done?source=codex" ;;
+          *agent-turn-complete*) open -g "pronotch://done?source=codex" ;;
         esac
         \(execBlock)
         """
