@@ -100,8 +100,10 @@ enum GlowHookInstaller {
 
     private static func isCodexInstalled() -> Bool {
         guard let toml = try? String(contentsOfFile: codexConfig, encoding: .utf8),
-              let line = notifyLine(in: toml) else { return false }
-        return line.contains(codexScript)
+              let arr = notifyArray(in: toml) else { return false }
+        // 只认「notify 直接指向我们的脚本」（数组首元素 = 脚本）。被 computer-use 等套
+        // 在外层的嵌套情况不认作已接入——避免卸载时误动它们的配置、或反复嵌套加深。
+        return arr.hasPrefix("[\"\(codexScript)\"")
     }
 
     @discardableResult
@@ -122,13 +124,14 @@ enum GlowHookInstaller {
         } else {
             if !isCodexInstalled() { return true }
             let prev = readPreviousFromForwarder()   // 从脚本取回原 notify
-            backup(codexConfig)
-            let newToml: String
-            if let prev, !prev.isEmpty {
-                newToml = upsertNotifyLine(toml, value: prev)
-            } else {
-                newToml = removeNotifyLine(toml)
+            // 读不到原 notify（脚本被外部删 / 改）时，绝不删整条 notify——以免误删被
+            // computer-use 等套在外层的下游配置。此时只清脚本、报失败，让设置页回滚开关。
+            guard let prev, !prev.isEmpty else {
+                try? fm.removeItem(atPath: codexScript)
+                return false
             }
+            backup(codexConfig)
+            let newToml = upsertNotifyLine(toml, value: prev)
             let ok = (try? newToml.write(toFile: codexConfig, atomically: true, encoding: .utf8)) != nil
             if ok { try? fm.removeItem(atPath: codexScript) }
             return ok
@@ -164,12 +167,6 @@ enum GlowHookInstaller {
             lines.insert(newLine, at: at)
         }
         return lines.joined(separator: "\n")
-    }
-
-    private static func removeNotifyLine(_ toml: String) -> String {
-        toml.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-            .filter { $0.range(of: notifyRegex, options: .regularExpression) == nil }
-            .joined(separator: "\n")
     }
 
     // MARK: - 转发脚本生成 / 解析
