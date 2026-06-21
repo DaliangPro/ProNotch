@@ -45,6 +45,11 @@ final class GlowController: ObservableObject {
     private var loopStart: Date?
     private var fadeTarget: Double = 0
     private let fadeDuration: Double = 0.5
+    /// 完成信号防抖：连续信号（如 computer-use 每步都发）不断重置计时，
+    /// 只有停顿超过此秒数（=这轮活真干完了）才点亮一次
+    private var completionDebounce: Timer?
+    private var debounceSource: GlowSource?
+    private let completionDebounceDelay: TimeInterval = 8
 
     init(settings: SettingsStore) {
         self.settings = settings
@@ -93,7 +98,21 @@ final class GlowController: ObservableObject {
         guard settings.glowEnabled else { return }
         previewingSource = nil
         testingSource = nil
-        light(source, mode: .alert)
+        // 防抖：computer-use 等场景下，Codex 每完成一个中间步骤都会发完成信号。
+        // 连续信号不断重置计时，只有「停顿超过 completionDebounceDelay 秒」（=这轮活
+        // 真干完了 / 停下来等你了）才点亮一次，避免干活过程中刷屏。
+        debounceSource = source
+        completionDebounce?.invalidate()
+        let timer = Timer(timeInterval: completionDebounceDelay, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.completionDebounce = nil
+                self.debounceSource = nil
+                self.light(source, mode: .alert)
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        completionDebounce = timer
     }
 
     /// 设置页「测试」按钮：模拟一次真实完成（切前台会灭），再点同色熄灭
@@ -123,14 +142,25 @@ final class GlowController: ObservableObject {
     }
 
     func dismiss() {
+        completionDebounce?.invalidate()
+        completionDebounce = nil
+        debounceSource = nil
         fadeTarget = 0   // 由 tick() 淡出到 0 后统一清理
     }
 
     /// 「完成提醒」光晕：对应桌面 App 切到最前台 → 熄灭（预览类不受影响）
     private func handleAppActivation(_ note: Notification) {
+        guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+        let bundle = app.bundleIdentifier
+        // 防抖等待期间切到对应 App = 你已经在看了，取消这次待点亮
+        if completionDebounce != nil, bundle == debounceSource?.appBundleID {
+            completionDebounce?.invalidate()
+            completionDebounce = nil
+            debounceSource = nil
+        }
+        // 已点亮的完成光晕：切到对应 App 前台 → 熄灭
         guard activeMode == .alert, let source = activeSource,
-              let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-              app.bundleIdentifier == source.appBundleID else { return }
+              bundle == source.appBundleID else { return }
         dismiss()
     }
 
