@@ -48,6 +48,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // 光晕提醒：常驻一个覆盖整屏的光晕层（默认不显示，等 pronotch:// 信号点亮）
         glowController = GlowController(settings: settingsStore)
 
+        // 升级迁移：把已接入的旧 hook 刷新到带「宿主 App 探测」的新格式（终端/IDE 通用）。
+        // 仅刷新已接入的，不改变接入与否，避免误开用户已取消的 Agent。
+        GlowHookInstaller.migrateIfInstalled(.claude)
+        GlowHookInstaller.migrateIfInstalled(.codex)
+        // 清除早期 hooks.json 接入残留的「无 host」pronotch 孤儿（与接入与否无关，幂等）
+        GlowHookInstaller.cleanCodexHooksOrphan()
+
         // 屏幕配置变化（接显示器、合盖等）时重建刘海窗口
         NotificationCenter.default.addObserver(
             self, selector: #selector(screenParametersChanged),
@@ -142,11 +149,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func handleGlowURL(_ url: URL) {
         guard url.scheme == "pronotch", url.host == "done" else { return }
-        let source = URLComponents(url: url, resolvingAgainstBaseURL: false)?
-            .queryItems?.first(where: { $0.name == "source" })?.value
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        let source = items?.first(where: { $0.name == "source" })?.value
+        // host：hook 探测到的「Agent 实际所在 App」bundle id（终端/IDE/桌面版通用）
+        let host = items?.first(where: { $0.name == "host" })?.value
         switch source {
-        case "claude": glowController?.notifyCompletion(.claude)
-        case "codex":  glowController?.notifyCompletion(.codex)
+        case "claude": glowController?.notifyCompletion(.claude, host: host)
+        case "codex":  glowController?.notifyCompletion(.codex, host: host)
         default: break
         }
     }

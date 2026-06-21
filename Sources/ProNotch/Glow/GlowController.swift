@@ -40,6 +40,7 @@ final class GlowController: ObservableObject {
     private let settings: SettingsStore
     private var activeSource: GlowSource?
     private var activeMode: Mode?
+    private var activeHost: String?   // 当前光晕对应的宿主 App bundle id（切回它即熄灭）
     private var panel: GlowPanel?
     private var loopTimer: Timer?
     private var loopStart: Date?
@@ -89,13 +90,17 @@ final class GlowController: ObservableObject {
     // MARK: - 点亮 / 熄灭
 
     /// 真实完成信号（pronotch://done?source=…）→ 完成提醒光晕
-    func notifyCompletion(_ source: GlowSource) {
+    func notifyCompletion(_ source: GlowSource, host: String? = nil) {
         guard settings.glowEnabled else { return }
-        // 只在 Agent 处于后台时提醒：若它已经在最前台（你正盯着它），就不点亮——
+        // 宿主 App：hook 沿进程链找到的「Agent 实际所在的 GUI App」bundle id；
+        // 拿不到（旧 hook / 特殊环境）就回退到该 Agent 的桌面版 bundle id。
+        let hostID = (host?.isEmpty == false) ? host! : source.appBundleID
+        // 只在 Agent 处于后台时提醒：若宿主 App 已在最前台（你正盯着它跑），就不点亮——
         // 既没必要，光晕也无从熄灭（已在前台，等不到「切回它」的激活事件）。
-        if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == source.appBundleID { return }
+        if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == hostID { return }
         previewingSource = nil
         testingSource = nil
+        activeHost = hostID
         // 完成信号发在「这轮任务真正结束」时，所以收到即点亮。
         light(source, mode: .alert)
     }
@@ -106,6 +111,7 @@ final class GlowController: ObservableObject {
         if testingSource == source { dismiss(); return }
         previewingSource = nil
         testingSource = source
+        activeHost = nil
         light(source, mode: .alert)
     }
 
@@ -115,6 +121,7 @@ final class GlowController: ObservableObject {
         if previewingSource == source { dismiss(); return }
         testingSource = nil
         previewingSource = source
+        activeHost = nil
         light(source, mode: .preview)
     }
 
@@ -133,8 +140,9 @@ final class GlowController: ObservableObject {
     /// 「完成提醒」光晕：对应桌面 App 切到最前台 → 熄灭（预览类不受影响）
     private func handleAppActivation(_ note: Notification) {
         guard activeMode == .alert, let source = activeSource,
-              let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
-              app.bundleIdentifier == source.appBundleID else { return }
+              let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+        // 切回「Agent 所在的宿主 App」即熄灭；activeHost 为空时回退到桌面版 bundle id。
+        guard app.bundleIdentifier == (activeHost ?? source.appBundleID) else { return }
         dismiss()
     }
 
@@ -164,6 +172,7 @@ final class GlowController: ObservableObject {
             activeColor = nil
             activeSource = nil
             activeMode = nil
+            activeHost = nil
             previewingSource = nil
             testingSource = nil
             loopTimer?.invalidate(); loopTimer = nil; loopStart = nil

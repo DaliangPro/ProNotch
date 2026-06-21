@@ -27,9 +27,64 @@ enum GlowHookInstaller {
         }
     }
 
-    private static func command(for source: GlowSource) -> String {
-        // -g：后台送达 URL，绝不把 ProNotch 激活到前台（否则高频完成信号会抢占前台）
-        "open -g \"pronotch://done?source=\(source.rawValue)\""
+    /// 升级迁移：仅把「已接入」的来源刷新到当前脚本格式，不改变接入与否
+    static func migrateIfInstalled(_ source: GlowSource) {
+        guard isInstalled(source) else { return }
+        setInstalled(source, true)
+    }
+
+    /// 清除早期版本（43640d8）写进 ~/.codex/hooks.json 的 pronotch Stop 钩子孤儿。
+    /// 现在 Codex 完成提醒走 config.toml 的 notify，这条孤儿会让每次完成多发一个「无 host」
+    /// 信号——表现为：终端在前台时光晕仍亮、且只能靠激活 Codex 桌面 App 才能熄灭。
+    @discardableResult
+    static func cleanCodexHooksOrphan() -> Bool {
+        let p = codexHooksPath
+        guard let data = FileManager.default.contents(atPath: p),
+              var root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var hooks = root["hooks"] as? [String: Any],
+              var stop = hooks["Stop"] as? [[String: Any]] else { return false }
+        let before = stop.count
+        stop.removeAll { entry in
+            (entry["hooks"] as? [[String: Any]])?.contains {
+                ($0["command"] as? String)?.contains("pronotch://done") == true
+            } == true
+        }
+        guard stop.count != before else { return false }   // 无孤儿则不动文件
+        backup(p)
+        if stop.isEmpty { hooks.removeValue(forKey: "Stop") } else { hooks["Stop"] = stop }
+        if hooks.isEmpty { root.removeValue(forKey: "hooks") } else { root["hooks"] = hooks }
+        guard let out = try? JSONSerialization.data(withJSONObject: root, options: [.prettyPrinted, .sortedKeys]),
+              (try? out.write(to: URL(fileURLWithPath: p))) != nil else { return false }
+        return true
+    }
+
+    /// hook 脚本格式版本：升级时 +1，启动迁移据此把旧脚本刷新到新格式
+    private static let scriptFormat = 2
+
+    /// 沿进程链向上找到「Agent 实际所在的 GUI App」bundle id。只认 /Applications 下的 app
+    /// （借此排除 claude-code 的 CLI 包装 app）；终端 / IDE / 桌面 App 通用，找不到回空。
+    private static let hostDetectSnippet = """
+    detect_host() {
+      local pid=$PPID ppid path app bid
+      for _ in $(seq 1 15); do
+        [ "$pid" -le 1 ] && break
+        read -r ppid path < <(ps -o ppid=,comm= -p "$pid" 2>/dev/null)
+        [ -z "$ppid" ] && break
+        case "$path" in
+          */Applications/*.app/Contents/*)
+            app="${path%%.app/Contents/*}.app"
+            bid=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist" 2>/dev/null)
+            [ -n "$bid" ] && { printf '%s' "$bid"; return; } ;;
+        esac
+        pid=$ppid
+      done
+    }
+    """
+
+    /// 脚本是否已是当前格式（含 host 探测）：据脚本头的 PRONOTCH_FMT 标记判断
+    private static func scriptIsCurrent(_ path: String) -> Bool {
+        guard let s = try? String(contentsOfFile: path, encoding: .utf8) else { return false }
+        return s.contains("PRONOTCH_FMT=\(scriptFormat)")
     }
 
     private static func backup(_ path: String) {
@@ -42,10 +97,44 @@ enum GlowHookInstaller {
 
     private static let claudePath = ("~/.claude/settings.json" as NSString).expandingTildeInPath
 
-    private static func entryHasOurs(_ entry: [String: Any]) -> Bool {
+    /// Claude 转发脚本：探测宿主 App + open -g 点亮（放应用支持目录，跨重装稳定）
+    private static var claudeScript: String {
+        NSHomeDirectory() + "/Library/Application Support/ProNotch/claude-notify.sh"
+    }
+    private static var claudeCommand: String { "\"\(claudeScript)\"" }
+
+    /// 旧版（内联 open pronotch://）或新版（指向脚本）都算「我们的」——卸载/迁移时一并处理
+    private static func entryIsOurs(_ entry: [String: Any]) -> Bool {
         (entry["hooks"] as? [[String: Any]])?.contains {
-            ($0["command"] as? String)?.contains("pronotch://done") == true
+            let c = ($0["command"] as? String) ?? ""
+            return c.contains("pronotch://done") || c.contains("claude-notify.sh")
         } == true
+    }
+    /// 仅新版（command 指向我们的脚本）
+    private static func entryIsCurrentClaude(_ entry: [String: Any]) -> Bool {
+        (entry["hooks"] as? [[String: Any]])?.contains {
+            ($0["command"] as? String)?.contains("claude-notify.sh") == true
+        } == true
+    }
+
+    /// 生成 Claude 转发脚本（内容幂等）
+    @discardableResult
+    private static func writeClaudeScript() -> Bool {
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: (claudeScript as NSString).deletingLastPathComponent,
+                                withIntermediateDirectories: true)
+        let script = """
+        #!/bin/bash
+        # ProNotch · Claude 完成提醒（自动生成，勿手改）· PRONOTCH_FMT=\(scriptFormat)
+        \(hostDetectSnippet)
+        host=$(detect_host)
+        url="pronotch://done?source=claude"
+        [ -n "$host" ] && url="$url&host=$host"
+        open -g "$url"
+        """
+        guard (try? script.write(toFile: claudeScript, atomically: true, encoding: .utf8)) != nil else { return false }
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: claudeScript)
+        return true
     }
 
     private static func isClaudeInstalled() -> Bool {
@@ -53,7 +142,7 @@ enum GlowHookInstaller {
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let hooks = root["hooks"] as? [String: Any],
               let stop = hooks["Stop"] as? [[String: Any]] else { return false }
-        return stop.contains(where: entryHasOurs)
+        return stop.contains(where: entryIsOurs)
     }
 
     @discardableResult
@@ -69,14 +158,20 @@ enum GlowHookInstaller {
         }
         var hooks = root["hooks"] as? [String: Any] ?? [:]
         var stop = hooks["Stop"] as? [[String: Any]] ?? []
-        let hasOurs = stop.contains(where: entryHasOurs)
+        let oursEntries = stop.filter(entryIsOurs)
 
         if on {
-            if hasOurs { return true }
-            stop.append(["hooks": [["type": "command", "command": command(for: .claude)]]])
+            // 已是当前格式（脚本最新 + 仅一条指向脚本的 Stop 条目）→ 幂等跳过
+            if scriptIsCurrent(claudeScript), oursEntries.count == 1, entryIsCurrentClaude(oursEntries[0]) {
+                return true
+            }
+            guard writeClaudeScript() else { return false }
+            stop.removeAll(where: entryIsOurs)   // 清掉旧内联 / 重复条目，再装新版
+            stop.append(["hooks": [["type": "command", "command": claudeCommand]]])
         } else {
-            if !hasOurs { return true }
-            stop.removeAll(where: entryHasOurs)
+            if oursEntries.isEmpty { return true }
+            stop.removeAll(where: entryIsOurs)
+            try? fm.removeItem(atPath: claudeScript)
         }
 
         backup(p)
@@ -92,6 +187,7 @@ enum GlowHookInstaller {
     // MARK: - Codex（config.toml 的 notify 转发器）
 
     private static let codexConfig = ("~/.codex/config.toml" as NSString).expandingTildeInPath
+    private static let codexHooksPath = ("~/.codex/hooks.json" as NSString).expandingTildeInPath
 
     /// 转发脚本路径：放应用支持目录，跨重装稳定
     private static var codexScript: String {
@@ -114,7 +210,11 @@ enum GlowHookInstaller {
         let toml = (try? String(contentsOfFile: codexConfig, encoding: .utf8)) ?? ""
 
         if on {
-            if isCodexInstalled() { return true }   // 幂等
+            if isCodexInstalled() {
+                // notify 已指向我们的脚本；脚本格式过期则就地刷新（保留原 notify 链）
+                if !scriptIsCurrent(codexScript) { _ = writeForwarder(previous: readPreviousFromForwarder()) }
+                return true
+            }
             // 当前 notify（原样 TOML 数组串，nil = 无）作为 previous 写进脚本
             let prev = notifyArray(in: toml)
             guard writeForwarder(previous: prev) else { return false }
@@ -181,12 +281,17 @@ enum GlowHookInstaller {
         let execBlock = forwardExecBlock(previous: previous)
         let script = """
         #!/bin/bash
-        # ProNotch · Codex 完成提醒转发器（ProNotch 自动生成，请勿手改）
+        # ProNotch · Codex 完成提醒转发器（自动生成，勿手改）· PRONOTCH_FMT=\(scriptFormat)
         # 还原：把 ~/.codex/config.toml 的 notify 改回下面 base64 的解码值，再删除本文件。
         # PRONOTCH_PREV_B64=\(prevB64)
+        \(hostDetectSnippet)
         payload="$1"
         case "$payload" in
-          *agent-turn-complete*) open -g "pronotch://done?source=codex" ;;
+          *agent-turn-complete*)
+            host=$(detect_host)
+            url="pronotch://done?source=codex"
+            [ -n "$host" ] && url="$url&host=$host"
+            open -g "$url" ;;
         esac
         \(execBlock)
         """
