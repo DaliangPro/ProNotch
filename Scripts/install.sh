@@ -15,5 +15,9 @@ fi
 ditto --rsrc "build/ProNotch.app" "/Applications/ProNotch.app"
 codesign --force --sign - "/Applications/ProNotch.app" >/dev/null 2>&1 || true
 
+# 强制把新版重注册为 pronotch:// 的处理者，避免旧版/调试版残留抢占 URL 路由
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+"$LSREGISTER" -f "/Applications/ProNotch.app" >/dev/null 2>&1 || true
+
 open "/Applications/ProNotch.app"
 echo "已安装并启动: /Applications/ProNotch.app"
