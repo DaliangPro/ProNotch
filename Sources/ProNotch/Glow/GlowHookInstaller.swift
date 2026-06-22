@@ -59,7 +59,7 @@ enum GlowHookInstaller {
     }
 
     /// hook 脚本格式版本：升级时 +1，启动迁移据此把旧脚本刷新到新格式
-    private static let scriptFormat = 2
+    private static let scriptFormat = 3
 
     /// 沿进程链向上找到「Agent 实际所在的 GUI App」bundle id。只认 /Applications 下的 app
     /// （借此排除 claude-code 的 CLI 包装 app）；终端 / IDE / 桌面 App 通用，找不到回空。
@@ -288,10 +288,15 @@ enum GlowHookInstaller {
         payload="$1"
         case "$payload" in
           *agent-turn-complete*)
-            host=$(detect_host)
-            url="pronotch://done?source=codex"
-            [ -n "$host" ] && url="$url&host=$host"
-            open -g "$url" ;;
+            # 跳过 Codex Desktop 自动生成会话标题的内部任务——它在你刚发消息时就完成，会让光晕「一开始就亮」
+            case "$payload" in
+              *"Generate a concise UI title"*) : ;;
+              *)
+                host=$(detect_host)
+                url="pronotch://done?source=codex"
+                [ -n "$host" ] && url="$url&host=$host"
+                open -g "$url" ;;
+            esac ;;
         esac
         \(execBlock)
         """
