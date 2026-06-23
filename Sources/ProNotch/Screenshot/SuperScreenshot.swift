@@ -1509,9 +1509,9 @@ struct BoxOptionsBar: View {
             sep
             ForEach(Self.widths, id: \.self) { widthBtn($0) }
         }
-        .padding(.horizontal, 11).padding(.vertical, 7)
-        .background(Color.black.opacity(0.88), in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
+        .padding(.horizontal, 13).padding(.vertical, 7)
+        .background(Color.black.opacity(0.88), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
         .fixedSize()
     }
 
@@ -1522,7 +1522,7 @@ struct BoxOptionsBar: View {
             Image(systemName: name).font(.system(size: 15))
                 .foregroundColor(active ? .cyan : .white.opacity(0.85))
                 .frame(width: 30, height: 28)
-                .background(Capsule().fill(active ? Color.cyan.opacity(0.18) : .clear))
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(active ? Color.cyan.opacity(0.18) : .clear))
                 .contentShape(Capsule())
         }.buttonStyle(.plain)
     }
@@ -1535,7 +1535,7 @@ struct BoxOptionsBar: View {
             }
             .foregroundColor(dashed == d ? .cyan : .white.opacity(0.85))
             .frame(width: 30, height: 28)
-            .background(Capsule().fill(dashed == d ? Color.cyan.opacity(0.18) : .clear))
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(dashed == d ? Color.cyan.opacity(0.18) : .clear))
             .contentShape(Capsule())
         }.buttonStyle(.plain)
     }
@@ -1554,7 +1554,7 @@ struct BoxOptionsBar: View {
             Capsule().fill(lineWidth == w ? Color.cyan : Color.white.opacity(0.85))
                 .frame(width: 16, height: w)
                 .frame(width: 28, height: 28)
-                .background(Capsule().fill(lineWidth == w ? Color.cyan.opacity(0.18) : .clear))
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(lineWidth == w ? Color.cyan.opacity(0.18) : .clear))
                 .contentShape(Capsule())
         }.buttonStyle(.plain)
     }
@@ -1581,13 +1581,13 @@ struct PenOptionsBar: View {
                 Button { onWidth(w) } label: {
                     Circle().fill(lineWidth == w ? Color.cyan : Color.white.opacity(0.85))
                         .frame(width: w + 3, height: w + 3).frame(width: 28, height: 28)
-                        .background(Capsule().fill(lineWidth == w ? Color.cyan.opacity(0.18) : .clear)).contentShape(Capsule())
+                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(lineWidth == w ? Color.cyan.opacity(0.18) : .clear)).contentShape(Capsule())
                 }.buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 11).padding(.vertical, 7)
-        .background(Color.black.opacity(0.88), in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)).fixedSize()
+        .padding(.horizontal, 13).padding(.vertical, 7)
+        .background(Color.black.opacity(0.88), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)).fixedSize()
     }
 }
 
@@ -1605,9 +1605,9 @@ struct ColorOptionsBar: View {
                 }.buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(Color.black.opacity(0.88), in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)).fixedSize()
+        .padding(.horizontal, 13).padding(.vertical, 7)
+        .background(Color.black.opacity(0.88), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)).fixedSize()
     }
 }
 
@@ -1628,58 +1628,102 @@ struct MosaicOptionsBar: View {
                     Button { onWidth(w) } label: {
                         Circle().fill(lineWidth == w ? Color.cyan : Color.white.opacity(0.85))
                             .frame(width: w / 3 + 5, height: w / 3 + 5).frame(width: 30, height: 28)
-                            .background(Capsule().fill(lineWidth == w ? Color.cyan.opacity(0.18) : .clear)).contentShape(Capsule())
+                            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(lineWidth == w ? Color.cyan.opacity(0.18) : .clear)).contentShape(Capsule())
                     }.buttonStyle(.plain)
                 }
             }
         }
-        .padding(.horizontal, 11).padding(.vertical, 7)
-        .background(Color.black.opacity(0.88), in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)).fixedSize()
+        .padding(.horizontal, 13).padding(.vertical, 7)
+        .background(Color.black.opacity(0.88), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)).fixedSize()
     }
     private func modeBtn(_ icon: String, active: Bool, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon).font(.system(size: 15))
                 .foregroundColor(active ? .cyan : .white.opacity(0.85))
                 .frame(width: 32, height: 28)
-                .background(Capsule().fill(active ? Color.cyan.opacity(0.18) : .clear)).contentShape(Capsule())
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(active ? Color.cyan.opacity(0.18) : .clear)).contentShape(Capsule())
         }.buttonStyle(.plain)
     }
 }
 
-/// 马赛克图标：3×3 棋盘格（5 个方块），矢量复刻
+/// 马赛克图标：圆角方块内的双明度棋盘格（照大梁老师认可的示意图复刻，细密小格更像真实马赛克）
+/// side = 视觉边长，调它即可与工具栏其它 SF Symbol 图标对齐
 private struct ScreenshotMosaicGlyph: View {
     var color: Color
-    private let cells: [(Int, Int)] = [(0, 0), (2, 0), (1, 1), (0, 2), (2, 2)]
+    var side: CGFloat = 20
+    private let n = 5                       // 5×5 细棋盘
     var body: some View {
-        let cell: CGFloat = 4, step: CGFloat = 4.7, inset: CGFloat = 1.5
-        ZStack(alignment: .topLeading) {
-            Color.clear.frame(width: 16.5, height: 16.5)
-            ForEach(0..<cells.count, id: \.self) { i in
-                RoundedRectangle(cornerRadius: 0.8).fill(color)
-                    .frame(width: cell, height: cell)
-                    .offset(x: inset + CGFloat(cells[i].0) * step, y: inset + CGFloat(cells[i].1) * step)
+        let cell = side / CGFloat(n)
+        VStack(spacing: 0) {
+            ForEach(0..<n, id: \.self) { r in
+                HStack(spacing: 0) {
+                    ForEach(0..<n, id: \.self) { c in
+                        Rectangle()
+                            .fill(color.opacity((r + c).isMultiple(of: 2) ? 1.0 : 0.4))
+                            .frame(width: cell, height: cell)
+                    }
+                }
             }
         }
-        .frame(width: 16.5, height: 16.5)
+        .frame(width: side, height: side)
+        .clipShape(RoundedRectangle(cornerRadius: side * 0.2, style: .continuous))
     }
 }
 
 /// 翻译图标：文(左上) + A(右下) + 右上/左下两个取景角标（照大梁老师的设计矢量复刻）
 private struct ScreenshotTranslateGlyph: View {
+    var color: Color = .white
     private let line = StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round)
     var body: some View {
         ZStack {
-            Text("文").font(.system(size: 8.5, weight: .medium)).foregroundColor(.white).position(x: 5, y: 5)
-            Text("A").font(.system(size: 8.5, weight: .bold)).foregroundColor(.white).position(x: 11.5, y: 11.5)
+            Text("文").font(.system(size: 8.5, weight: .medium)).foregroundColor(color).position(x: 5, y: 5)
+            Text("A").font(.system(size: 8.5, weight: .bold)).foregroundColor(color).position(x: 11.5, y: 11.5)
             Path { p in   // 右上取景角标 ⌐
                 p.move(to: CGPoint(x: 10, y: 2.5)); p.addLine(to: CGPoint(x: 14, y: 2.5)); p.addLine(to: CGPoint(x: 14, y: 6.5))
-            }.stroke(Color.white, style: line)
+            }.stroke(color, style: line)
             Path { p in   // 左下取景角标 L
                 p.move(to: CGPoint(x: 2.5, y: 10)); p.addLine(to: CGPoint(x: 2.5, y: 14)); p.addLine(to: CGPoint(x: 6.5, y: 14))
-            }.stroke(Color.white, style: line)
+            }.stroke(color, style: line)
         }
         .frame(width: 16.5, height: 16.5)
+    }
+}
+
+/// 工具栏图标按钮统一容器：静止略暗，hover 时图标 + 背景一起变亮；active 显示青色高亮
+private struct ToolbarIconButton<Content: View>: View {
+    var active: Bool = false
+    let help: String
+    let action: () -> Void
+    @ViewBuilder let content: (Bool) -> Content   // 传入 hover 状态，让图标自身随之变亮
+    @State private var hover = false
+    var body: some View {
+        Button(action: action) {
+            content(hover)
+                .frame(width: 35, height: 31)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(active ? Color.cyan.opacity(hover ? 0.30 : 0.18)
+                                 : Color.white.opacity(hover ? 0.13 : 0)))
+                .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+        .help(help)
+        .overlay(alignment: .top) {   // 中文说明气泡：浮在该图标正下方（水平居中于本按钮）
+            if hover {
+                Text(help)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundColor(.white.opacity(0.95))
+                    .fixedSize()
+                    .padding(.horizontal, 9).padding(.vertical, 5)
+                    .background(Color.black.opacity(0.92), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
+                    .offset(y: 46)   // 从按钮顶边下推到工具栏下方约 8pt
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.1), value: hover)
     }
 }
 
@@ -1704,66 +1748,53 @@ struct ScreenshotToolbar: View {
     let onCancel: () -> Void
 
     var body: some View {
-        HStack(spacing: 4) {
-            // 创作：框选(+高亮) / 备注 / 流程 / 撤回
-            button("框选", "rectangle", active: boxActive, action: onBox)
-            button("画笔", "pencil.tip", active: penActive, action: onPen)
+        HStack(spacing: 3) {
+            // 标注：框选 / 备注 / 流程 / 画笔 / 马赛克
+            button("框选标注", "rectangle", active: boxActive, action: onBox)
+            button("文字备注", "bubble.left", active: noteActive, action: onNote)
+            button("步骤序号标注", "list.number", active: flowActive, action: onFlow)
+            button("自由画笔", "pencil.tip", active: penActive, action: onPen)
             mosaicButton(active: mosaicActive)
-            button("备注", "text.bubble", active: noteActive, action: onNote)
-            button("流程", "list.number", active: flowActive, action: onFlow)
-            button("撤回", "arrow.uturn.backward", action: onUndo)
-            Divider().frame(height: 22).overlay(Color.white.opacity(0.15))
-            // 识别：提取文字 / 翻译
-            button("提取文字", "text.viewfinder", action: onOCR)
+            Divider().frame(height: 20).overlay(Color.white.opacity(0.15)).padding(.horizontal, 1)
+            // 撤回：独立成组
+            button("撤销上一步", "arrow.uturn.backward", action: onUndo)
+            Divider().frame(height: 20).overlay(Color.white.opacity(0.15)).padding(.horizontal, 1)
+            // 智能：翻译 / 提取文字
             if translateTitle == "翻译" { translateButton }   // 自绘「文 A」字形
             else { button(translateTitle, "arrow.2.squarepath", action: onTranslate) }
-            Divider().frame(height: 22).overlay(Color.white.opacity(0.15))
+            button("提取文字（OCR）", "text.viewfinder", action: onOCR)
+            Divider().frame(height: 20).overlay(Color.white.opacity(0.15)).padding(.horizontal, 1)
             // 完成：取消 / 保存 / 复制(确定)
             button("取消", "xmark", action: onCancel)
             button("保存到桌面", "arrow.down.to.line", action: onSave)
-            button("复制", "checkmark", tint: .green, action: onCopy)
+            button("复制到剪贴板", "checkmark", tint: .green, action: onCopy)
         }
-        .padding(7)
-        .background(Color.black.opacity(0.88), in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
+        .padding(.vertical, 7).padding(.horizontal, 9)
+        .background(Color.black.opacity(0.88), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
         .fixedSize()
     }
 
     /// 翻译按钮：照大梁老师的设计矢量复刻——文(左上)+A(右下)+右上/左下取景角标
     private var translateButton: some View {
-        Button(action: onTranslate) {
-            ScreenshotTranslateGlyph().scaleEffect(1.18)
-                .frame(width: 35, height: 31)
-                .contentShape(Capsule())
+        ToolbarIconButton(help: "原位翻译", action: onTranslate) { hover in
+            ScreenshotTranslateGlyph(color: .white.opacity(hover ? 1.0 : 0.85)).scaleEffect(1.18)
         }
-        .buttonStyle(.plain)
-        .help("翻译")
     }
 
     /// 马赛克按钮：3×3 棋盘格自绘字形（替换系统 mosaic 符号）
     private func mosaicButton(active: Bool) -> some View {
-        Button(action: onMosaic) {
-            ScreenshotMosaicGlyph(color: active ? .cyan : .white.opacity(0.92)).scaleEffect(1.18)
-                .frame(width: 35, height: 31)
-                .background(Capsule().fill(active ? Color.cyan.opacity(0.18) : .clear))
-                .contentShape(Capsule())
+        ToolbarIconButton(active: active, help: "马赛克遮挡", action: onMosaic) { hover in
+            ScreenshotMosaicGlyph(color: active ? .cyan : .white.opacity(hover ? 1.0 : 0.85))
         }
-        .buttonStyle(.plain)
-        .help("马赛克")
     }
 
-    @ViewBuilder
     private func button(_ title: String, _ icon: String, active: Bool = false,
                         tint: Color = .white, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+        ToolbarIconButton(active: active, help: title, action: action) { hover in
             Image(systemName: icon).font(.system(size: 16.5))
-                .foregroundColor(active ? .cyan : tint)
-                .frame(width: 35, height: 31)
-                .background(Capsule().fill(active ? Color.cyan.opacity(0.18) : Color.clear))
-                .contentShape(Capsule())
+                .foregroundColor(active ? .cyan : tint.opacity(hover ? 1.0 : 0.85))
         }
-        .buttonStyle(.plain)
-        .help(title)   // 悬停显示中文名
     }
 }
 
