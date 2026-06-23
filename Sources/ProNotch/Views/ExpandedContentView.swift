@@ -55,6 +55,7 @@ struct ExpandedContentView: View {
                 HStack(spacing: 6) {
                     Spacer()
                     AppearanceSlider()
+                        .notchTip("系统颜色切换")
                     // Agent 完成提醒总开关：橙(Claude)→蓝(Codex)双色描边胶囊
                     AgentReminderToggle()
                 }
@@ -62,6 +63,7 @@ struct ExpandedContentView: View {
             }
             .frame(height: vm.notchRect.height)
             .padding(.horizontal, edgeInset)
+            .zIndex(1)   // 抬高：让悬停气泡能盖在下方标签行/内容之上，不被遮挡
 
             HStack(spacing: 8) {
                 // 标签可拖动换位：长按拖到目标位置松手，顺序持久化
@@ -108,22 +110,25 @@ struct ExpandedContentView: View {
         switch kind {
         case .screenshot:
             StripButton(icon: "camera.viewfinder",
-                        help: "区域截图，自动进剪贴板历史（首次需授权屏幕录制）") {
+                        help: "超级截图：框选 + 标注 + 存桌面/复制") {
                 vm.collapseNow()
-                quickActions.screenshotToClipboard()
+                SuperScreenshotController.shared.capture()
             }
+            .notchTip("超级截图")
         case .appSettings:
             StripButton(icon: "gearshape",
                         help: "打开 ProNotch 设置") {
                 quickActions.openAppSettings()
                 vm.collapseNow()
             }
+            .notchTip("打开设置")
         case .lockScreen:
             StripButton(icon: "lock",
                         help: "熄屏锁定") {
                 vm.collapseNow()
                 quickActions.lockScreen()
             }
+            .notchTip("锁屏")
         }
     }
 
@@ -458,6 +463,57 @@ private struct AppearanceSlider: View {
         .onHover { hovering = $0 }
         .help(isDark ? "系统外观：深色（点击切换整个 macOS 为浅色）" : "系统外观：浅色（点击切换整个 macOS 为深色）")
     }
+}
+
+/// 悬停中文提示气泡：刘海是后台非激活面板（LSUIElement），原生 .help 的 tooltip
+/// 只在所属 App 处于激活态时才弹，这里用不了——故自绘，在控件下方渲染。
+private struct NotchTip: ViewModifier {
+    let text: String
+    @State private var show = false
+    @State private var task: Task<Void, Never>?
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { hovering in
+                task?.cancel()
+                if hovering {
+                    task = Task { @MainActor in
+                        try? await Task.sleep(nanoseconds: 600_000_000)   // 悬停约 0.6s 才弹
+                        guard !Task.isCancelled else { return }
+                        withAnimation(.easeOut(duration: 0.12)) { show = true }
+                    }
+                } else {
+                    withAnimation(.easeOut(duration: 0.12)) { show = false }
+                }
+            }
+            .overlay(alignment: .top) {
+                if show {
+                    Text(text)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white)
+                        .lineLimit(1)
+                        .fixedSize()
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.black.opacity(0.92))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5))
+                        )
+                        .offset(y: 32)   // 落到控件下方（不挡按钮本身）
+                        .transition(.opacity)
+                        .allowsHitTesting(false)
+                        .zIndex(999)
+                }
+            }
+    }
+}
+
+private extension View {
+    /// 悬停约 0.6s 后在控件下方弹出中文气泡说明（纯图标按钮用，告诉用户图标是干嘛的）
+    func notchTip(_ text: String) -> some View { modifier(NotchTip(text: text)) }
 }
 
 /// 刘海两侧快捷操作按钮：圆形可点击区域、悬停高亮

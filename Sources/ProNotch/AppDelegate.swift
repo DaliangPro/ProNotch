@@ -12,6 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let updateChecker = UpdateChecker()
     private var updateMenuItem: NSMenuItem?
     private var updateSeparator: NSMenuItem?
+    /// 超级截图全局快捷键（Carbon RegisterEventHotKey）
+    private let screenshotHotKey = GlobalHotKey()
 
     // 数据层在应用级持有：换屏重建刘海窗口时状态不丢失
     private var launcherStore: LauncherStore!
@@ -54,6 +56,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         GlowHookInstaller.migrateIfInstalled(.codex)
         // 清除早期 hooks.json 接入残留的「无 host」pronotch 孤儿（与接入与否无关，幂等）
         GlowHookInstaller.cleanCodexHooksOrphan()
+
+        // 超级截图全局快捷键：按下即唤起区域截图；在设置里改快捷键后重新注册
+        SuperScreenshotController.shared.settings = settingsStore   // 翻译时惰性读配置
+        screenshotHotKey.onTrigger = {
+            Task { @MainActor in SuperScreenshotController.shared.capture() }
+        }
+        screenshotHotKey.update(settingsStore.screenshotShortcut)
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ProNotchScreenshotShortcutChanged"),
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.screenshotHotKey.update(self.settingsStore.screenshotShortcut)
+            }
+        }
 
         // 屏幕配置变化（接显示器、合盖等）时重建刘海窗口
         NotificationCenter.default.addObserver(

@@ -48,6 +48,45 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// 超级截图全局快捷键（nil = 未设置）；变更后通知 AppDelegate 重新注册
+    @Published var screenshotShortcut: ScreenshotShortcut? {
+        didSet {
+            if let s = screenshotShortcut, let data = try? JSONEncoder().encode(s) {
+                UserDefaults.standard.set(data, forKey: "screenshotShortcut")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "screenshotShortcut")
+            }
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ProNotchScreenshotShortcutChanged"), object: nil)
+        }
+    }
+
+    // MARK: - 翻译（超级截图原位翻译）
+    @Published var translateTargetLang: String { didSet { UserDefaults.standard.set(translateTargetLang, forKey: "translateTargetLang") } }
+    @Published var translateUseChatAPI: Bool { didSet { UserDefaults.standard.set(translateUseChatAPI, forKey: "translateUseChatAPI") } }
+    @Published var translateBaseURL: String { didSet { UserDefaults.standard.set(translateBaseURL, forKey: "translateBaseURL") } }
+    @Published var translateModel: String { didSet { UserDefaults.standard.set(translateModel, forKey: "translateModel") } }
+    /// 翻译提示词（可编辑）；其中 {lang} 翻译时替换为目标语言
+    @Published var translatePrompt: String { didSet { UserDefaults.standard.set(translatePrompt, forKey: "translatePrompt") } }
+
+    static let defaultTranslatePrompt = "You are a professional translation engine. Translate EVERY string in the input JSON array into {lang}, including single words, labels, UI text and technical terms. If a string is already in {lang} keep it; otherwise you MUST translate it — never leave non-{lang} text untranslated. Keep numbers, URLs and code symbols as-is. Return ONLY a JSON array of translated strings, same length and order, no explanations, no code fences."
+
+    /// 翻译 API key 走钥匙串、惰性读写（不在启动时读，避免多一个钥匙串弹框）
+    func translateAPIKey() -> String { KeychainStore.read("translateAPIKey") ?? "" }
+    func setTranslateAPIKey(_ v: String) { _ = KeychainStore.save(v, account: "translateAPIKey") }
+
+    /// 翻译实际用的接口配置：复用闪问 或 翻译自填
+    var resolvedTranslateConfig: (baseURL: String, apiKey: String, model: String) {
+        if translateUseChatAPI {
+            return (UserDefaults.standard.string(forKey: "chatBaseURL") ?? "",
+                    KeychainStore.read("chatAPIKey") ?? "",
+                    UserDefaults.standard.string(forKey: "chatModel") ?? "")
+        }
+        return (translateBaseURL, KeychainStore.read("translateAPIKey") ?? "", translateModel)
+    }
+
+    static let translateLangs = ["中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский"]
+
     // MARK: - 光晕提醒
     @Published var glowEnabled: Bool {
         didSet {
@@ -83,6 +122,8 @@ final class SettingsStore: ObservableObject {
             "glowBreathPeriod": 3.2,
             "glowIntensity": 0.9,
             "glowThickness": 90.0,
+            "translateTargetLang": "中文",
+            "translateUseChatAPI": true,
         ])
         hideNotchInFullscreen = UserDefaults.standard.bool(forKey: "hideNotchInFullscreen")
         clipboardLimit = UserDefaults.standard.integer(forKey: "clipboardLimit")
@@ -94,6 +135,16 @@ final class SettingsStore: ObservableObject {
         glowBreathPeriod = UserDefaults.standard.double(forKey: "glowBreathPeriod")
         glowIntensity = UserDefaults.standard.double(forKey: "glowIntensity")
         glowThickness = UserDefaults.standard.double(forKey: "glowThickness")
+        translateTargetLang = UserDefaults.standard.string(forKey: "translateTargetLang") ?? "中文"
+        translateUseChatAPI = UserDefaults.standard.bool(forKey: "translateUseChatAPI")
+        translateBaseURL = UserDefaults.standard.string(forKey: "translateBaseURL") ?? ""
+        translateModel = UserDefaults.standard.string(forKey: "translateModel") ?? ""
+        translatePrompt = UserDefaults.standard.string(forKey: "translatePrompt") ?? Self.defaultTranslatePrompt
+        if let data = UserDefaults.standard.data(forKey: "screenshotShortcut") {
+            screenshotShortcut = try? JSONDecoder().decode(ScreenshotShortcut.self, from: data)
+        } else {
+            screenshotShortcut = nil
+        }
     }
 
     private func applyLaunchAtLogin() {

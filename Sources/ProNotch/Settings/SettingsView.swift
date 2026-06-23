@@ -22,6 +22,7 @@ struct SettingsView: View {
 
     enum Section: String, CaseIterable, Identifiable {
         case general = "通用"
+        case screenshot = "超级截图"
         case glow = "Agent 提醒"
         case chat = "AI 闪问"
         case about = "关于"
@@ -32,6 +33,7 @@ struct SettingsView: View {
     @State private var claudeConnected = false
     @State private var codexConnected = false
     @State private var justSaved = false
+    @State private var translateKey = ""   // 翻译独立接口的 API key 草稿（惰性从钥匙串载入）
 
     private var canSave: Bool {
         !chatStore.draftBaseURL.trimmingCharacters(in: .whitespaces).isEmpty
@@ -66,10 +68,11 @@ struct SettingsView: View {
 
     @ViewBuilder private var selectedContent: some View {
         switch selected {
-        case .general: generalContent
-        case .glow:    glowContent
-        case .chat:    chatContent
-        case .about:   aboutContent
+        case .general:    generalContent
+        case .screenshot: screenshotContent
+        case .glow:       glowContent
+        case .chat:       chatContent
+        case .about:      aboutContent
         }
     }
 
@@ -151,6 +154,86 @@ struct SettingsView: View {
                 .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.12)))
                 .help("选择 .md 文件；选择文件夹则在其中使用 妙记.md")
         }
+    }
+
+    // MARK: - 超级截图
+    private var screenshotContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            pageTitle("超级截图")
+            SettingsCard {
+                shortcutRow
+            }
+
+            Text("翻译").font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.white.opacity(0.85)).padding(.top, 4)
+            SettingsCard {
+                translateLangRow
+                CardDivider()
+                toggleRow("与 AI 闪问 使用相同的 API 接口", isOn: $settings.translateUseChatAPI)
+            }
+            if !settings.translateUseChatAPI {
+                APIEndpointEditor(baseURL: $settings.translateBaseURL, apiKey: $translateKey,
+                                  model: $settings.translateModel,
+                                  urlPlaceholder: "https://api.xxx.com", modelPlaceholder: "gpt-4o-mini")
+                    .onChange(of: translateKey) { _, v in settings.setTranslateAPIKey(v) }
+            }
+
+            Text("翻译提示词").font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.white.opacity(0.85)).padding(.top, 4)
+            translatePromptEditor
+        }
+        .onAppear { translateKey = settings.translateAPIKey() }
+    }
+
+    /// 翻译提示词编辑器：可改、可一键恢复默认；{lang} 翻译时替换成目标语言
+    private var translatePromptEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextEditor(text: $settings.translatePrompt)
+                .font(.system(size: 12)).foregroundColor(.white)
+                .scrollContentBackground(.hidden)
+                .frame(height: 120).padding(8)
+                .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.white.opacity(0.07)))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.08), lineWidth: 1))
+            HStack {
+                Text("提示词里的 {lang} 会自动替换成上面选的目标语言。")
+                    .font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
+                Spacer()
+                Button("恢复默认") { settings.translatePrompt = SettingsStore.defaultTranslatePrompt }
+                    .buttonStyle(.plain).font(.system(size: 12)).foregroundColor(.cyan)
+            }
+        }
+    }
+
+    private var translateLangRow: some View {
+        HStack {
+            Text("翻译成").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+            Spacer()
+            Menu {
+                ForEach(SettingsStore.translateLangs, id: \.self) { lang in
+                    Button(lang) { settings.translateTargetLang = lang }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(settings.translateTargetLang).font(.system(size: 12))
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 9))
+                }
+                .foregroundColor(.white.opacity(0.85))
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.12)))
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    private var shortcutRow: some View {
+        HStack {
+            Text("截图快捷键").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+            Spacer()
+            ShortcutRecorderField(shortcut: $settings.screenshotShortcut)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
     }
 
     // MARK: - 光晕提醒
@@ -260,49 +343,8 @@ struct SettingsView: View {
             pageTitle("AI 闪问")
 
             sectionLabel("对话模型")
-            SettingsCard {
-                fieldRow("API 地址") {
-                    themedField("https://api.deepseek.com", text: $chatStore.draftBaseURL)
-                }
-                CardDivider()
-                fieldRow("API Key") {
-                    MaskedSecureField(placeholder: "sk-…", text: $chatStore.draftAPIKey)
-                }
-                CardDivider()
-                fieldRow("模型") {
-                    themedField("deepseek-chat", text: $chatStore.draftModel)
-                    if !chatStore.availableModels.isEmpty {
-                        Menu {
-                            ForEach(chatStore.availableModels, id: \.self) { name in
-                                Button(name) { chatStore.draftModel = name }
-                            }
-                        } label: {
-                            Image(systemName: "chevron.up.chevron.down")
-                                .font(.system(size: 10, weight: .medium)).foregroundColor(.white.opacity(0.6))
-                        }
-                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                    }
-                    Button { chatStore.fetchModels() } label: {
-                        Group {
-                            if chatStore.fetchingModels {
-                                ProgressView().controlSize(.small)
-                            } else {
-                                Text("获取模型").font(.system(size: 12))
-                            }
-                        }
-                        .foregroundColor(.white.opacity(0.85))
-                        .padding(.horizontal, 10).padding(.vertical, 4)
-                        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.12)))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(chatStore.draftBaseURL.isEmpty || chatStore.draftAPIKey.isEmpty || chatStore.fetchingModels)
-                }
-                CardDivider()
-                modelStatusRow
-            }
-            if let error = chatStore.fetchError {
-                noteText(error, color: .red.opacity(0.9))
-            }
+            APIEndpointEditor(baseURL: $chatStore.draftBaseURL, apiKey: $chatStore.draftAPIKey,
+                              model: $chatStore.draftModel)
 
             sectionLabel("联网搜索")
             SettingsCard {
@@ -635,6 +677,91 @@ struct SettingsView: View {
 }
 
 /// 自绘开关：轨道恒定 38×22，开/关只变颜色与滑块位置
+/// 共享 API 接口配置编辑器（闪问 / 翻译 共用一套逻辑）：地址 + Key + 模型(下拉/获取) + 测试。
+/// 网络全部走 ChatStore.fetchAvailableModels，不重复实现。
+private struct APIEndpointEditor: View {
+    @Binding var baseURL: String
+    @Binding var apiKey: String
+    @Binding var model: String
+    var urlPlaceholder = "https://api.deepseek.com"
+    var modelPlaceholder = "deepseek-chat"
+
+    @State private var models: [String] = []
+    @State private var busy = false
+    @State private var status = ""
+    @State private var ok: Bool?
+
+    var body: some View {
+        SettingsCard {
+            row("API 地址") { field(urlPlaceholder, $baseURL) }
+            CardDivider()
+            row("API Key") {
+                SecureField("sk-…", text: $apiKey)
+                    .textFieldStyle(.plain).font(.system(size: 13)).foregroundColor(.white).frame(maxWidth: .infinity)
+            }
+            CardDivider()
+            row("模型") {
+                field(modelPlaceholder, $model)
+                if !models.isEmpty {
+                    Menu { ForEach(models, id: \.self) { m in Button(m) { model = m } } } label: {
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 10, weight: .medium)).foregroundColor(.white.opacity(0.6))
+                    }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                }
+                pill("获取模型") { run(populate: true) }
+            }
+            CardDivider()
+            HStack(spacing: 10) {
+                Circle().fill(ok == nil ? Color.white.opacity(0.3) : (ok! ? .green : .red)).frame(width: 8, height: 8)
+                Text(status.isEmpty ? "未测试" : status)
+                    .font(.system(size: 12)).foregroundColor(.white.opacity(0.8)).lineLimit(1)
+                Spacer()
+                pill("测试") { run(populate: false) }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 9)
+        }
+    }
+
+    private func run(populate: Bool) {
+        guard !busy, !baseURL.isEmpty, !apiKey.isEmpty else { return }
+        busy = true; status = "测试中…"; ok = nil
+        let u = baseURL, k = apiKey
+        Task {
+            do {
+                let m = try await ChatStore.fetchAvailableModels(baseURL: u, apiKey: k)
+                if populate { models = m; if model.isEmpty, let f = m.first { model = f } }
+                status = "连接正常 · \(m.count) 个模型"; ok = true
+            } catch {
+                status = "失败：\(error.localizedDescription)"; ok = false
+            }
+            busy = false
+        }
+    }
+
+    private func row<C: View>(_ label: String, @ViewBuilder _ content: () -> C) -> some View {
+        HStack(spacing: 10) {
+            Text(label).font(.system(size: 13)).foregroundColor(.white.opacity(0.9)).frame(width: 76, alignment: .leading)
+            content()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
+    }
+    private func field(_ ph: String, _ text: Binding<String>) -> some View {
+        TextField("", text: text, prompt: Text(ph).foregroundColor(.white.opacity(0.28)))
+            .textFieldStyle(.plain).font(.system(size: 13)).foregroundColor(.white).frame(maxWidth: .infinity)
+    }
+    private func pill(_ title: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Group {
+                if busy { ProgressView().controlSize(.small) } else { Text(title).font(.system(size: 12)) }
+            }
+            .foregroundColor(.white.opacity(0.85))
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.12)))
+        }
+        .buttonStyle(.plain).disabled(busy || baseURL.isEmpty || apiKey.isEmpty)
+    }
+}
+
 private struct ThemedSwitch: View {
     @Binding var isOn: Bool
 
