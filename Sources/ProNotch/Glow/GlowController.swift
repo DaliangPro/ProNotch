@@ -41,7 +41,7 @@ final class GlowController: ObservableObject {
     private var activeSource: GlowSource?
     private var activeMode: Mode?
     private var activeHost: String?   // 当前光晕对应的宿主 App bundle id（切回它即熄灭）
-    private var panel: GlowPanel?
+    private var panels: [GlowPanel] = []   // 每块屏幕（主屏 + 扩展屏）一个，同步呼吸
     private var loopTimer: Timer?
     private var loopStart: Date?
     private var fadeTarget: Double = 0
@@ -52,7 +52,7 @@ final class GlowController: ObservableObject {
         period = settings.glowBreathPeriod
         intensity = settings.glowIntensity
         thickness = settings.glowThickness
-        setupPanel()
+        setupPanels()
 
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name("ProNotchGlowSettingsChanged"),
@@ -67,17 +67,20 @@ final class GlowController: ObservableObject {
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.panel?.setFrame(NotchGeometry.targetScreen().frame, display: true) }
+            Task { @MainActor in self?.setupPanels() }   // 屏幕增减 / 分辨率变化 → 重建各屏面板
         }
     }
 
-    private func setupPanel() {
-        let frame = NotchGeometry.targetScreen().frame
-        let p = GlowPanel(frame: frame)
-        p.contentView = NSHostingView(rootView: GlowOverlayView().environmentObject(self))
-        p.setFrame(frame, display: true)
-        p.orderFrontRegardless()
-        panel = p
+    /// 每块屏幕（主屏 + 扩展屏）各建一个光晕面板，共享同一个 GlowController → 同步呼吸
+    private func setupPanels() {
+        panels.forEach { $0.orderOut(nil) }
+        panels = NSScreen.screens.map { screen in
+            let p = GlowPanel(frame: screen.frame)
+            p.contentView = NSHostingView(rootView: GlowOverlayView().environmentObject(self))
+            p.setFrame(screen.frame, display: true)
+            p.orderFrontRegardless()
+            return p
+        }
     }
 
     func color(for source: GlowSource) -> Color {
@@ -91,7 +94,8 @@ final class GlowController: ObservableObject {
 
     /// 真实完成信号（pronotch://done?source=…）→ 完成提醒光晕
     func notifyCompletion(_ source: GlowSource, host: String? = nil) {
-        guard settings.glowEnabled else { return }
+        // 总开关 + 该来源单独勾选都需开启；取消勾选的来源即使仍收到残留信号（如旧版孤儿钩子）也不点亮
+        guard settings.glowEnabled, GlowHookInstaller.isInstalled(source) else { return }
         // 宿主 App：hook 沿进程链找到的「Agent 实际所在的 GUI App」bundle id；
         // 拿不到（旧 hook / 特殊环境）就回退到该 Agent 的桌面版 bundle id。
         let hostID = (host?.isEmpty == false) ? host! : source.appBundleID

@@ -222,16 +222,12 @@ enum GlowHookInstaller {
             let newToml = upsertNotifyLine(toml, value: "[\"\(codexScript)\"]")
             return (try? newToml.write(toFile: codexConfig, atomically: true, encoding: .utf8)) != nil
         } else {
-            if !isCodexInstalled() { return true }
-            let prev = readPreviousFromForwarder()   // 从脚本取回原 notify
-            // 读不到原 notify（脚本被外部删 / 改）时，绝不删整条 notify——以免误删被
-            // computer-use 等套在外层的下游配置。此时只清脚本、报失败，让设置页回滚开关。
-            guard let prev, !prev.isEmpty else {
-                try? fm.removeItem(atPath: codexScript)
-                return false
-            }
+            if !isCodexInstalled() { return true }   // 前面已确认 notify 直接指向我们的脚本（未被套在外层）
             backup(codexConfig)
-            let newToml = upsertNotifyLine(toml, value: prev)
+            let prev = readPreviousFromForwarder()   // 从脚本取回原 notify
+            // 有原 notify 就还原；原本无 notify（我们的脚本是唯一 notify）就删掉整条 notify——
+            // 因已确认这条就是我们自己的，删整条安全，不会误伤下游配置。
+            let newToml = (prev?.isEmpty == false) ? upsertNotifyLine(toml, value: prev!) : removeNotifyLine(toml)
             let ok = (try? newToml.write(toFile: codexConfig, atomically: true, encoding: .utf8)) != nil
             if ok { try? fm.removeItem(atPath: codexScript) }
             return ok
@@ -253,6 +249,13 @@ enum GlowHookInstaller {
         guard let line = notifyLine(in: toml), let eq = line.firstIndex(of: "=") else { return nil }
         let val = line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
         return val.isEmpty ? nil : val
+    }
+
+    /// 删除顶层 notify 行（恢复「无 notify」原状）
+    private static func removeNotifyLine(_ toml: String) -> String {
+        toml.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+            .filter { $0.range(of: notifyRegex, options: .regularExpression) == nil }
+            .joined(separator: "\n")
     }
 
     /// 替换或新增顶层 notify 行
