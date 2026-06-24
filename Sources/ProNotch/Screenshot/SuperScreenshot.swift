@@ -1,4 +1,6 @@
 import AppKit
+import ApplicationServices
+import CoreMedia
 import ScreenCaptureKit
 import SwiftUI
 import Vision
@@ -253,6 +255,29 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var toolbarHost: NSHostingView<ScreenshotToolbar>?
     private var ocrPanel: NSHostingView<OCRResultPanel>?
 
+    // 长截图（程序自动匀速滚动 + 逐帧拼接）
+    private var recordingLong = false
+    private var longActive = false               // 自动滚动循环进行中
+    private var longStitcher: LongShotStitcher?
+    private var longFilter: SCContentFilter?
+    private var longConfig: SCStreamConfiguration?
+    private var longCapturePx = CGRect.zero      // 选区像素裁剪框（左上原点）
+    private var longTallPx = CGRect.zero         // 选区列「框顶→屏底」的高裁剪框（补尾部用）
+    private var longTallUpPx = CGRect.zero       // 选区列「屏顶→框底」的高裁剪框（补头部用）
+    private var longWinTopPx: CGFloat = 0        // 目标 App 窗口上边（捕获像素，相对屏顶）——补全延展上界
+    private var longWinBottomPx: CGFloat = 0     // 目标 App 窗口下边（捕获像素，相对屏顶）——补全延展下界
+    private var longDirPanel: NSPanel?           // 方向选择面板（点长截图后先选向上/向下）
+    private var longScanTimer: Timer?            // 扫描取景条动画定时器
+    private var longScanPhase: CGFloat = 0       // 扫描条位置（0=框顶 → 1=框底，循环）
+    private var longScrolling = false            // 后台连续滚动开关（暂停/到端/补全时关）
+    private var longStretchRect: NSRect?         // 补全时选框拉伸到的矩形（向下到视口底 / 向上到视口顶）；nil=不拉伸
+    private var longPanel: NSPanel?
+    private var longSession: LongShotSession?
+    private var longFinished = false             // 录制结束、等用户选输出（复制/存盘/丢弃）
+    private var longResultCG: CGImage?
+    private var longResultImg: NSImage?
+    private var longCaptureRect: NSRect = .zero  // 选区（视图坐标）
+
     private let badgeRadius: CGFloat = 13
     private let textFont = NSFont.systemFont(ofSize: 14, weight: .medium)
     private let numFont = NSFont.systemFont(ofSize: 13, weight: .bold)
@@ -322,6 +347,36 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     // MARK: - 绘制
 
     override func draw(_ dirtyRect: NSRect) {
+        if longFinished {   // 出图选择态：整屏压暗，输出条浮在上面
+            NSColor.black.withAlphaComponent(0.55).setFill()
+            NSBezierPath(rect: bounds).fill()
+            return
+        }
+        if recordingLong {   // 录制态：压暗四周，抓取列挖成透明洞透出实时内容（捕获另走 SCK、排除本窗口）
+            NSColor.black.withAlphaComponent(0.45).setFill()
+            NSBezierPath(rect: bounds).fill()
+            let col = longStretchRect ?? longCaptureRect   // 补全时选框拉伸到视口端
+            NSGraphicsContext.current?.compositingOperation = .clear
+            NSBezierPath(rect: col).fill()
+            NSGraphicsContext.current?.compositingOperation = .sourceOver
+            // 扫描取景条：随动画自上而下扫过框内，传达"正在往下截取"（视觉上跟着截图走）
+            let bandH = max(28, min(70, col.height * 0.16))
+            let cy = col.maxY - longScanPhase * col.height          // 中心线从框顶扫到框底（左下原点）
+            let bandRect = NSRect(x: col.minX, y: cy - bandH / 2, width: col.width, height: bandH).intersection(col)
+            if !bandRect.isEmpty,
+               let g = NSGradient(colors: [.clear, NSColor.systemRed.withAlphaComponent(0.32), .clear]) {
+                g.draw(in: bandRect, angle: 90)                      // 垂直渐变：中间亮、两头透
+            }
+            if cy >= col.minY, cy <= col.maxY {
+                NSColor.white.withAlphaComponent(0.85).setStroke()
+                let line = NSBezierPath()
+                line.move(to: NSPoint(x: col.minX, y: cy)); line.line(to: NSPoint(x: col.maxX, y: cy))
+                line.lineWidth = 1.5; line.stroke()
+            }
+            NSColor.systemRed.withAlphaComponent(0.95).setStroke()
+            let b = NSBezierPath(rect: col); b.lineWidth = 2; b.stroke()
+            return
+        }
         nsImage.draw(in: bounds)
         NSColor.black.withAlphaComponent(0.5).setFill()
 
@@ -641,6 +696,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     // MARK: - 鼠标
 
     override func mouseDown(with event: NSEvent) {
+        guard !recordingLong, !longFinished else { return }      // 长截图录制/选方向/出图阶段，覆盖层不响应背景点击
         guard ocrPanel == nil, hintView == nil else { return }   // OCR 面板/翻译中不响应背景点击
         let pt = convert(event.locationInWindow, from: nil)
         // 点选中组件的删除按钮(×) → 删除整个组件（优先于一切，正在编辑也能删）
@@ -718,6 +774,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     }
 
     override func mouseDragged(with event: NSEvent) {
+        guard !recordingLong, !longFinished else { return }
         let pt = convert(event.locationInWindow, from: nil)
         if currentStroke != nil { currentStroke?.append(pt); needsDisplay = true; return }   // 自由笔画
         if var grab = markerGrab, let i = activeMarker, markers.indices.contains(i) {
@@ -757,6 +814,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     }
 
     override func mouseUp(with event: NSEvent) {
+        guard !recordingLong, !longFinished else { return }
         if let pts = currentStroke {   // 画笔 / 马赛克涂抹收尾
             currentStroke = nil
             if !pts.isEmpty {
@@ -814,6 +872,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     }
 
     override func keyDown(with event: NSEvent) {
+        if recordingLong { if event.keyCode == 53 { cancelLongShot() }; return }   // 录制中：Esc 取消，其余键忽略
+        if longFinished { if event.keyCode == 53 { cleanupLongShot(); close() }; return }   // 选输出态：Esc 丢弃
         // Cmd+Z 撤回任意标注操作（文字编辑时归 NSTextView 自己处理，不会走到这里）
         if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "z" {
             undo(); return
@@ -1143,6 +1203,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             onFlow: { [weak self] in self?.toggleTool(.flow) },
             onUndo: { [weak self] in self?.undo() },
             onOCR: { [weak self] in self?.runOCR() },
+            onLongShot: { [weak self] in self?.startLongShot() },
             onTranslate: { [weak self] in self?.translateButtonTapped() },
             onSave: { [weak self] in self?.saveToDesktop() },
             onCopy: { [weak self] in self?.copyToClipboard() },
@@ -1229,6 +1290,445 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             .appendingPathComponent("Desktop/截图 \(fmt.string(from: Date())).png")
         try? png.write(to: url)
         close()
+    }
+
+    // MARK: - 长截图（程序自动匀速滚动 + 逐帧拼接）
+
+    /// 进入长截图：固定选区为视口，先选方向，再程序自动匀速滚动并逐帧拼接，滚到端自动停。
+    private func startLongShot() {
+        commitEditing()
+        guard let sel = selection, sel.width > 24, sel.height > 80 else { return }
+        guard Self.ensureAccessibility() else { return }   // 未授权：已弹系统授权框，本次不进入
+        removeToolbar()
+        tool = .none; selected = nil; activeMarker = nil; markerGrab = nil
+        longCaptureRect = sel
+        longStretchRect = nil                  // 重置拉伸态
+        recordingLong = true                   // 显示取景框（先不滚动）
+        needsDisplay = true
+        presentDirectionPicker(sel)            // 先选方向：向上 / 向下
+    }
+
+    /// 选定方向后真正开始：呈现控制条 + 扫描动画 + 穿透，启动滚动拼接
+    private func beginLongShot(_ sel: NSRect, _ dir: LongShotDirection) {
+        longDirPanel?.orderOut(nil); longDirPanel = nil
+        longActive = true
+        presentLongPanel()
+        startScanAnimation()                  // 扫描取景条动画
+        window?.ignoresMouseEvents = true     // 穿透，合成滚轮事件可达下面的 App
+        Task { @MainActor in await runAutoScroll(sel, dir) }
+    }
+
+    /// 方向选择面板（浮在选区中央）
+    private func presentDirectionPicker(_ sel: NSRect) {
+        let bar = NSHostingView(rootView: LongShotDirectionBar(
+            onUp:     { [weak self] in self?.beginLongShot(sel, .up) },
+            onDown:   { [weak self] in self?.beginLongShot(sel, .down) },
+            onCancel: { [weak self] in self?.cancelLongShot() }))
+        let size = bar.fittingSize
+        bar.frame = NSRect(origin: .zero, size: size)
+        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
+        panel.level = .screenSaver + 1
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.contentView = bar
+        let sf = screen.frame
+        panel.setFrameOrigin(NSPoint(x: sf.minX + sel.midX - size.width / 2,
+                                     y: sf.minY + sel.midY - size.height / 2))
+        longDirPanel = panel
+        panel.orderFrontRegardless()
+    }
+
+    /// 扫描取景条：~30fps 让取景条循环自上而下扫过，只重绘录制态
+    private func startScanAnimation() {
+        longScanTimer?.invalidate()
+        longScanPhase = 0
+        let t = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.recordingLong else { return }
+                self.longScanPhase += 0.014
+                if self.longScanPhase > 1 { self.longScanPhase -= 1 }
+                let box = self.longStretchRect ?? self.longCaptureRect   // 拉伸态按拉伸后的框重绘
+                self.setNeedsDisplay(box.insetBy(dx: -3, dy: -3))   // 含红框，只重绘框区
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        longScanTimer = t
+    }
+
+    /// 补全：把选框从原位平滑拉伸到目标矩形（向下到视口底 / 向上到视口顶），给「截到端了」的明确感知
+    private func animateBoxStretch(to target: NSRect) async {
+        let s = longCaptureRect
+        guard abs(target.height - s.height) > 1 else { longStretchRect = target; return }
+        let dirty = s.union(target).insetBy(dx: -4, dy: -4)
+        let steps = 26
+        for i in 1...steps {
+            guard recordingLong else { break }
+            let t = CGFloat(i) / CGFloat(steps)
+            let e = t * t * (3 - 2 * t)                // smoothstep 缓动
+            longStretchRect = NSRect(x: s.minX + (target.minX - s.minX) * e, y: s.minY + (target.minY - s.minY) * e,
+                                     width: s.width + (target.width - s.width) * e, height: s.height + (target.height - s.height) * e)
+            setNeedsDisplay(dirty)
+            try? await Task.sleep(nanoseconds: 15_000_000)
+        }
+        longStretchRect = target
+        setNeedsDisplay(dirty)
+    }
+
+    /// 自动滚动主循环：移光标到选区中心 → 截首帧 → 循环(滚一格→截→拼)→ 滚到端自动停。dir 决定向上/向下。
+    private func runAutoScroll(_ sel: NSRect, _ dir: LongShotDirection) async {
+        guard await prepareLongCapture(sel) else { cancelLongShot(); return }
+        let up = (dir == .up)
+        warpCursorToSelectionCenter(sel)
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        guard longActive, let first = await captureLongFrame() else { cancelLongShot(); return }
+        var dbg = 0                                              // 帧计数（驱动预览刷新频率）
+        longStitcher = LongShotStitcher(firstFrame: first)
+        let scale = screen.backingScaleFactor
+        let stepPx = max(30, min(80, Int(sel.height * scale / 9)))      // 每步滚小一点 → 更顺、且给匹配更大余量
+        let expDelta = max(1, Int(Double(stepPx) * scale))              // 首帧预期实际位移≈命令量×屏幕缩放
+        var prevFrame = first
+        var noMove = 0
+        let boxPxH = Int(longCapturePx.height)
+        let tallUpH = Int(longTallUpPx.height)
+        // 补全延展到「目标窗口边」（含固定对话框/页头，不含 Dock/桌面）：下界=窗口下边，上界=窗口上边
+        let viewportBottom = max(boxPxH, min(Int(longTallPx.height), Int(longWinBottomPx) - Int(longCapturePx.minY)))
+        let viewportTop = max(0, min(tallUpH - boxPxH, Int(longWinTopPx)))
+        // 选区的全局坐标（判断你有没有把鼠标移出去接管）
+        let dispBounds = screen.displayID.map { CGDisplayBounds($0) } ?? screen.frame
+        let globalSel = CGRect(x: dispBounds.minX + sel.minX, y: dispBounds.minY + (screen.frame.height - sel.maxY),
+                               width: sel.width, height: sel.height)
+        // 后台连续滚动：每 ~8ms 推一更小步，画面持续匀速滑动（暂停/到端由 longScrolling 控制；截取与滚动并行）
+        let tickPx = max(2, stepPx / 9)
+        longScrolling = true
+        let scroller = Task { @MainActor [weak self] in
+            while !Task.isCancelled, self?.longActive == true {
+                if self?.longScrolling == true { self?.scrollBy(pixels: tickPx, up: up) }
+                try? await Task.sleep(nanoseconds: 8_000_000)
+            }
+        }
+        let cadence: TimeInterval = 0.11                         // 固定帧间隔留足余量 → δ 抖动更小、更稳
+        var userPaused = false
+        longSession?.phase = .scrolling
+        while longActive {
+            let cycleStart = Date()
+            // 鼠标移出选区（多半要去点「停止」或自己操作）→ 暂停滚动、松手
+            if let cur = CGEvent(source: nil)?.location, !globalSel.contains(cur) {
+                if !userPaused { userPaused = true; longScrolling = false; longSession?.phase = .paused }
+                try? await Task.sleep(nanoseconds: 180_000_000)
+                continue
+            }
+            if userPaused {                                      // 鼠标移回 → 先 resync 接住漂移，再恢复滚动
+                userPaused = false; noMove = 0; longSession?.phase = .scrolling
+                if longActive, let f = await captureLongFrame() {
+                    _ = up ? longStitcher?.prependFrame(f, expectedDelta: 0, resync: true)
+                           : longStitcher?.addFrame(f, expectedDelta: 0, resync: true)
+                    prevFrame = f
+                    updateLongProgress(scale: scale)
+                }
+                longScrolling = true
+                continue
+            }
+            if noMove > 0 { warpCursorForRetry(sel, attempt: noMove) }   // 疑似卡住 → 换落点，避开吞滚动的子元素
+            if let frame = await captureLongFrame() {            // 即时快照（连续滚动中也清晰）
+                // 停稳判定放后台线程，主线程(滚动)不被占用
+                let pf = prevFrame
+                let stable = await Task.detached(priority: .userInitiated) { Self.framesStable(pf, frame) }.value
+                if stable {                                      // 连续推也纹丝不动 = 到端
+                    noMove += 1
+                    longSession?.phase = .confirming
+                    if noMove >= 12 { break }                    // 持续没动 → 确实到端（连续滚已给懒加载时间）
+                } else {
+                    noMove = 0
+                    longSession?.phase = .scrolling
+                    dbg += 1
+                    // 拼接(灰度+匹配+裁剪)放后台线程 → 滚动不被打断；await 串行化，无并发
+                    if let st = longStitcher {
+                        await Task.detached(priority: .userInitiated) {
+                            _ = up ? st.prependFrame(frame, expectedDelta: expDelta) : st.addFrame(frame, expectedDelta: expDelta)
+                        }.value
+                    }
+                    prevFrame = frame
+                    if dbg % 2 == 0, let st = longStitcher {     // 预览生成(随段增长而变重)放后台线程
+                        let cg = await Task.detached(priority: .utility) { st.previewImage(width: 150) }.value
+                        longSession?.pointHeight = Int((CGFloat(st.totalHeight) / scale).rounded())
+                        if let cg { longSession?.preview = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height)) }
+                    }
+                }
+            }
+            // 配速到固定 cadence：滚动在 await/sleep 间持续进行 → δ 稳定
+            let used = Date().timeIntervalSince(cycleStart)
+            if used < cadence { try? await Task.sleep(nanoseconds: UInt64((cadence - used) * 1_000_000_000)) }
+        }
+        longScrolling = false
+        scroller.cancel()
+        if longActive {
+            if up {
+                // 到顶：补「框上方 → 视口顶」头部 + 选框向上拉伸
+                if viewportTop < tallUpH - boxPxH {
+                    longSession?.phase = .finalizing
+                    let targetTopY = screen.frame.height - CGFloat(viewportTop) / scale     // 视图坐标的框顶目标
+                    let target = NSRect(x: longCaptureRect.minX, y: longCaptureRect.minY,
+                                        width: longCaptureRect.width, height: targetTopY - longCaptureRect.minY)
+                    await animateBoxStretch(to: target)
+                    if let tall = await captureLongFrameTallUp() {
+                        _ = longStitcher?.addHead(tall, viewportTop: viewportTop)
+                        updateLongProgress(scale: scale)
+                    }
+                    try? await Task.sleep(nanoseconds: 350_000_000)
+                }
+            } else {
+                // 到底：补「框下方 → 视口底」尾部 + 选框向下拉伸
+                if viewportBottom > boxPxH {
+                    longSession?.phase = .finalizing
+                    let targetBottomY = longCaptureRect.maxY - CGFloat(viewportBottom) / scale
+                    let target = NSRect(x: longCaptureRect.minX, y: targetBottomY,
+                                        width: longCaptureRect.width, height: longCaptureRect.maxY - targetBottomY)
+                    await animateBoxStretch(to: target)
+                    if let tall = await captureLongFrameTall() {
+                        _ = longStitcher?.addTail(tall, viewportBottom: viewportBottom)
+                        updateLongProgress(scale: scale)
+                    }
+                    try? await Task.sleep(nanoseconds: 350_000_000)
+                }
+            }
+            finishLongShot()                                     // 滚到端自动完成（取消时已置 false）
+        }
+    }
+
+    /// 刷新控制条：已拼高度 + 实时长图预览（随截随长）
+    private func updateLongProgress(scale: CGFloat) {
+        guard let st = longStitcher else { return }
+        longSession?.pointHeight = Int((CGFloat(st.totalHeight) / scale).rounded())
+        if let cg = st.previewImage(width: 150) {
+            longSession?.preview = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        }
+    }
+
+    private static func framesStable(_ a: CGImage, _ b: CGImage) -> Bool {
+        func sig(_ cg: CGImage) -> [UInt8]? {
+            let s = 40
+            guard let ctx = CGContext(data: nil, width: s, height: s, bitsPerComponent: 8, bytesPerRow: s,
+                                      space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
+            ctx.draw(cg, in: CGRect(x: 0, y: 0, width: s, height: s))
+            guard let d = ctx.data else { return nil }
+            let p = d.bindMemory(to: UInt8.self, capacity: s * s)
+            return Array(UnsafeBufferPointer(start: p, count: s * s))
+        }
+        guard let sa = sig(a), let sb = sig(b) else { return false }
+        var t = 0; for i in 0..<sa.count { let v = Int(sa[i]) - Int(sb[i]); t += v < 0 ? -v : v }
+        return t / sa.count < 4   // 平均差 <4 → 画面停稳
+    }
+
+    /// 构建捕获过滤器 + 配置（整屏，排除本覆盖层/控制条）、选区像素裁剪框
+    private func prepareLongCapture(_ sel: NSRect) async -> Bool {
+        guard let displayID = screen.displayID,
+              let content = try? await SCShareableContent.current,
+              let scd = content.displays.first(where: { $0.displayID == displayID }) else { return false }
+        let mine = Set([window?.windowNumber, longPanel?.windowNumber].compactMap { $0 })
+        let exclude = content.windows.filter { mine.contains(Int($0.windowID)) }
+        let scale = screen.backingScaleFactor
+        let cfg = SCStreamConfiguration()
+        cfg.width = Int(CGFloat(scd.width) * scale)
+        cfg.height = Int(CGFloat(scd.height) * scale)
+        cfg.showsCursor = false
+        longFilter = SCContentFilter(display: scd, excludingWindows: exclude)
+        longConfig = cfg
+        longCapturePx = CGRect(x: (sel.minX * scale).rounded(.down),
+                               y: ((bounds.height - sel.maxY) * scale).rounded(.down),
+                               width: (sel.width * scale).rounded(.down),
+                               height: (sel.height * scale).rounded(.down))
+        // 同一列、从框顶一直伸到屏幕底：到底后补「框下方」尾部
+        let screenPxH = CGFloat(scd.height) * scale
+        longTallPx = CGRect(x: longCapturePx.minX, y: longCapturePx.minY,
+                            width: longCapturePx.width,
+                            height: max(longCapturePx.height, screenPxH - longCapturePx.minY))
+        // 向上对称：同一列、从屏幕顶伸到框底（框在其底部），到顶后补「框上方」头部
+        longTallUpPx = CGRect(x: longCapturePx.minX, y: 0,
+                              width: longCapturePx.width,
+                              height: max(longCapturePx.height, longCapturePx.maxY))
+        // 目标 App 窗口边界：补全延展到「窗口边」——含固定对话框/页头，但不越过窗口外的 Dock/桌面。
+        // 用 CGWindowList（明确左上全局坐标），只认最前面那个普通(layer 0)且含选区中心的 App 窗口；找不到则退到屏幕边。
+        let b = CGDisplayBounds(displayID)
+        let center = CGPoint(x: b.minX + sel.midX, y: b.minY + (bounds.height - sel.midY))   // 选区中心(CG 全局左上)
+        var winFrame: CGRect?
+        if let infos = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] {
+            for info in infos {
+                guard let num = info[kCGWindowNumber as String] as? Int, !mine.contains(num),
+                      (info[kCGWindowLayer as String] as? Int) == 0,
+                      let bd = info[kCGWindowBounds as String] as? NSDictionary,
+                      let wf = CGRect(dictionaryRepresentation: bd), wf.width > 80, wf.height > 80,
+                      wf.contains(center) else { continue }
+                winFrame = wf; break                          // 最前面那个普通窗口 = 目标 App 窗口
+            }
+        }
+        longWinTopPx = (((winFrame?.minY).map { max(b.minY, $0) } ?? b.minY) - b.minY) * scale
+        longWinBottomPx = (((winFrame?.maxY).map { min(b.maxY, $0) } ?? b.maxY) - b.minY) * scale
+        return true
+    }
+
+    private func captureLongFrame() async -> CGImage? {
+        guard let f = longFilter, let c = longConfig,
+              let full = try? await SCScreenshotManager.captureImage(contentFilter: f, configuration: c) else { return nil }
+        return full.cropping(to: longCapturePx)
+    }
+
+
+    /// 捕获「框顶→屏底」的高帧（补尾部 / 探测视口底用）
+    private func captureLongFrameTall() async -> CGImage? {
+        guard let f = longFilter, let c = longConfig,
+              let full = try? await SCScreenshotManager.captureImage(contentFilter: f, configuration: c) else { return nil }
+        return full.cropping(to: longTallPx)
+    }
+
+    /// 捕获「屏顶→框底」的高帧（补头部 / 探测视口顶用）
+    private func captureLongFrameTallUp() async -> CGImage? {
+        guard let f = longFilter, let c = longConfig,
+              let full = try? await SCScreenshotManager.captureImage(contentFilter: f, configuration: c) else { return nil }
+        return full.cropping(to: longTallUpPx)
+    }
+
+    /// 把鼠标移到选区中心（合成滚轮事件作用于光标下的窗口）
+    private func warpCursorToSelectionCenter(_ sel: NSRect) {
+        guard let displayID = screen.displayID else { return }
+        let b = CGDisplayBounds(displayID)
+        let localTopY = screen.frame.height - sel.midY          // 视图左下原点 → 显示器左上原点
+        CGWarpMouseCursorPosition(CGPoint(x: b.minX + sel.midX, y: b.minY + localTopY))
+    }
+
+    /// 卡住时换个落点再滚：横向轮播/内嵌滚动区会吞掉竖直滚轮，挪开光标即可命中页面主滚动。
+    /// 候选点偏上、横向错开，避开页面中部常见的横向卡片区。
+    private func warpCursorForRetry(_ sel: NSRect, attempt: Int) {
+        guard let displayID = screen.displayID else { return }
+        let b = CGDisplayBounds(displayID)
+        let fracs: [(CGFloat, CGFloat)] = [(0.5, 0.5), (0.22, 0.18), (0.78, 0.18), (0.5, 0.82)]
+        let (fx, fy) = fracs[max(0, attempt) % fracs.count]
+        let px = sel.minX + sel.width * fx
+        let py = sel.minY + sel.height * fy
+        CGWarpMouseCursorPosition(CGPoint(x: b.minX + px, y: b.minY + (screen.frame.height - py)))
+    }
+
+    /// 合成滚动事件（像素单位，绕过加速、贴近 1:1）；up=true 向上、false 向下
+    private func scrollBy(pixels: Int, up: Bool) {
+        CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                wheel1: Int32(up ? pixels : -pixels), wheel2: 0, wheel3: 0)?.post(tap: .cghidEventTap)
+    }
+
+
+    /// 确认/申请辅助功能权限（合成滚轮事件需要）
+    private static func ensureAccessibility() -> Bool {
+        if AXIsProcessTrusted() { return true }
+        let opt = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+        return AXIsProcessTrustedWithOptions(opt)
+    }
+
+    /// 完成：停循环 → 取拼好的长图 → 进入「选择输出」态（带预览）
+    private func finishLongShot() {
+        longActive = false
+        longScrolling = false
+        recordingLong = false
+        longScanTimer?.invalidate(); longScanTimer = nil   // 停扫描动画
+        showLongResult(longStitcher?.result())
+    }
+
+    private func showLongResult(_ cg: CGImage?) {
+        guard let cg else { cleanupLongShot(); close(); return }
+        longResultCG = cg
+        longResultImg = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        longFinished = true
+        window?.ignoresMouseEvents = false      // 整屏压暗，等用户选输出
+        needsDisplay = true
+        let scale = screen.backingScaleFactor
+        let sizeText = "\(Int((CGFloat(cg.width)/scale).rounded()))×\(Int((CGFloat(cg.height)/scale).rounded()))"
+        let bar = NSHostingView(rootView: LongShotResultBar(
+            sizeText: sizeText, preview: longResultImg,
+            onCopy: { [weak self] in self?.copyLongResult() },
+            onSave: { [weak self] in self?.saveLongResult() },
+            onDiscard: { [weak self] in self?.cleanupLongShot(); self?.close() }))
+        swapLongBar(bar)
+    }
+
+    private func copyLongResult() {
+        if let cg = longResultCG {
+            let rep = NSBitmapImageRep(cgImage: cg)
+            let img = NSImage(size: NSSize(width: cg.width, height: cg.height))
+            img.addRepresentation(rep)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.writeObjects([img])
+        }
+        cleanupLongShot(); close()
+    }
+
+    private func saveLongResult() {
+        if let cg = longResultCG, let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) {
+            let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd HH.mm.ss"
+            let url = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Desktop/长截图 \(fmt.string(from: Date())).png")
+            try? png.write(to: url)
+        }
+        cleanupLongShot(); close()
+    }
+
+    /// 把控制条面板换成另一块内容（录制条 → 输出选择条），并按尺寸重新居中到选区下方
+    private func swapLongBar(_ bar: NSView) {
+        guard let panel = longPanel else { return }
+        let size = bar.fittingSize
+        bar.frame = NSRect(origin: .zero, size: size)
+        panel.contentView = bar
+        let sf = screen.frame                                    // 带预览的输出条较大 → 居中屏幕
+        let gx = sf.minX + (sf.width - size.width) / 2
+        let gy = sf.minY + (sf.height - size.height) / 2
+        panel.setFrame(NSRect(x: gx, y: gy, width: size.width, height: size.height), display: true)
+    }
+
+    private func cancelLongShot() {
+        longActive = false
+        recordingLong = false
+        cleanupLongShot()
+        close()
+    }
+
+    private func cleanupLongShot() {
+        longScrolling = false
+        longScanTimer?.invalidate(); longScanTimer = nil
+        longStretchRect = nil
+        longDirPanel?.orderOut(nil); longDirPanel = nil
+        longPanel?.orderOut(nil); longPanel = nil; longSession = nil
+        longFinished = false; longResultCG = nil; longResultImg = nil
+        longStitcher = nil; longFilter = nil; longConfig = nil
+        window?.ignoresMouseEvents = false
+    }
+
+    /// 录制控制条：独立面板，浮在选区下方（覆盖层穿透时仍可点）
+    private func presentLongPanel() {
+        let session = LongShotSession(
+            onFinish: { [weak self] in self?.finishLongShot() },
+            onCancel: { [weak self] in self?.cancelLongShot() })
+        longSession = session
+        let bar = NSHostingView(rootView: LongShotControlBar(session: session))
+        let size = bar.fittingSize
+        bar.frame = NSRect(origin: .zero, size: size)
+        let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = false
+        panel.level = .screenSaver + 1
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.contentView = bar
+        longPanel = panel
+        repositionLongPanel()                                       // 放框附近（下方，没空间则上方）
+        panel.orderFrontRegardless()
+    }
+
+    /// 控制条定位：框右侧、垂直居中；右侧没空间（框贴近屏幕右缘）则放框左侧
+    private func repositionLongPanel() {
+        guard let panel = longPanel else { return }
+        let size = panel.frame.size, sf = screen.frame, cr = longCaptureRect
+        var gx = sf.minX + cr.maxX + 14
+        if gx + size.width > sf.maxX - 8 { gx = sf.minX + cr.minX - size.width - 14 }   // 右侧放不下 → 左侧
+        gx = max(sf.minX + 8, min(gx, sf.maxX - size.width - 8))
+        var gy = sf.minY + cr.midY - size.height / 2
+        gy = max(sf.minY + 8, min(gy, sf.maxY - size.height - 8))
+        panel.setFrameOrigin(NSPoint(x: gx, y: gy))
     }
 
     // MARK: - OCR 文字提取（Apple Vision，本地离线，中英文）
@@ -1742,6 +2242,7 @@ struct ScreenshotToolbar: View {
     let onFlow: () -> Void
     let onUndo: () -> Void
     let onOCR: () -> Void
+    let onLongShot: () -> Void
     let onTranslate: () -> Void
     let onSave: () -> Void
     let onCopy: () -> Void
@@ -1763,6 +2264,7 @@ struct ScreenshotToolbar: View {
             if translateTitle == "翻译" { translateButton }   // 自绘「文 A」字形
             else { button(translateTitle, "arrow.2.squarepath", action: onTranslate) }
             button("提取文字（OCR）", "text.viewfinder", action: onOCR)
+            button("长截图", "rectangle.split.1x2", action: onLongShot)
             Divider().frame(height: 20).overlay(Color.white.opacity(0.15)).padding(.horizontal, 1)
             // 完成：取消 / 保存 / 复制(确定)
             button("取消", "xmark", action: onCancel)
