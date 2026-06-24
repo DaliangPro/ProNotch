@@ -115,6 +115,8 @@ struct SettingsView: View {
                 CardDivider()
                 clipboardLimitRow
                 CardDivider()
+                clipboardShortcutRow
+                CardDivider()
                 inboxRow
             }
             if let hint = settings.loginItemHint {
@@ -141,6 +143,15 @@ struct SettingsView: View {
                 .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.12)))
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    private var clipboardShortcutRow: some View {
+        HStack {
+            Text("剪贴板快捷键").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+            Spacer()
+            ShortcutRecorderField(shortcut: $settings.clipboardShortcut)
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
     }

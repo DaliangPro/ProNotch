@@ -61,6 +61,19 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// 剪贴板切换器全局快捷键（nil = 未设置）；变更后通知 AppDelegate 重新注册
+    @Published var clipboardShortcut: ScreenshotShortcut? {
+        didSet {
+            if let s = clipboardShortcut, let data = try? JSONEncoder().encode(s) {
+                UserDefaults.standard.set(data, forKey: "clipboardShortcut")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "clipboardShortcut")
+            }
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ProNotchClipboardShortcutChanged"), object: nil)
+        }
+    }
+
     // MARK: - 翻译（超级截图原位翻译）
     @Published var translateTargetLang: String { didSet { UserDefaults.standard.set(translateTargetLang, forKey: "translateTargetLang") } }
     @Published var translateUseChatAPI: Bool { didSet { UserDefaults.standard.set(translateUseChatAPI, forKey: "translateUseChatAPI") } }
@@ -144,6 +157,19 @@ final class SettingsStore: ObservableObject {
             screenshotShortcut = try? JSONDecoder().decode(ScreenshotShortcut.self, from: data)
         } else {
             screenshotShortcut = nil
+        }
+        // 剪贴板快捷键：有存值用存值；从未设过则给默认 ⌥⌘V 并持久化；用户清空过则尊重为 nil
+        if let data = UserDefaults.standard.data(forKey: "clipboardShortcut") {
+            clipboardShortcut = try? JSONDecoder().decode(ScreenshotShortcut.self, from: data)
+        } else if UserDefaults.standard.bool(forKey: "clipboardShortcutInitialized") {
+            clipboardShortcut = nil
+        } else {
+            let def = ScreenshotShortcut(keyCode: 9 /* V */,
+                                         modifierFlags: NSEvent.ModifierFlags([.command, .option]).rawValue,
+                                         keyLabel: "V")
+            clipboardShortcut = def
+            if let d = try? JSONEncoder().encode(def) { UserDefaults.standard.set(d, forKey: "clipboardShortcut") }
+            UserDefaults.standard.set(true, forKey: "clipboardShortcutInitialized")
         }
     }
 

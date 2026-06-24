@@ -50,8 +50,11 @@ final class GlobalHotKey {
     /// 按下回调（在主线程的 Carbon 事件循环里触发）
     var onTrigger: (() -> Void)?
 
+    private let id: UInt32          // 多个全局热键各用不同 id 注册，互不冲突（截图=1、剪贴板=2…）
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
+
+    init(id: UInt32 = 1) { self.id = id }
 
     /// 注册 / 更新快捷键；传 nil 则只注销当前快捷键
     func update(_ shortcut: ScreenshotShortcut?) {
@@ -59,7 +62,7 @@ final class GlobalHotKey {
         guard let s = shortcut else { return }
         installHandlerIfNeeded()
 
-        let hotKeyID = EventHotKeyID(signature: 0x50524E54 /* 'PRNT' */, id: 1)
+        let hotKeyID = EventHotKeyID(signature: 0x50524E54 /* 'PRNT' */, id: id)
         var newRef: EventHotKeyRef?
         let status = RegisterEventHotKey(UInt32(s.keyCode),
                                          Self.carbonModifiers(s.modifiers),

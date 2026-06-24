@@ -13,7 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var updateMenuItem: NSMenuItem?
     private var updateSeparator: NSMenuItem?
     /// 超级截图全局快捷键（Carbon RegisterEventHotKey）
-    private let screenshotHotKey = GlobalHotKey()
+    private let screenshotHotKey = GlobalHotKey(id: 1)
+    /// 剪贴板切换器全局快捷键
+    private let clipboardHotKey = GlobalHotKey(id: 2)
 
     // 数据层在应用级持有：换屏重建刘海窗口时状态不丢失
     private var launcherStore: LauncherStore!
@@ -36,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         settingsStore = SettingsStore()
         launcherStore.refreshIfNeeded()
         clipboardStore.startMonitoring()
+        ClipboardSwitcherController.shared.configure(store: clipboardStore)
 
         setupMainMenu()
         setupStatusItem()
@@ -69,6 +72,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             Task { @MainActor in
                 guard let self else { return }
                 self.screenshotHotKey.update(self.settingsStore.screenshotShortcut)
+            }
+        }
+
+        // 剪贴板切换器全局快捷键：按下唤出横向卡片面板；设置里改键后重新注册
+        clipboardHotKey.onTrigger = {
+            Task { @MainActor in ClipboardSwitcherController.shared.toggle() }
+        }
+        clipboardHotKey.update(settingsStore.clipboardShortcut)
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ProNotchClipboardShortcutChanged"),
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.clipboardHotKey.update(self.settingsStore.clipboardShortcut)
             }
         }
 
