@@ -50,17 +50,23 @@ final class GlobalHotKey {
     /// 按下回调（在主线程的 Carbon 事件循环里触发）
     var onTrigger: (() -> Void)?
 
-    private let id: UInt32          // 多个全局热键各用不同 id 注册，互不冲突（截图=1、剪贴板=2…）
+    private let id: UInt32          // 多个全局热键各用不同 id 注册（截图=1、剪贴板=2…）
     private var hotKeyRef: EventHotKeyRef?
-    private var handlerRef: EventHandlerRef?
+
+    // 全进程共享：id → 回调。整个进程只装「一个」事件处理器，按事件携带的热键 id 分发。
+    // （早前的写法是每个实例各装一个 handler，但它们是同一个 C 函数指针，Carbon 视为同一
+    //   handler，后注册的把先注册的覆盖，导致只有最后那个 id 能响应——截图键因此失灵。）
+    private static var callbacks: [UInt32: () -> Void] = [:]
+    private static var sharedHandlerInstalled = false
 
     init(id: UInt32 = 1) { self.id = id }
 
     /// 注册 / 更新快捷键；传 nil 则只注销当前快捷键
     func update(_ shortcut: ScreenshotShortcut?) {
         if let ref = hotKeyRef { UnregisterEventHotKey(ref); hotKeyRef = nil }
-        guard let s = shortcut else { return }
-        installHandlerIfNeeded()
+        guard let s = shortcut else { Self.callbacks[id] = nil; return }
+        Self.installSharedHandler()
+        Self.callbacks[id] = { [weak self] in self?.onTrigger?() }
 
         let hotKeyID = EventHotKeyID(signature: 0x50524E54 /* 'PRNT' */, id: id)
         var newRef: EventHotKeyRef?
@@ -70,22 +76,26 @@ final class GlobalHotKey {
         if status == noErr {
             hotKeyRef = newRef
         } else {
-            print("[ProNotch] 截图快捷键注册失败（可能被占用）: \(status)")
+            print("[ProNotch] 快捷键注册失败（可能被占用）id=\(id): \(status)")
         }
     }
 
-    private func installHandlerIfNeeded() {
-        guard handlerRef == nil else { return }
+    /// 整个进程只装一个事件处理器：取出事件携带的热键 id，找对应回调执行
+    private static func installSharedHandler() {
+        guard !sharedHandlerInstalled else { return }
+        sharedHandlerInstalled = true
         var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                  eventKind: UInt32(kEventHotKeyPressed))
-        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
         InstallEventHandler(GetApplicationEventTarget(),
-            { _, _, userData -> OSStatus in
-                if let userData {
-                    Unmanaged<GlobalHotKey>.fromOpaque(userData).takeUnretainedValue().onTrigger?()
-                }
+            { _, event, _ -> OSStatus in
+                guard let event else { return noErr }
+                var hkID = EventHotKeyID()
+                let st = GetEventParameter(event, EventParamName(kEventParamDirectObject),
+                                           EventParamType(typeEventHotKeyID), nil,
+                                           MemoryLayout<EventHotKeyID>.size, nil, &hkID)
+                if st == noErr { GlobalHotKey.callbacks[hkID.id]?() }
                 return noErr
-            }, 1, &spec, selfPtr, &handlerRef)
+            }, 1, &spec, nil, nil)
     }
 
     private static func carbonModifiers(_ flags: NSEvent.ModifierFlags) -> UInt32 {
@@ -99,6 +109,6 @@ final class GlobalHotKey {
 
     deinit {
         if let ref = hotKeyRef { UnregisterEventHotKey(ref) }
-        if let h = handlerRef { RemoveEventHandler(h) }
+        Self.callbacks[id] = nil
     }
 }
