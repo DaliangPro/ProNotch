@@ -8,10 +8,6 @@
 
 ## 功能
 
-**Agent 提醒**（新）— 让 Claude Code / Codex 这类 Agent 完成任务时，屏幕四周亮起呼吸光晕提醒你：Claude Code 橙色、Codex 蓝色，颜色与呼吸节奏都可调；切回对应窗口即自动熄灭。在设置里给每个 Agent 一个开关就能接入它的「完成」钩子——跑长任务时人离开，也不会错过它干完活：
-
-![Agent 提醒](docs/screenshot-agent.png)
-
 **启动台** — 全部应用网格 + 即时搜索（回车直接启动第一个结果），常用 App 可右键置顶到顶部专属槽位、置顶图标还能拖动排序：
 
 ![启动台](docs/screenshot-launcher.png)
@@ -21,14 +17,6 @@
 ![剪贴板历史](docs/screenshot-clipboard.png)
 
 ![剪贴板切换器](docs/screenshot-clipboard-switcher.png)
-
-**AI 闪问** — 自填任意 OpenAI 兼容接口（DeepSeek / Kimi / Ollama 等均可），流式输出、Markdown 渲染、可拉取模型列表；联网搜索可选 **DuckDuckGo（免费、零配置）/ Tavily / Brave**，各自填 Key、一键测试：
-
-![AI 闪问](docs/screenshot-chat.png)
-
-**妙记** — 灵感随手记，写完点存入即追加到你指定的 Markdown 文件（按天分节、带时间戳），Obsidian 用户可直达 vault 收件箱：
-
-![妙记](docs/screenshot-capture.png)
 
 **超级截图** — 全局快捷键（可在设置里自定义）或刘海快捷区一键唤起区域截图，框选后弹出工具栏：
 
@@ -43,6 +31,18 @@
 - **撤销** / **复制到剪贴板** / **保存到桌面**
 
 ![超级截图工具栏](docs/screenshot-superscreenshot.png)
+
+**AI 闪问** — 自填任意 OpenAI 兼容接口（DeepSeek / Kimi / Ollama 等均可），流式输出、Markdown 渲染、可拉取模型列表；联网搜索可选 **DuckDuckGo（免费、零配置）/ Tavily / Brave**，各自填 Key、一键测试：
+
+![AI 闪问](docs/screenshot-chat.png)
+
+**妙记** — 灵感随手记，写完点存入即追加到你指定的 Markdown 文件（按天分节、带时间戳），Obsidian 用户可直达 vault 收件箱：
+
+![妙记](docs/screenshot-capture.png)
+
+**Agent 提醒**（新）— 让 Claude Code / Codex 这类 Agent 完成任务时，屏幕四周亮起呼吸光晕提醒你：Claude Code 橙色、Codex 蓝色，颜色与呼吸节奏都可调；切回对应窗口即自动熄灭。在设置里给每个 Agent 一个开关就能接入它的「完成」钩子——跑长任务时人离开，也不会错过它干完活：
+
+![Agent 提醒](docs/screenshot-agent.png)
 
 **还有**：**多显示器全覆盖**（新）——每块屏都有独立刘海面板，外接屏 / 扩展屏也能用，插拔显示器自动增减；菜单栏「检查更新」自动提醒新版本（基于 GitHub Releases，发现新版弹通知 + 菜单标记，引导手动下载）；刘海两侧快捷区（超级截图、熄屏锁定、防休眠、macOS 系统外观深浅色切换、右上角 Agent 提醒开关；应用设置入口在菜单栏图标）；四个标签页和快捷图标都可拖动排序，排第一的标签就是默认页；检测到全屏应用时自动隐藏，不遮挡内容（可在设置关闭）。
 
