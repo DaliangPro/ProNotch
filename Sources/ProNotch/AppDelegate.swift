@@ -31,6 +31,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         Self.migrateFromNotchHubIfNeeded()
         launcherStore = LauncherStore()
         clipboardStore = ClipboardStore()
+        #if DEBUG
+        // 一次性生成 README 配图：早于 ChatStore（避免同步读钥匙串弹框阻塞主线程），渲染后退出
+        if CommandLine.arguments.contains("-snapshotDocs") {
+            clipboardStore.loadDemoItems()                      // 演示数据，不暴露真实剪贴板
+            ClipboardSwitcherController.shared.configure(store: clipboardStore)
+            debugSnapshotSwitcher()
+            debugSnapshotToolbar()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { NSApp.terminate(nil) }
+            return
+        }
+        #endif
         snippetStore = SnippetStore()
         chatStore = ChatStore()
         captureStore = CaptureStore()
@@ -152,6 +163,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             self, selector: #selector(debugSnapshotSettings),
             name: NSNotification.Name("com.daliangpro.ProNotch.snapsettings"), object: nil)
         DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(debugSnapshotSwitcher),
+            name: NSNotification.Name("com.daliangpro.ProNotch.snapswitcher"), object: nil)
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(debugSnapshotToolbar),
+            name: NSNotification.Name("com.daliangpro.ProNotch.snaptoolbar"), object: nil)
+        DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugToggleSnippets),
             name: NSNotification.Name("com.daliangpro.ProNotch.snippets"), object: nil)
         DistributedNotificationCenter.default().addObserver(
@@ -211,6 +228,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func debugToggleSnippets() {
         clipboardStore.showingSnippets.toggle()
         print("[ProNotch] 剪贴板子视图: \(clipboardStore.showingSnippets ? "话术库" : "历史")")
+    }
+
+    /// 调试用：离屏渲染剪贴板切换器到 PNG（生成 README 配图，无需屏幕录制权限）
+    @objc private func debugSnapshotSwitcher() {
+        let root = ZStack {
+            Color(white: 0.08)
+            ClipboardSwitcherView(store: clipboardStore, controller: .shared)
+                .environmentObject(clipboardStore!)
+        }
+        .frame(width: 960, height: 400)
+        let hosting = NSHostingView(rootView: root)
+        hosting.appearance = NSAppearance(named: .darkAqua)
+        hosting.frame = NSRect(x: 0, y: 0, width: 960, height: 400)
+        hosting.layoutSubtreeIfNeeded()
+        guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { return }
+        hosting.cacheDisplay(in: hosting.bounds, to: rep)
+        if let data = rep.representation(using: .png, properties: [:]) {
+            try? data.write(to: URL(fileURLWithPath: "/tmp/pronotch-switcher.png"))
+            print("[ProNotch] 剪贴板切换器快照已保存")
+        }
+    }
+
+    /// 调试用：离屏渲染超级截图工具栏到 PNG（生成 README 配图）
+    @objc private func debugSnapshotToolbar() {
+        let bar = ScreenshotToolbar(
+            boxActive: false, penActive: false, mosaicActive: false, noteActive: false, flowActive: false,
+            translateTitle: "翻译",
+            onBox: {}, onPen: {}, onMosaic: {}, onNote: {}, onFlow: {}, onUndo: {},
+            onOCR: {}, onLongShot: {}, onTranslate: {}, onSave: {}, onCopy: {}, onCancel: {})
+        let probe = NSHostingView(rootView: bar)
+        let s = probe.fittingSize
+        let root = ZStack { Color(white: 0.08); bar }
+            .frame(width: s.width + 48, height: s.height + 40)
+        let hosting = NSHostingView(rootView: root)
+        hosting.appearance = NSAppearance(named: .darkAqua)
+        hosting.frame = NSRect(x: 0, y: 0, width: s.width + 48, height: s.height + 40)
+        hosting.layoutSubtreeIfNeeded()
+        guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { return }
+        hosting.cacheDisplay(in: hosting.bounds, to: rep)
+        if let data = rep.representation(using: .png, properties: [:]) {
+            try? data.write(to: URL(fileURLWithPath: "/tmp/pronotch-toolbar.png"))
+            print("[ProNotch] 超级截图工具栏快照已保存")
+        }
     }
 
     /// 调试用：离屏渲染设置界面到 PNG（无需打开窗口与屏幕录制权限）

@@ -112,6 +112,23 @@ final class ClipboardStore: ObservableObject {
         saveIndex()
     }
 
+    #if DEBUG
+    /// 仅用于生成 README 配图：载入一组演示条目，不读取也不写入真实历史
+    func loadDemoItems() {
+        func t(_ s: String, _ ago: TimeInterval) -> ClipboardItem {
+            ClipboardItem(id: UUID(), kind: .text, text: s, imageFileName: nil,
+                          date: Date().addingTimeInterval(-ago))
+        }
+        items = [
+            t("https://github.com/DaliangPro/ProNotch", 60),
+            t("struct NotchView: View {\n    var body: some View {\n        Text(\"ProNotch\")\n    }\n}", 300),
+            t("把 MacBook 的刘海变成你的效率中心。", 900),
+            t("Stay hungry, stay foolish.", 1800),
+            t("会议纪要：下周一上线新版，重点打磨剪贴板切换器与超级截图，记得同步设计与测试。", 3600),
+        ]
+    }
+    #endif
+
     func image(for item: ClipboardItem) -> NSImage? {
         guard let name = item.imageFileName else { return nil }
         return ThumbnailCache.image(at: directory.appendingPathComponent(name))
