@@ -193,13 +193,16 @@ enum GlowHookInstaller {
     private static var codexScript: String {
         NSHomeDirectory() + "/Library/Application Support/ProNotch/codex-notify.sh"
     }
+    /// 脚本文件名，用于在 notify 串里识别「是否引用了我们」——文件名不含斜杠，
+    /// 无论路径在 TOML 里是否被转义（computer-use 套壳时会 JSON 转义斜杠）都能匹配。
+    private static var codexScriptMarker: String { (codexScript as NSString).lastPathComponent }
 
     private static func isCodexInstalled() -> Bool {
         guard let toml = try? String(contentsOfFile: codexConfig, encoding: .utf8),
               let arr = notifyArray(in: toml) else { return false }
-        // 只认「notify 直接指向我们的脚本」（数组首元素 = 脚本）。被 computer-use 等套
-        // 在外层的嵌套情况不认作已接入——避免卸载时误动它们的配置、或反复嵌套加深。
-        return arr.hasPrefix("[\"\(codexScript)\"")
+        // notify 链中引用了我们的转发脚本（直接指向，或被 computer-use 等套在外层），且脚本在 → 已接入。
+        // 旧版只认「首元素 = 脚本」，被套壳就误判「未接入」→ 重新勾选时酿成自引用死循环（光晕狂闪）。
+        return arr.contains(codexScriptMarker) && FileManager.default.fileExists(atPath: codexScript)
     }
 
     @discardableResult
@@ -209,28 +212,40 @@ enum GlowHookInstaller {
         guard fm.fileExists(atPath: (codexConfig as NSString).deletingLastPathComponent) else { return false }
         let toml = (try? String(contentsOfFile: codexConfig, encoding: .utf8)) ?? ""
 
+        let arr = notifyArray(in: toml)
+        let directlyOurs = arr?.hasPrefix("[\"\(codexScript)\"") == true   // notify 首元素就是我们的脚本
+        let inChain = arr?.contains(codexScriptMarker) == true             // 链中引用了我们（含被外层套壳）
+
         if on {
-            if isCodexInstalled() {
-                // notify 已指向我们的脚本；脚本格式过期则就地刷新（保留原 notify 链）
-                if !scriptIsCurrent(codexScript) { _ = writeForwarder(previous: readPreviousFromForwarder()) }
+            if inChain {
+                // 已在 notify 链中。被 computer-use 等套在外层时，我们是「下游」，本就不该再向下转发；
+                // 直接指向时，previous 取脚本自己记录的原值。绝不把「含我们自己的当前链」抓来当 previous，
+                // 否则 exec 回自己 → 无限循环（这正是闪烁 bug 的根源）。脚本缺失或格式过期才重写。
+                if !fm.fileExists(atPath: codexScript) || !scriptIsCurrent(codexScript) {
+                    return writeForwarder(previous: directlyOurs ? readPreviousFromForwarder() : nil)
+                }
                 return true
             }
-            // 当前 notify（原样 TOML 数组串，nil = 无）作为 previous 写进脚本
-            let prev = notifyArray(in: toml)
-            guard writeForwarder(previous: prev) else { return false }
+            // 全新接入：当前 notify（不含我们）整体作为 previous 透传
+            guard writeForwarder(previous: arr) else { return false }
             backup(codexConfig)
             let newToml = upsertNotifyLine(toml, value: "[\"\(codexScript)\"]")
             return (try? newToml.write(toFile: codexConfig, atomically: true, encoding: .utf8)) != nil
         } else {
-            if !isCodexInstalled() { return true }   // 前面已确认 notify 直接指向我们的脚本（未被套在外层）
-            backup(codexConfig)
-            let prev = readPreviousFromForwarder()   // 从脚本取回原 notify
-            // 有原 notify 就还原；原本无 notify（我们的脚本是唯一 notify）就删掉整条 notify——
-            // 因已确认这条就是我们自己的，删整条安全，不会误伤下游配置。
-            let newToml = (prev?.isEmpty == false) ? upsertNotifyLine(toml, value: prev!) : removeNotifyLine(toml)
-            let ok = (try? newToml.write(toFile: codexConfig, atomically: true, encoding: .utf8)) != nil
-            if ok { try? fm.removeItem(atPath: codexScript) }
-            return ok
+            if !inChain { return true }
+            if directlyOurs {
+                // notify 直接是我们：还原原 notify（或删整条）+ 删脚本
+                backup(codexConfig)
+                let prev = readPreviousFromForwarder()
+                let newToml = (prev?.isEmpty == false) ? upsertNotifyLine(toml, value: prev!) : removeNotifyLine(toml)
+                let ok = (try? newToml.write(toFile: codexConfig, atomically: true, encoding: .utf8)) != nil
+                if ok { try? fm.removeItem(atPath: codexScript) }
+                return ok
+            }
+            // 被外层套壳：notify 归上游（computer-use 等）管，不动它；只删我们的脚本即可
+            // （上游转发到缺失脚本无害，不会再点亮光晕）。
+            try? fm.removeItem(atPath: codexScript)
+            return true
         }
     }
 
@@ -276,6 +291,9 @@ enum GlowHookInstaller {
 
     /// 生成转发脚本：点亮光晕 + 透传 previous；原 notify 以 base64 存进脚本头供还原
     private static func writeForwarder(previous: String?) -> Bool {
+        // 根部兜底防自引用死循环：previous 绝不能（间接）引用本脚本，否则 exec 回自己 → 无限循环。
+        // 被 computer-use 套壳后原 notify 链里就含我们，这里统一剥掉，任何调用路径都断得了环。
+        let previous = (previous?.contains(codexScriptMarker) == true) ? nil : previous
         let fm = FileManager.default
         let dir = (codexScript as NSString).deletingLastPathComponent
         try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
