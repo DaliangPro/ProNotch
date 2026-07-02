@@ -29,7 +29,8 @@ final class SuperScreenshotController {
         let provider: () -> (ScreenshotTranslator.Config, String, String)? = { [weak self] in
             guard let s = self?.settings else { return nil }
             let c = s.resolvedTranslateConfig
-            return (.init(baseURL: c.baseURL, apiKey: c.apiKey, model: c.model), s.translateTargetLang, s.translatePrompt)
+            return (.init(baseURL: c.baseURL, apiKey: c.apiKey, model: c.model, parallel: s.translateParallel),
+                    s.translateTargetLang, s.translatePrompt)
         }
         let win = ScreenshotOverlayWindow(image: image, screen: screen, translateProvider: provider) { [weak self] in
             self?.window?.orderOut(nil)
@@ -77,20 +78,104 @@ extension NSColor {
 
 /// 调 OpenAI 兼容接口批量翻译（JSON 数组进出，保证 N→N 对应）
 enum ScreenshotTranslator {
-    struct Config { var baseURL: String; var apiKey: String; var model: String }
+    struct Config { var baseURL: String; var apiKey: String; var model: String; var parallel: Bool = true }
 
-    static func translate(_ texts: [String], to lang: String, prompt: String, config: Config) async throws -> [String] {
+    /// 分块并行翻译：按字数把条目切成连续块并发请求（上限 5 路）——模型逐 token 串行生成，
+    /// 全文一次请求耗时随字数线性涨；并行后总耗时≈最慢一块。哪块先译完先经 onPartial 回传
+    /// （渐进渲染用）；疑似未翻译只重试该块；失败块以空串占位（渲染时跳过=保留原文画面）。
+    /// 仅当所有块都失败才抛错。
+    static func translate(_ texts: [String], to lang: String, prompt: String, config: Config,
+                          onPartial: (@Sendable (_ range: Range<Int>, _ chunk: [String], _ done: Int, _ total: Int) -> Void)? = nil) async throws -> [String] {
         // 提示词里的 {lang} 占位替换为目标语言；用户没留 {lang} 时按原样使用
         let raw = prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? SettingsStore.defaultTranslatePrompt : prompt
         let system = raw.replacingOccurrences(of: "{lang}", with: lang)
-        let first = try await request(texts, system: system, temperature: 0.2, config: config)
-        // 偷懒兜底：模型偶尔原样回传不翻译。若过半条目与原文一字不差，加硬指令 + 提温度重试一次，取更优者
-        guard looksUntranslated(texts, first) else { return first }
-        let harder = system + "\n\nThe previous attempt returned the original text unchanged, which is WRONG. "
+        // 并行开关关闭（接口限流严）或文字少：单请求，无拆分开销
+        let ranges = config.parallel ? chunkRanges(texts, budget: 400) : [0..<texts.count]
+        guard ranges.count > 1 else {
+            let out = try await translateChunk(texts, to: lang, system: system, config: config)
+            onPartial?(0..<texts.count, out, 1, 1)
+            return out
+        }
+        var results = [String](repeating: "", count: texts.count)
+        var okCount = 0, done = 0
+        var firstError: Error?
+        await withTaskGroup(of: (Range<Int>, Result<[String], Error>).self) { group in
+            var next = 0
+            func launchNext() {
+                guard next < ranges.count else { return }
+                let r = ranges[next]; next += 1
+                group.addTask {
+                    do { return (r, .success(try await translateChunk(Array(texts[r]), to: lang, system: system, config: config))) }
+                    catch { return (r, .failure(error)) }
+                }
+            }
+            for _ in 0..<min(5, ranges.count) { launchNext() }   // 并发上限 5，防接口限流
+            for await (r, res) in group {
+                launchNext()   // 完成一块补发一块，保持并发水位
+                done += 1
+                switch res {
+                case .success(let out) where out.count == r.count:
+                    for (k, i) in r.enumerated() { results[i] = out[k] }
+                    okCount += 1
+                    onPartial?(r, out, done, ranges.count)
+                case .success, .failure:   // 失败或条数错位：该块空占位（渲染跳过=保留原文），只报进度
+                    if case .failure(let e) = res, firstError == nil { firstError = e }
+                    onPartial?(r, [], done, ranges.count)
+                }
+            }
+        }
+        guard okCount > 0 else { throw firstError ?? err("翻译失败") }
+        return results
+    }
+
+    /// 单块翻译：首轮整块请求 → 逐条核对，把「没回来的 / 原样回传但明显该翻的」单独小批补翻一次。
+    /// 旧逻辑「过半未翻才整块重试」兜不住零散漏翻（模型只漏两三条时不达阈值，漏了就漏了）——
+    /// 逐条核对后哪怕只漏一条也会补翻；补翻仍原样回传的视为专名/代号，保留不再纠缠。
+    private static func translateChunk(_ texts: [String], to lang: String, system: String, config: Config) async throws -> [String] {
+        var out = try await request(texts, system: system, temperature: 0.2, config: config)
+        // 条数对不上（长输出被截断/丢尾条）：多则裁、少则空串占位，缺的交给下面按条补翻
+        if out.count > texts.count { out = Array(out.prefix(texts.count)) }
+        while out.count < texts.count { out.append("") }
+        let suspects = texts.indices.filter { i in
+            let o = out[i].trimmingCharacters(in: .whitespaces)
+            return o.isEmpty || (o == texts[i].trimmingCharacters(in: .whitespaces) && looksTranslatable(texts[i]))
+        }
+        guard !suspects.isEmpty else { return out }
+        let harder = system + "\n\nThe previous attempt returned these strings unchanged or dropped them, which is WRONG. "
             + "You MUST translate every non-\(lang) string into \(lang) now. Never echo the input."
-        guard let retry = try? await request(texts, system: harder, temperature: 0.6, config: config) else { return first }
-        return sameCount(texts, retry) < sameCount(texts, first) ? retry : first
+        if let fix = try? await request(suspects.map { texts[$0] }, system: harder, temperature: 0.5, config: config),
+           fix.count == suspects.count {
+            for (k, i) in suspects.enumerated() {
+                let f = fix[k].trimmingCharacters(in: .whitespacesAndNewlines)
+                if !f.isEmpty { out[i] = f }
+            }
+        }
+        return out
+    }
+
+    /// 这串文字「看起来该被翻译」：含拉丁词、字母占比可观，且不是 URL/路径——
+    /// 纯数字、时间、代码符号原样回传是对的，不算漏翻
+    private static func looksTranslatable(_ s: String) -> Bool {
+        let t = s.trimmingCharacters(in: .whitespaces)
+        guard t.count >= 2 else { return false }
+        let lower = t.lowercased()
+        if lower.hasPrefix("http") || lower.hasPrefix("www.") || lower.hasPrefix("/") || lower.hasPrefix("~/") { return false }
+        let letters = t.unicodeScalars.filter { CharacterSet.letters.contains($0) }.count
+        guard letters >= 3, Double(letters) / Double(t.count) > 0.4 else { return false }
+        return t.range(of: "[A-Za-z]{2,}", options: .regularExpression) != nil
+    }
+
+    /// 按累计字数（约 budget 字符）切成连续区间，至少 1 条/块——块内保持阅读顺序上下文
+    private static func chunkRanges(_ texts: [String], budget: Int) -> [Range<Int>] {
+        var ranges: [Range<Int>] = []
+        var start = 0, chars = 0
+        for (i, t) in texts.enumerated() {
+            if i > start, chars + t.count > budget { ranges.append(start..<i); start = i; chars = 0 }
+            chars += t.count
+        }
+        if start < texts.count { ranges.append(start..<texts.count) }
+        return ranges
     }
 
     /// 单次翻译请求：JSON 数组进出，去掉可能的 ``` 包裹，解析成字符串数组
@@ -117,18 +202,20 @@ enum ScreenshotTranslator {
                 .replacingOccurrences(of: "```", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
         }
         if let arr = try? JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String] { return arr }
-        return content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-    }
-
-    /// 逐条比对，统计与原文一字不差的条目数（用于判断模型是否没翻）
-    private static func sameCount(_ a: [String], _ b: [String]) -> Int {
-        zip(a, b).reduce(0) { $0 + ($1.0.trimmingCharacters(in: .whitespaces) == $1.1.trimmingCharacters(in: .whitespaces) ? 1 : 0) }
-    }
-    /// 是否疑似整体未翻译：返回条数对不上，或过半条目与原文完全相同
-    private static func looksUntranslated(_ src: [String], _ out: [String]) -> Bool {
-        if out.count != src.count { return true }
-        guard !src.isEmpty else { return false }
-        return Double(sameCount(src, out)) / Double(src.count) > 0.6
+        // 数组前后带解释文字：截取首个 '[' 到最后一个 ']' 再试
+        if let l = content.firstIndex(of: "["), let r = content.lastIndex(of: "]"), l < r,
+           let arr = try? JSONSerialization.jsonObject(with: Data(String(content[l...r]).utf8)) as? [String] {
+            return arr
+        }
+        // 兜底按行切（截断的 JSON 会走到这）：去掉行首尾的引号和尾逗号，别把 JSON 碎片当译文
+        return content.split(separator: "\n", omittingEmptySubsequences: false).map {
+            var line = $0.trimmingCharacters(in: .whitespaces)
+            if line.hasSuffix(",") { line.removeLast() }
+            if line.hasPrefix("\""), line.hasSuffix("\""), line.count >= 2 {
+                line = String(line.dropFirst().dropLast())
+            }
+            return line
+        }
     }
 
     private static func completionsURL(_ baseURL: String) -> URL? {
@@ -209,6 +296,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private let onClose: () -> Void
     private let translateProvider: () -> (ScreenshotTranslator.Config, String, String)?
     private var translatedOverride: NSImage?   // 翻译后盖在选区上的译图（缓存，切换/导出复用）
+    private var translatePartial: [String]?    // 渐进翻译累积（空串=该块未回，渲染跳过保留原文）
     private var showingOriginal = false        // 译图在手时，是否临时显示原文
     private var hintView: NSView?              // 「翻译中…」/错误 提示气泡
 
@@ -216,6 +304,9 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var tool: Tool = .none
     private var selection: NSRect?
     private var dragOrigin: NSPoint?
+    // 窗口吸附：框选阶段悬停自动高亮光标下的窗口，单击即整窗选中
+    private var snapWindows: [NSRect]?      // 吸附候选：截图冻结时刻的普通窗口边框（视图坐标、Z 序前→后）；nil=未加载
+    private var hoverWindowRect: NSRect?    // 光标当前所在窗口的吸附框
 
     private var boxes: [Box] = []
     private var boxHighlight = false        // 框选样式：是否高亮（聚光灯）
@@ -339,9 +430,51 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         addTrackingArea(NSTrackingArea(rect: bounds, options: [.activeAlways, .mouseMoved, .inVisibleRect], owner: self))
     }
     override func mouseMoved(with event: NSEvent) {
+        // 框选阶段（未开始拖拽）：悬停吸附光标下的窗口，单击即整窗选中；一旦拖拽走自由框选
+        if phase == .selecting, dragOrigin == nil, !recordingLong, !longFinished, ocrPanel == nil, hintView == nil {
+            let pt = convert(event.locationInWindow, from: nil)
+            let hit = snapWindowRect(under: pt)
+            if hit != hoverWindowRect { hoverWindowRect = hit; needsDisplay = true }
+            return
+        }
         guard tool == .mosaic, mosaicMode == .brush else { if hoverPoint != nil { hoverPoint = nil; needsDisplay = true }; return }
         hoverPoint = convert(event.locationInWindow, from: nil)
         needsDisplay = true
+    }
+
+    // MARK: - 窗口吸附
+
+    /// 光标下最顶层可见窗口的吸附框（视图坐标）；候选列表只取一次——覆盖层显示后画面已冻结，窗口不会再动
+    private func snapWindowRect(under pt: NSPoint) -> NSRect? {
+        if snapWindows == nil {
+            snapWindows = Self.loadSnapWindows(screen: screen, bounds: bounds,
+                                               excludeNumbers: Set([window?.windowNumber].compactMap { $0 }))
+        }
+        return snapWindows?.first { $0.contains(pt) }
+    }
+
+    /// 枚举屏上可见窗口 → 视图坐标（Z 序前→后）。不限 layer 0：刘海面板、各 App 浮动面板都能吸附；
+    /// 只排除截图覆盖层自身、桌面层（负 layer）、全屏遮罩层（高 layer 且盖满整屏，如光晕层）与过小窗口。
+    private static func loadSnapWindows(screen: NSScreen, bounds: NSRect, excludeNumbers: Set<Int>) -> [NSRect] {
+        guard let displayID = screen.displayID,
+              let infos = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return [] }
+        let b = CGDisplayBounds(displayID)   // 本屏 CG 全局框（左上原点）
+        var rects: [NSRect] = []
+        for info in infos {
+            guard let layer = info[kCGWindowLayer as String] as? Int, layer >= 0,
+                  (info[kCGWindowNumber as String] as? Int).map({ !excludeNumbers.contains($0) }) ?? true,
+                  ((info[kCGWindowAlpha as String] as? Double) ?? 1) > 0.05,
+                  let bd = info[kCGWindowBounds as String] as? NSDictionary,
+                  let wf = CGRect(dictionaryRepresentation: bd), wf.width >= 40, wf.height >= 40 else { continue }
+            // CG 全局（左上原点、y 向下） → 本屏视图坐标（左下原点、y 向上）
+            let r = NSRect(x: wf.minX - b.minX, y: bounds.height - (wf.maxY - b.minY),
+                           width: wf.width, height: wf.height).intersection(bounds)
+            guard r.width >= 40, r.height >= 40 else { continue }
+            // 高 layer 且盖满整屏 = 遮罩层（光晕/覆盖层同类），不是可截的窗口；layer 0 的全屏 App 窗口保留
+            if layer > 0, r.width >= bounds.width * 0.95, r.height >= bounds.height * 0.95 { continue }
+            rects.append(r)
+        }
+        return rects
     }
 
     // MARK: - 绘制
@@ -380,8 +513,21 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         nsImage.draw(in: bounds)
         NSColor.black.withAlphaComponent(0.5).setFill()
 
-        guard let sel = selection else {
-            NSBezierPath(rect: bounds).fill()
+        guard let sel = selection, max(sel.width, sel.height) >= 4 else {
+            // 无选区（或刚按下还没拖开）：有吸附窗口就亮出它 + 描边，否则整屏压暗
+            if phase == .selecting, let hw = hoverWindowRect {
+                let mask = NSBezierPath(rect: bounds)
+                mask.append(NSBezierPath(rect: hw))
+                mask.windingRule = .evenOdd
+                mask.fill()
+                withShadow(blur: 6, alpha: 0.4) {
+                    Self.accent.setStroke()
+                    let p = NSBezierPath(rect: hw); p.lineWidth = 2.5; p.stroke()
+                }
+                drawSizeLabel(for: hw)
+            } else {
+                NSBezierPath(rect: bounds).fill()
+            }
             return
         }
         let mask = NSBezierPath(rect: bounds)
@@ -809,6 +955,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             currentBox = Self.rect(o, pt).intersection(selection ?? .zero)
         } else if let o = dragOrigin {
             selection = Self.rect(o, pt)
+            // 真正拖开了 = 自由框选，撤掉窗口吸附高亮
+            if hoverWindowRect != nil, let s = selection, max(s.width, s.height) >= 4 { hoverWindowRect = nil }
         }
         needsDisplay = true
     }
@@ -851,8 +999,15 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         }
         if phase == .selecting, let sel = selection {
             dragOrigin = nil
-            if sel.width >= 4, sel.height >= 4 { phase = .editing; showToolbar(for: sel) }
-            else { selection = nil }
+            if sel.width >= 4, sel.height >= 4 {
+                hoverWindowRect = nil
+                phase = .editing; showToolbar(for: sel)
+            } else if let hw = hoverWindowRect {
+                // 没拖开 = 单击吸附窗口 → 整窗选中，直接进编辑态
+                selection = hw
+                hoverWindowRect = nil
+                phase = .editing; showToolbar(for: hw)
+            } else { selection = nil }
         } else if phase == .editing, tool == .mosaic, mosaicMode == .box, let b = currentBox {
             currentBox = nil; boxOrigin = nil
             if b.width >= 6, b.height >= 6 { record(); mosaicRects.append(b) }   // 区域马赛克
@@ -1116,12 +1271,16 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         host.rootView = makeToolbar()
         if toolbarHost == nil { addSubview(host); toolbarHost = host }
         let size = host.fittingSize
-        var y = sel.minY - size.height - 8
-        if y < 8 { y = sel.maxY + 8 }
+        var y = sel.minY - size.height - 8            // 首选：选区下方
+        if y < 8 { y = sel.maxY + 8 }                 // 放不下 → 选区上方
         var x = sel.midX - size.width / 2
+        if y + size.height > bounds.height - 8 {      // 上方也超屏（选区近全屏）→ 选区内右下角，保证不跑出屏幕
+            y = sel.minY + 8
+            x = sel.maxX - size.width - 8
+        }
         x = max(8, min(x, bounds.width - size.width - 8))
         host.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
-        updateToolOptions(below: host.frame)   // 框选/画笔/马赛克时主栏下方弹子选项面板
+        updateToolOptions(below: host.frame)   // 框选/画笔/马赛克时主栏下方弹子选项面板（放不下自动翻到上方）
     }
 
     private func removeToolbar() { toolbarHost?.removeFromSuperview(); toolbarHost = nil; removeToolOptions() }
@@ -1804,11 +1963,28 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         removeToolbar()
         showHint("翻译中…")
         let outSize = sel.size
+        translatePartial = nil
         Task {
             let blocks = Self.recognizeBlocks(cropped)
             if blocks.isEmpty { await MainActor.run { self.translateFailed("未识别到文字") }; return }
             do {
-                let translations = try await ScreenshotTranslator.translate(blocks.map { $0.text }, to: lang, prompt: prompt, config: config)
+                let translations = try await ScreenshotTranslator.translate(
+                    blocks.map { $0.text }, to: lang, prompt: prompt, config: config,
+                    onPartial: { [weak self] range, chunk, done, total in
+                        // 渐进渲染：哪块先译完先贴回原图哪块，不等全部译完
+                        Task { @MainActor in
+                            guard let self, self.hintView != nil else { return }   // 已完成/已关闭则忽略迟到块
+                            var acc = self.translatePartial ?? [String](repeating: "", count: blocks.count)
+                            if chunk.count == range.count {
+                                for (k, i) in range.enumerated() { acc[i] = chunk[k] }
+                            }
+                            self.translatePartial = acc
+                            if total > 1 { self.showHint("翻译中… \(done)/\(total)") }
+                            self.translatedOverride = Self.renderTranslated(base: cropped, size: outSize, blocks: blocks, translations: acc)
+                            self.showingOriginal = false
+                            self.needsDisplay = true
+                        }
+                    })
                 let img = Self.renderTranslated(base: cropped, size: outSize, blocks: blocks, translations: translations)
                 await MainActor.run { self.translateDone(img) }
             } catch {
@@ -1819,6 +1995,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     private func translateDone(_ img: NSImage) {
         removeHint()
+        translatePartial = nil
         translatedOverride = img
         showingOriginal = false
         if let sel = selection { showToolbar(for: sel) }
@@ -1837,6 +2014,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     }
 
     private func translateFailed(_ msg: String) {
+        translatePartial = nil
+        translatedOverride = nil   // 全部失败：不留半成品译图
         showHint("翻译失败：\(msg)")
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.8) { [weak self] in
             self?.removeHint(); if let s = self?.selection { self?.showToolbar(for: s) }

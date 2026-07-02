@@ -79,6 +79,8 @@ final class SettingsStore: ObservableObject {
     @Published var translateUseChatAPI: Bool { didSet { UserDefaults.standard.set(translateUseChatAPI, forKey: "translateUseChatAPI") } }
     @Published var translateBaseURL: String { didSet { UserDefaults.standard.set(translateBaseURL, forKey: "translateBaseURL") } }
     @Published var translateModel: String { didSet { UserDefaults.standard.set(translateModel, forKey: "translateModel") } }
+    /// 并行加速：长文按块并发翻译（默认开）；接口对并发限流严格时可关掉走单请求
+    @Published var translateParallel: Bool { didSet { UserDefaults.standard.set(translateParallel, forKey: "translateParallel") } }
     /// 翻译提示词（可编辑）；其中 {lang} 翻译时替换为目标语言
     @Published var translatePrompt: String { didSet { UserDefaults.standard.set(translatePrompt, forKey: "translatePrompt") } }
 
@@ -152,6 +154,7 @@ final class SettingsStore: ObservableObject {
         translateUseChatAPI = UserDefaults.standard.bool(forKey: "translateUseChatAPI")
         translateBaseURL = UserDefaults.standard.string(forKey: "translateBaseURL") ?? ""
         translateModel = UserDefaults.standard.string(forKey: "translateModel") ?? ""
+        translateParallel = UserDefaults.standard.object(forKey: "translateParallel") as? Bool ?? true
         translatePrompt = UserDefaults.standard.string(forKey: "translatePrompt") ?? Self.defaultTranslatePrompt
         if let data = UserDefaults.standard.data(forKey: "screenshotShortcut") {
             screenshotShortcut = try? JSONDecoder().decode(ScreenshotShortcut.self, from: data)

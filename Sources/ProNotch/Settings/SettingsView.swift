@@ -180,6 +180,8 @@ struct SettingsView: View {
             SettingsCard {
                 translateLangRow
                 CardDivider()
+                toggleRow("并行加速（长文分块同时翻译，更快）", isOn: $settings.translateParallel)
+                CardDivider()
                 toggleRow("与 AI 闪问 使用相同的 API 接口", isOn: $settings.translateUseChatAPI)
             }
             if !settings.translateUseChatAPI {
