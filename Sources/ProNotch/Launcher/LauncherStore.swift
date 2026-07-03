@@ -15,10 +15,28 @@ enum AppIconCache {
     static func icon(for url: URL) -> NSImage {
         let key = url.path as NSString
         if let cached = cache.object(forKey: key) { return cached }
-        let image = NSWorkspace.shared.icon(forFile: url.path)
-        image.size = NSSize(width: 64, height: 64)
-        cache.setObject(image, forKey: key)
-        return image
+        let raw = NSWorkspace.shared.icon(forFile: url.path)
+        let masked = squircle(raw)
+        cache.setObject(masked, forKey: key)
+        return masked
+    }
+
+    /// 套 macOS 启动台同款「连续圆角方形(squircle)」遮罩：满铺方形图标（抖音/爱奇艺等国产 App）
+    /// 被削成圆角，和系统启动台一致；本身已内缩的圆角图标（内容在遮罩内）外观不变。
+    /// macOS 26 起系统会给所有图标统一套此遮罩，而 NSWorkspace 取的是未处理的原始图标。
+    private static func squircle(_ icon: NSImage, size: CGFloat = 128) -> NSImage {
+        let s = NSSize(width: size, height: size)
+        let out = NSImage(size: s)
+        out.lockFocus()
+        if let ctx = NSGraphicsContext.current?.cgContext {
+            // 用 SwiftUI 连续圆角路径 → 系统级 squircle 曲率（比普通圆角矩形更贴合）
+            let path = RoundedRectangle(cornerRadius: size * 0.2237, style: .continuous)
+                .path(in: CGRect(origin: .zero, size: s)).cgPath
+            ctx.addPath(path); ctx.clip()
+        }
+        icon.draw(in: NSRect(origin: .zero, size: s), from: .zero, operation: .sourceOver, fraction: 1)
+        out.unlockFocus()
+        return out
     }
 }
 
