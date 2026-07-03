@@ -2492,22 +2492,50 @@ private struct ScreenshotMosaicGlyph: View {
     }
 }
 
-/// 翻译图标：文(左上) + A(右下) + 右上/左下两个取景角标（照大梁老师的设计矢量复刻）
-private struct ScreenshotTranslateGlyph: View {
+/// 长截图图标（大梁老师选定方案：竖页三段分割）：竖长圆角页 + 两道分割线，
+/// 墨水高 15.75 与 OCR 等高
+private struct ScreenshotLongShotGlyph: View {
     var color: Color = .white
-    private let line = StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round)
     var body: some View {
         ZStack {
-            Text("文").font(.system(size: 8.5, weight: .medium)).foregroundColor(color).position(x: 5, y: 5)
-            Text("A").font(.system(size: 8.5, weight: .bold)).foregroundColor(color).position(x: 11.5, y: 11.5)
-            Path { p in   // 右上取景角标 ⌐
-                p.move(to: CGPoint(x: 10, y: 2.5)); p.addLine(to: CGPoint(x: 14, y: 2.5)); p.addLine(to: CGPoint(x: 14, y: 6.5))
+            RoundedRectangle(cornerRadius: 3.2)
+                .stroke(color, style: StrokeStyle(lineWidth: 1.5))
+                .frame(width: 13.2, height: 16.0)
+            Path { p in   // 一道中分割线
+                p.move(to: CGPoint(x: 4.6, y: 9.0)); p.addLine(to: CGPoint(x: 16.4, y: 9.0))
+            }.stroke(color, style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
+        }
+        .frame(width: 21, height: 18)
+    }
+}
+
+/// 翻译图标（大梁老师选定方案：横排双弧循环）：A ⇄ 文 横排，上下两道弧形循环箭头。
+/// 圆弧类图标按字体设计惯例放大约 12% 才与平顶图标光学等大（画布 18.6 高）
+private struct ScreenshotTranslateGlyph: View {
+    var color: Color = .white
+    private let line = StrokeStyle(lineWidth: 1.35, lineCap: .round, lineJoin: .round)
+    var body: some View {
+        ZStack {
+            Text("A").font(.system(size: 9.0, weight: .bold)).foregroundColor(color)
+                .position(x: 5.4, y: 9.3)
+            Text("文").font(.system(size: 8.8, weight: .semibold)).foregroundColor(color)
+                .position(x: 15.6, y: 9.3)
+            Path { p in   // 上弧（左→右）+ 右端箭头
+                p.move(to: CGPoint(x: 3.7, y: 2.7))
+                p.addCurve(to: CGPoint(x: 17.3, y: 2.7),
+                           control1: CGPoint(x: 7.9, y: -0.2), control2: CGPoint(x: 13.1, y: -0.2))
+                p.move(to: CGPoint(x: 15.5, y: 1.2))
+                p.addLine(to: CGPoint(x: 17.5, y: 2.7)); p.addLine(to: CGPoint(x: 15.3, y: 4.1))
             }.stroke(color, style: line)
-            Path { p in   // 左下取景角标 L
-                p.move(to: CGPoint(x: 2.5, y: 10)); p.addLine(to: CGPoint(x: 2.5, y: 14)); p.addLine(to: CGPoint(x: 6.5, y: 14))
+            Path { p in   // 下弧（右→左）+ 左端箭头
+                p.move(to: CGPoint(x: 17.3, y: 15.9))
+                p.addCurve(to: CGPoint(x: 3.7, y: 15.9),
+                           control1: CGPoint(x: 13.1, y: 18.8), control2: CGPoint(x: 7.9, y: 18.8))
+                p.move(to: CGPoint(x: 5.5, y: 17.4))
+                p.addLine(to: CGPoint(x: 3.5, y: 15.9)); p.addLine(to: CGPoint(x: 5.7, y: 14.5))
             }.stroke(color, style: line)
         }
-        .frame(width: 16.5, height: 16.5)
+        .frame(width: 21, height: 18.6)
     }
 }
 
@@ -2582,10 +2610,10 @@ struct ScreenshotToolbar: View {
             button("撤销上一步", "arrow.uturn.backward", action: onUndo)
             Divider().frame(height: 20).overlay(Color.white.opacity(0.15)).padding(.horizontal, 1)
             // 智能：翻译 / 提取文字
-            if translateTitle == "翻译" { translateButton }   // 自绘「文 A」字形
+            if translateTitle == "翻译" { translateButton }   // 自绘「A ⇄ 文」字形
             else { button(translateTitle, "arrow.2.squarepath", action: onTranslate) }
             button("提取文字（OCR）", "text.viewfinder", action: onOCR)
-            button("长截图", "rectangle.split.1x2", action: onLongShot)
+            longShotButton
             Divider().frame(height: 20).overlay(Color.white.opacity(0.15)).padding(.horizontal, 1)
             // 完成：取消 / 保存 / 复制(确定)
             button("取消", "xmark", action: onCancel)
@@ -2598,14 +2626,21 @@ struct ScreenshotToolbar: View {
         .fixedSize()
     }
 
-    /// 翻译按钮：照大梁老师的设计矢量复刻——文(左上)+A(右下)+右上/左下取景角标
-    private var translateButton: some View {
-        ToolbarIconButton(help: "原位翻译", action: onTranslate) { hover in
-            ScreenshotTranslateGlyph(color: .white.opacity(hover ? 1.0 : 0.85)).scaleEffect(1.18)
+    /// 长截图按钮：自绘横向矩形字形（与 OCR 图标墨水等高）
+    private var longShotButton: some View {
+        ToolbarIconButton(help: "长截图", action: onLongShot) { hover in
+            ScreenshotLongShotGlyph(color: .white.opacity(hover ? 1.0 : 0.85))
         }
     }
 
-    /// 马赛克按钮：3×3 棋盘格自绘字形（替换系统 mosaic 符号）
+    /// 翻译按钮：大梁老师提供的原稿
+    private var translateButton: some View {
+        ToolbarIconButton(help: "原位翻译", action: onTranslate) { hover in
+            ScreenshotTranslateGlyph(color: .white.opacity(hover ? 1.0 : 0.85))
+        }
+    }
+
+    /// 马赛克按钮：棋盘格自绘字形
     private func mosaicButton(active: Bool) -> some View {
         ToolbarIconButton(active: active, help: "马赛克遮挡", action: onMosaic) { hover in
             ScreenshotMosaicGlyph(color: active ? .cyan : .white.opacity(hover ? 1.0 : 0.85))
