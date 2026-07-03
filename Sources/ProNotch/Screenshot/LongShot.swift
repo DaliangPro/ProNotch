@@ -287,11 +287,20 @@ struct LongShotResultBar: View {
     let onCopy: () -> Void
     let onSave: () -> Void
     let onDiscard: () -> Void
+    /// 按宽高比显式算预览尺寸（不放大）。用 maxWidth/maxHeight 弹性约束时，
+    /// NSHostingView.fittingSize 会按图片原始尺寸算理想大小 → 面板被撑得巨大而内容只占一角
+    private static func fit(_ s: NSSize, maxW: CGFloat, maxH: CGFloat) -> NSSize {
+        guard s.width > 0, s.height > 0 else { return NSSize(width: maxW, height: maxH) }
+        let k = min(maxW / s.width, maxH / s.height, 1)
+        return NSSize(width: s.width * k, height: s.height * k)
+    }
+
     var body: some View {
         VStack(spacing: 10) {
             if let preview {
-                Image(nsImage: preview).resizable().aspectRatio(contentMode: .fit)
-                    .frame(maxWidth: 150, maxHeight: 280)
+                let size = Self.fit(preview.size, maxW: 300, maxH: 320)
+                Image(nsImage: preview).resizable().interpolation(.high)
+                    .frame(width: size.width, height: size.height)
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Color.white.opacity(0.14)))
                     .contentShape(Rectangle())
