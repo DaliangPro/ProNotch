@@ -29,7 +29,9 @@ final class SuperScreenshotController {
         let provider: () -> (ScreenshotTranslator.Config, String, String)? = { [weak self] in
             guard let s = self?.settings else { return nil }
             let c = s.resolvedTranslateConfig
-            return (.init(baseURL: c.baseURL, apiKey: c.apiKey, model: c.model, parallel: s.translateParallel),
+            return (.init(baseURL: c.baseURL, apiKey: c.apiKey, model: c.model,
+                          parallel: s.translateParallel,
+                          useSystemEngine: s.translateEngine == "system"),
                     s.translateTargetLang, s.translatePrompt)
         }
         let win = ScreenshotOverlayWindow(image: image, screen: screen, translateProvider: provider) { [weak self] in
@@ -78,7 +80,11 @@ extension NSColor {
 
 /// 调 OpenAI 兼容接口批量翻译（JSON 数组进出，保证 N→N 对应）
 enum ScreenshotTranslator {
-    struct Config { var baseURL: String; var apiKey: String; var model: String; var parallel: Bool = true }
+    struct Config {
+        var baseURL: String; var apiKey: String; var model: String
+        var parallel: Bool = true
+        var useSystemEngine: Bool = false   // true=优先系统翻译（失败降级到本 AI 配置）
+    }
 
     /// 分块并行翻译：按字数把条目切成连续块并发请求（上限 5 路）——模型逐 token 串行生成，
     /// 全文一次请求耗时随字数线性涨；并行后总耗时≈最慢一块。哪块先译完先经 onPartial 回传
@@ -299,6 +305,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var translatePartial: [String]?    // 渐进翻译累积（空串=该块未回，渲染跳过保留原文）
     private var showingOriginal = false        // 译图在手时，是否临时显示原文
     private var hintView: NSView?              // 「翻译中…」/错误 提示气泡
+    private var hintLabel: NSTextField?        // 气泡内文字（原位更新进度，不重建视图）
+    private var hintSpinning = false           // 气泡当前是否带转圈
 
     private var phase: Phase = .selecting
     private var tool: Tool = .none
@@ -368,6 +376,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var longResultCG: CGImage?
     private var longResultImg: NSImage?
     private var longCaptureRect: NSRect = .zero  // 选区（视图坐标）
+    private var scrollWheelFlipped = false       // 滚轮方向补偿（自然滚动/反转工具会翻转合成事件，开滚前实测校准）
+    private var longInspectPanel: NSPanel?       // 长图检视面板（双击预览打开，放大确认拼接质量）
 
     private let badgeRadius: CGFloat = 13
     private let textFont = NSFont.systemFont(ofSize: 14, weight: .medium)
@@ -1456,9 +1466,10 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     /// 进入长截图：固定选区为视口，先选方向，再程序自动匀速滚动并逐帧拼接，滚到端自动停。
     private func startLongShot() {
         commitEditing()
+        guard ocrPanel == nil, hintView == nil, !recordingLong else { return }   // OCR/翻译中或已在录制：忽略
         guard let sel = selection, sel.width > 24, sel.height > 80 else { return }
         guard Self.ensureAccessibility() else { return }   // 未授权：已弹系统授权框，本次不进入
-        removeToolbar()
+        // 工具栏保持在场（选方向阶段还能反悔）；真正开始录制时才隐藏
         tool = .none; selected = nil; activeMarker = nil; markerGrab = nil
         longCaptureRect = sel
         longStretchRect = nil                  // 重置拉伸态
@@ -1469,6 +1480,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     /// 选定方向后真正开始：呈现控制条 + 扫描动画 + 穿透，启动滚动拼接
     private func beginLongShot(_ sel: NSRect, _ dir: LongShotDirection) {
+        removeToolbar()                       // 录制开始，工具栏此刻才退场
         longDirPanel?.orderOut(nil); longDirPanel = nil
         longActive = true
         presentLongPanel()
@@ -1546,6 +1558,24 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         let scale = screen.backingScaleFactor
         let stepPx = max(30, min(80, Int(sel.height * scale / 9)))      // 每步滚小一点 → 更顺、且给匹配更大余量
         let expDelta = max(1, Int(Double(stepPx) * scale))              // 首帧预期实际位移≈命令量×屏幕缩放
+        // 滚轮方向自校准：合成滚动事件会被「自然滚动 / Mos 等反转工具」再翻一道，按钮的向上/向下
+        // 就与实际相反。开滚前先滚一小段实测内容动向：反了就全程反向补偿；随后滚回原位干净起步。
+        scrollWheelFlipped = false
+        let probePt = max(16, stepPx / 2)
+        scrollBy(pixels: probePt, up: up)
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        if longActive, let probeFrame = await captureLongFrame() {
+            let moved = longStitcher?.probeDirection(probeFrame) ?? 0   // +1=内容呈「向下滚」动向
+            if moved != 0 {
+                scrollBy(pixels: probePt, up: !up)                      // 物理反向撤销探测滚动，回到原位
+                let expected = up ? -1 : 1
+                if moved == -expected {
+                    scrollWheelFlipped = true
+                    print("[ProNotch] 检测到滚轮方向被反转（自然滚动/反转工具），已自动补偿")
+                }
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
         var prevFrame = first
         var noMove = 0
         let boxPxH = Int(longCapturePx.height)
@@ -1768,9 +1798,12 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     }
 
     /// 合成滚动事件（像素单位，绕过加速、贴近 1:1）；up=true 向上、false 向下
+    /// 合成滚轮事件（像素精确）。scrollWheelFlipped=true 时反向发送——
+    /// 抵消「自然滚动 / Mos 等反转工具」对合成事件的二次翻转（每次开滚前实测校准）
     private func scrollBy(pixels: Int, up: Bool) {
+        let u = scrollWheelFlipped ? !up : up
         CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
-                wheel1: Int32(up ? pixels : -pixels), wheel2: 0, wheel3: 0)?.post(tap: .cghidEventTap)
+                wheel1: Int32(u ? pixels : -pixels), wheel2: 0, wheel3: 0)?.post(tap: .cghidEventTap)
     }
 
 
@@ -1791,6 +1824,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     }
 
     private func showLongResult(_ cg: CGImage?) {
+        dismissLongInspector()                  // 暂停时若开着检视面板，出图后关掉换新内容
         guard let cg else { cleanupLongShot(); close(); return }
         longResultCG = cg
         longResultImg = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
@@ -1801,6 +1835,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         let sizeText = "\(Int((CGFloat(cg.width)/scale).rounded()))×\(Int((CGFloat(cg.height)/scale).rounded()))"
         let bar = NSHostingView(rootView: LongShotResultBar(
             sizeText: sizeText, preview: longResultImg,
+            onInspect: { [weak self] in self?.toggleLongInspector() },
             onCopy: { [weak self] in self?.copyLongResult() },
             onSave: { [weak self] in self?.saveLongResult() },
             onDiscard: { [weak self] in self?.cleanupLongShot(); self?.close() }))
@@ -1851,6 +1886,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         longScrolling = false
         longScanTimer?.invalidate(); longScanTimer = nil
         longStretchRect = nil
+        dismissLongInspector()
         longDirPanel?.orderOut(nil); longDirPanel = nil
         longPanel?.orderOut(nil); longPanel = nil; longSession = nil
         longFinished = false; longResultCG = nil; longResultImg = nil
@@ -1864,7 +1900,9 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             onFinish: { [weak self] in self?.finishLongShot() },
             onCancel: { [weak self] in self?.cancelLongShot() })
         longSession = session
-        let bar = NSHostingView(rootView: LongShotControlBar(session: session))
+        let bar = NSHostingView(rootView: LongShotControlBar(
+            session: session,
+            onInspect: { [weak self] in self?.toggleLongInspector() }))
         let size = bar.fittingSize
         bar.frame = NSRect(origin: .zero, size: size)
         let panel = NSPanel(contentRect: NSRect(origin: .zero, size: size),
@@ -1876,6 +1914,55 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         longPanel = panel
         repositionLongPanel()                                       // 放框附近（下方，没空间则上方）
         panel.orderFrontRegardless()
+    }
+
+    /// 双击预览 → 开/关长图检视面板：全宽适配 + 纵向滚动，放大确认拼接质量再决定保存。
+    /// 仅暂停/出图后可用（滚动中鼠标一移到控制条上就已自动暂停）。
+    private func toggleLongInspector() {
+        if longInspectPanel != nil { dismissLongInspector(); return }
+        if !longFinished, longScrolling { return }
+        Task { @MainActor in
+            var img: NSImage?
+            if longFinished {
+                img = longResultImg
+            } else if let st = longStitcher {
+                // 等在途的最后一拍拼接落定（暂停生效前可能有一帧在接），再取全分辨率结果
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                if let cg = await Task.detached(operation: { st.result() }).value {
+                    img = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+                }
+            }
+            guard let image = img, image.size.width > 0, image.size.height > 0 else { return }
+            self.presentLongInspector(image)
+        }
+    }
+
+    private func presentLongInspector(_ image: NSImage) {
+        dismissLongInspector()
+        let vf = screen.visibleFrame
+        let scale = screen.backingScaleFactor
+        let ptW = image.size.width / scale                       // 成图 size 按像素存，换回点显示 1:1 清晰
+        let fitW = min(max(320, ptW), vf.width * 0.6)
+        let headerH: CGFloat = 40
+        let contentH = image.size.height / scale * (fitW / max(1, ptW)) + headerH
+        let h = min(contentH, vf.height * 0.85)
+        let host = NSHostingView(rootView: LongShotInspector(
+            image: image, fitWidth: fitW,
+            onClose: { [weak self] in self?.dismissLongInspector() }))
+        host.frame = NSRect(x: 0, y: 0, width: fitW, height: h)
+        let panel = NSPanel(contentRect: NSRect(x: vf.midX - fitW / 2, y: vf.midY - h / 2, width: fitW, height: h),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isOpaque = false; panel.backgroundColor = .clear; panel.hasShadow = true
+        panel.level = .screenSaver + 2                            // 压在控制条/结果条之上
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        panel.contentView = host
+        panel.orderFrontRegardless()
+        longInspectPanel = panel
+    }
+
+    private func dismissLongInspector() {
+        longInspectPanel?.orderOut(nil)
+        longInspectPanel = nil
     }
 
     /// 控制条定位：框右侧、垂直居中；右侧没空间（框贴近屏幕右缘）则放框左侧
@@ -1894,12 +1981,13 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     private func runOCR() {
         commitEditing()
+        guard ocrPanel == nil, hintView == nil, !recordingLong else { return }   // 防重入/与翻译、长截图互斥
         guard let sel = selection else { return }
         let scale = screen.backingScaleFactor
         let crop = CGRect(x: sel.minX * scale, y: (bounds.height - sel.maxY) * scale,
                           width: sel.width * scale, height: sel.height * scale)
         guard let cropped = cgImage.cropping(to: crop) else { return }
-        removeToolbar()
+        // 工具栏保持在场，识别结果面板浮在选区中央
         DispatchQueue.global(qos: .userInitiated).async {
             let text = Self.recognize(cropped)
             DispatchQueue.main.async { [weak self] in self?.showOCRPanel(text) }
@@ -1909,7 +1997,9 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private static func recognize(_ image: CGImage) -> String {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
-        request.recognitionLanguages = ["zh-Hans", "en-US"]
+        // 自动语言检测：日/韩/俄等非中英文字也能识别（翻译日文截图的前提）；语言表仅作偏好提示
+        request.automaticallyDetectsLanguage = true
+        request.recognitionLanguages = ["zh-Hans", "en-US", "ja-JP", "ko-KR"]
         request.usesLanguageCorrection = true
         try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
         let obs = (request.results as? [VNRecognizedTextObservation]) ?? []
@@ -1948,8 +2038,11 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     private func runTranslate() {
         commitEditing()
-        guard ocrPanel == nil, hintView == nil, let sel = selection else { return }
-        guard let (config, lang, prompt) = translateProvider(), !config.baseURL.isEmpty, !config.apiKey.isEmpty, !config.model.isEmpty else {
+        guard ocrPanel == nil, hintView == nil, !recordingLong, let sel = selection else { return }
+        guard let (config, lang, prompt) = translateProvider() else { return }
+        let aiReady = !config.baseURL.isEmpty && !config.apiKey.isEmpty && !config.model.isEmpty
+        let useSystem = config.useSystemEngine && SystemTranslator.isSupported
+        guard useSystem || aiReady else {
             showHint("翻译接口未配置（去设置→超级截图→翻译）")
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
                 self?.removeHint(); if let s = self?.selection { self?.showToolbar(for: s) }
@@ -1960,16 +2053,32 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         let crop = CGRect(x: sel.minX * scale, y: (bounds.height - sel.maxY) * scale,
                           width: sel.width * scale, height: sel.height * scale)
         guard let cropped = cgImage.cropping(to: crop) else { return }
-        removeToolbar()
-        showHint("翻译中…")
+        // 工具栏保持在场；翻译中的动效提示浮在选区中央
+        showHint("翻译中…", spinning: true)
         let outSize = sel.size
         translatePartial = nil
         Task {
             let blocks = Self.recognizeBlocks(cropped)
             if blocks.isEmpty { await MainActor.run { self.translateFailed("未识别到文字") }; return }
+            let texts = blocks.map { $0.text }
+            // 首选系统翻译（本机离线，整批毫秒级）；失败（语言包未装/语种不支持）静默降级到 AI
+            if useSystem {
+                do {
+                    let translations = try await SystemTranslator.translate(texts, targetLang: lang)
+                    let img = Self.renderTranslated(base: cropped, size: outSize, blocks: blocks, translations: translations)
+                    await MainActor.run { self.translateDone(img) }
+                    return
+                } catch {
+                    guard aiReady else {
+                        await MainActor.run { self.translateFailed(error.localizedDescription) }
+                        return
+                    }
+                    print("[ProNotch] 系统翻译失败，降级 AI: \(error.localizedDescription)")
+                }
+            }
             do {
                 let translations = try await ScreenshotTranslator.translate(
-                    blocks.map { $0.text }, to: lang, prompt: prompt, config: config,
+                    texts, to: lang, prompt: prompt, config: config,
                     onPartial: { [weak self] range, chunk, done, total in
                         // 渐进渲染：哪块先译完先贴回原图哪块，不等全部译完
                         Task { @MainActor in
@@ -1979,7 +2088,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                                 for (k, i) in range.enumerated() { acc[i] = chunk[k] }
                             }
                             self.translatePartial = acc
-                            if total > 1 { self.showHint("翻译中… \(done)/\(total)") }
+                            if total > 1 { self.showHint("翻译中… \(done)/\(total)", spinning: true) }
                             self.translatedOverride = Self.renderTranslated(base: cropped, size: outSize, blocks: blocks, translations: acc)
                             self.showingOriginal = false
                             self.needsDisplay = true
@@ -2022,29 +2131,62 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         }
     }
 
-    private func showHint(_ text: String) {
+    private func showHint(_ text: String, spinning: Bool = false) {
+        // 同形态提示已在场：只改文字（进度 n/m 刷新时转圈不重启、气泡不闪）
+        if let label = hintLabel, hintView != nil, hintSpinning == spinning {
+            label.stringValue = text
+            label.sizeToFit()
+            layoutHint(label)
+            return
+        }
         removeHint()
+        hintSpinning = spinning
         let label = NSTextField(labelWithString: text)
         label.font = NSFont.systemFont(ofSize: 14, weight: .medium)
         label.textColor = .white
         label.sizeToFit()
-        let w = label.frame.width + 28, h = label.frame.height + 18
-        let cx = selection?.midX ?? bounds.midX, cy = selection?.midY ?? bounds.midY   // 提示落在选区中央
-        let host = NSView(frame: NSRect(x: cx - w / 2, y: cy - h / 2, width: w, height: h))
+        let host = NSView(frame: .zero)
         host.wantsLayer = true
         host.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.85).cgColor
         host.layer?.cornerRadius = 8
-        label.setFrameOrigin(NSPoint(x: 14, y: 9))
+        if spinning {   // 翻译中：白色小转圈，让人一眼看出「在干活」而不是卡死
+            let spin = NSProgressIndicator()
+            spin.style = .spinning
+            spin.controlSize = .small
+            spin.isIndeterminate = true
+            spin.appearance = NSAppearance(named: .darkAqua)   // 深底上渲染成浅色
+            spin.sizeToFit()
+            spin.startAnimation(nil)
+            host.addSubview(spin)
+        }
         host.addSubview(label)
         addSubview(host)
         hintView = host
+        hintLabel = label
+        layoutHint(label)
     }
-    private func removeHint() { hintView?.removeFromSuperview(); hintView = nil }
+
+    /// 排版提示气泡：转圈(如有)+文字横排，气泡随文字宽度自适应、定位在选区中央
+    private func layoutHint(_ label: NSTextField) {
+        guard let host = hintView else { return }
+        let spinner = host.subviews.first { $0 is NSProgressIndicator }
+        let spinW: CGFloat = spinner.map { $0.frame.width + 8 } ?? 0
+        let w = label.frame.width + spinW + 28
+        let h = max(label.frame.height, spinner?.frame.height ?? 0) + 18
+        let cx = selection?.midX ?? bounds.midX, cy = selection?.midY ?? bounds.midY   // 提示落在选区中央
+        host.frame = NSRect(x: cx - w / 2, y: cy - h / 2, width: w, height: h)
+        spinner?.setFrameOrigin(NSPoint(x: 14, y: (h - (spinner?.frame.height ?? 0)) / 2))
+        label.setFrameOrigin(NSPoint(x: 14 + spinW, y: (h - label.frame.height) / 2))
+    }
+
+    private func removeHint() { hintView?.removeFromSuperview(); hintView = nil; hintLabel = nil }
 
     private static func recognizeBlocks(_ image: CGImage) -> [(text: String, box: CGRect)] {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
-        request.recognitionLanguages = ["zh-Hans", "en-US"]
+        // 自动语言检测：日/韩/俄等非中英文字也能识别（翻译日文截图的前提）；语言表仅作偏好提示
+        request.automaticallyDetectsLanguage = true
+        request.recognitionLanguages = ["zh-Hans", "en-US", "ja-JP", "ko-KR"]
         request.usesLanguageCorrection = true
         try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
         let obs = (request.results as? [VNRecognizedTextObservation]) ?? []

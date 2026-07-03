@@ -81,6 +81,8 @@ final class SettingsStore: ObservableObject {
     @Published var translateModel: String { didSet { UserDefaults.standard.set(translateModel, forKey: "translateModel") } }
     /// 并行加速：长文按块并发翻译（默认开）；接口对并发限流严格时可关掉走单请求
     @Published var translateParallel: Bool { didSet { UserDefaults.standard.set(translateParallel, forKey: "translateParallel") } }
+    /// 翻译引擎：system=系统翻译（macOS 15+，本机离线毫秒级）；ai=自填 AI 接口。系统引擎失败自动降级 AI
+    @Published var translateEngine: String { didSet { UserDefaults.standard.set(translateEngine, forKey: "translateEngine") } }
     /// 翻译提示词（可编辑）；其中 {lang} 翻译时替换为目标语言
     @Published var translatePrompt: String { didSet { UserDefaults.standard.set(translatePrompt, forKey: "translatePrompt") } }
 
@@ -155,6 +157,8 @@ final class SettingsStore: ObservableObject {
         translateBaseURL = UserDefaults.standard.string(forKey: "translateBaseURL") ?? ""
         translateModel = UserDefaults.standard.string(forKey: "translateModel") ?? ""
         translateParallel = UserDefaults.standard.object(forKey: "translateParallel") as? Bool ?? true
+        translateEngine = UserDefaults.standard.string(forKey: "translateEngine")
+            ?? (SystemTranslator.isSupported ? "system" : "ai")
         translatePrompt = UserDefaults.standard.string(forKey: "translatePrompt") ?? Self.defaultTranslatePrompt
         if let data = UserDefaults.standard.data(forKey: "screenshotShortcut") {
             screenshotShortcut = try? JSONDecoder().decode(ScreenshotShortcut.self, from: data)

@@ -71,6 +71,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // 清除早期 hooks.json 接入残留的「无 host」pronotch 孤儿（与接入与否无关，幂等）
         GlowHookInstaller.cleanCodexHooksOrphan()
 
+        // 系统翻译预热：翻译服务首次调用有数秒冷启动，启动时后台翻一个词把它焐热，
+        // 用户第一次截图翻译就是毫秒级
+        if settingsStore.translateEngine == "system", SystemTranslator.isSupported {
+            let lang = settingsStore.translateTargetLang
+            Task { _ = try? await SystemTranslator.translate(["Hi"], targetLang: lang) }
+        }
+
         // 超级截图全局快捷键：按下即唤起区域截图；在设置里改快捷键后重新注册
         SuperScreenshotController.shared.settings = settingsStore   // 翻译时惰性读配置
         screenshotHotKey.onTrigger = {
