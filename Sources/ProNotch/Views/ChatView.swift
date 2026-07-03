@@ -73,10 +73,14 @@ struct ChatView: View {
             .help(store.webSearchEnabled
                 ? "联网搜索已开启：先搜索再回答（点击关闭）"
                 : "联网搜索已关闭（点击开启）")
+            // 纵向可增长（最多 4 行）：粘贴带换行的内容（尤其开头空行）也能看到全部文字，
+            // 不再"看着像没粘上"。回车发送不变，⌥回车换行
             TextField("", text: $store.draftMessage,
                       prompt: Text("输入问题，回车发送")
-                          .foregroundColor(.white.opacity(0.3)))
+                          .foregroundColor(.white.opacity(0.3)),
+                      axis: .vertical)
                 .textFieldStyle(.plain)
+                .lineLimit(1...4)
                 .font(.system(size: 12))
                 .foregroundColor(.white)
                 .focused($inputFocused)

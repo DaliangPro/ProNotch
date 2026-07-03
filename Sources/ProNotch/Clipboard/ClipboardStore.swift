@@ -91,6 +91,55 @@ final class ClipboardStore: ObservableObject {
         print("[ProNotch] 已复制回剪贴板: \(item.kind == .text ? "文本" : "图片")")
     }
 
+    /// 多选合并复制（切换器用）：选了什么就复制什么，按时间顺序全部进剪贴板。
+    /// 混合内容编成「一条 RTFD 富文本（图片=内嵌附件）+ 纯文本备选」——剪贴板的多个独立对象
+    /// 语义是"备选表示"，富内容 App 只挑一个（往往是图，文字被丢）；单条 RTFD 才是
+    /// 混排内容的标准载体：富文本 App 粘出文字+图原顺序交错，纯文本框自动取合并文字。
+    /// 全图片选择则写多图对象（图片类 App 才认）。同步 changeCount 不触发自捕获
+    func copyMerged(_ selection: [ClipboardItem]) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        let texts = selection.compactMap { $0.kind == .text ? $0.text : nil }
+
+        if texts.isEmpty {
+            // 全是图片：多图对象写入
+            let images = selection.compactMap { item -> NSImage? in
+                guard let name = item.imageFileName else { return nil }
+                return NSImage(contentsOf: directory.appendingPathComponent(name))
+            }
+            guard !images.isEmpty else { return }
+            pb.writeObjects(images)
+            lastChangeCount = pb.changeCount
+            print("[ProNotch] 多选合并复制：图片 \(images.count) 张")
+            return
+        }
+
+        // 文字（或文字+图片）：按时间顺序交错编入一条富文本
+        let rich = NSMutableAttributedString()
+        var imageCount = 0
+        for (i, item) in selection.enumerated() {
+            switch item.kind {
+            case .text:
+                rich.append(NSAttributedString(string: item.text ?? ""))
+            case .image:
+                guard let name = item.imageFileName,
+                      let wrapper = try? FileWrapper(url: directory.appendingPathComponent(name)) else { continue }
+                rich.append(NSAttributedString(attachment: NSTextAttachment(fileWrapper: wrapper)))
+                imageCount += 1
+            }
+            if i < selection.count - 1 { rich.append(NSAttributedString(string: "\n")) }
+        }
+        let item = NSPasteboardItem()
+        if imageCount > 0,
+           let rtfd = rich.rtfd(from: NSRange(location: 0, length: rich.length), documentAttributes: [:]) {
+            item.setData(rtfd, forType: .rtfd)   // 富文本表示：文字+图片原顺序
+        }
+        item.setString(texts.joined(separator: "\n"), forType: .string)   // 纯文本备选
+        pb.writeObjects([item])
+        lastChangeCount = pb.changeCount
+        print("[ProNotch] 多选合并复制：文本 \(texts.count) 条 + 图片 \(imageCount) 张（RTFD）")
+    }
+
     /// 把任意文本写入剪贴板（话术库等外部来源用），同步 changeCount 不触发自捕获
     func copyExternal(text: String) {
         let pb = NSPasteboard.general

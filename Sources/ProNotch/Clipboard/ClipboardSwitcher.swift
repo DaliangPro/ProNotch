@@ -15,7 +15,11 @@ private final class ClipboardSwitcherPanel: NSPanel {
 final class ClipboardSwitcherController: NSObject, ObservableObject {
     static let shared = ClipboardSwitcherController()
 
-    @Published var selectedIndex = 0
+    @Published var selectedIndex = 0            // 键盘焦点（← → 移动）
+    @Published var selectedSet: Set<Int> = []   // 选中集合（单击=单选，⇧单击=多选）
+    @Published var copiedFlash: Int?            // 正在闪「已复制 ✓」的卡片索引
+    @Published var keyboardScrollTick = 0       // 仅键盘移动时滚动居中（鼠标点击不动卡片，避免落点错位）
+    private var anchorIndex = 0                 // 连选锚点（最近一次非 ⇧ 点击的位置）
 
     private var store: ClipboardStore?
     private var panel: NSPanel?
@@ -23,14 +27,14 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
     private var clickMonitor: Any?
     private var previousApp: NSRunningApplication?
 
-    private let panelSize = NSSize(width: 920, height: 360)
+    private let panelSize = NSSize(width: 920, height: 404)
 
     /// 注入数据源（AppDelegate 启动时调用）
     func configure(store: ClipboardStore) { self.store = store }
 
     /// 快捷键入口：已显示则收起，否则唤出（toggle）
     func toggle() {
-        if panel != nil { dismiss(paste: nil) } else { summon() }
+        if panel != nil { dismiss(copying: nil) } else { summon() }
     }
 
     // MARK: - 唤出 / 收起
@@ -39,6 +43,8 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
         guard let store, !store.items.isEmpty else { return }
         previousApp = NSWorkspace.shared.frontmostApplication      // 记住原前台 App，用于回填焦点 + 粘贴
         selectedIndex = 0
+        selectedSet = [0]
+        anchorIndex = 0
 
         let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main ?? NSScreen.screens.first
         let frame = screen.map { s -> NSRect in
@@ -63,38 +69,94 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
         installMonitors()
     }
 
-    private func dismiss(paste item: ClipboardItem?) {
+    private func dismiss(copying action: (() -> Void)? = nil, thenPaste: Bool = false) {
         removeMonitors()
         panel?.orderOut(nil)
         panel = nil
-        if let item { performPaste(item) }                         // 先收起再粘贴，避免粘到本面板
-        else { previousApp?.activate() }                           // 取消也把焦点还回去
+        if let action {
+            action()                                               // 先收起再写剪贴板，避免自捕获面板内容
+            previousApp?.activate()
+            if thenPaste, Self.ensureAccessibility() {             // 无辅助功能权限：仅复制，用户手动 ⌘V
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { Self.postCommandV() }
+            }
+        } else {
+            previousApp?.activate()                                // 取消也把焦点还回去
+        }
         previousApp = nil
     }
 
-    // MARK: - 操作
+    // MARK: - 选择 / 复制
 
     private func move(_ delta: Int) {
         guard let count = store?.items.count, count > 0 else { return }
         selectedIndex = min(max(selectedIndex + delta, 0), count - 1)
+        selectedSet = [selectedIndex]                              // 键盘移动回到单选
+        anchorIndex = selectedIndex
+        keyboardScrollTick += 1                                    // 只有键盘移动才滚动居中
     }
 
-    /// 确认（键盘回车用当前选中；鼠标点击传入对应 index）
-    func confirm(at index: Int? = nil) {
-        guard let store else { return }
-        let idx = index ?? selectedIndex
-        guard store.items.indices.contains(idx) else { dismiss(paste: nil); return }
-        dismiss(paste: store.items[idx])
+    /// 标准图标选择语义（同 Finder）：单击=单选；⌘单击=逐个加选/减选；⇧单击=锚点到当前的整段连选
+    func select(at idx: Int, command: Bool, shift: Bool) {
+        guard store?.items.indices.contains(idx) == true else { return }
+        if shift {
+            selectedSet = Set(min(anchorIndex, idx)...max(anchorIndex, idx))   // 连选：锚点不动
+        } else if command {
+            if selectedSet.contains(idx) { selectedSet.remove(idx) } else { selectedSet.insert(idx) }
+            if selectedSet.isEmpty { selectedSet = [idx] }         // 至少保留一个选中
+            anchorIndex = idx
+        } else {
+            selectedSet = [idx]
+            anchorIndex = idx
+        }
+        selectedIndex = idx
     }
 
-    // MARK: - 自动粘贴回原 App
+    /// 回车：当前选中（单条或多条合并）粘贴回原 App
+    func confirm() {
+        guard let action = makeCopyAction() else { dismiss(copying: nil); return }
+        dismiss(copying: action, thenPaste: true)
+    }
 
-    private func performPaste(_ item: ClipboardItem) {
-        store?.copyToPasteboard(item)                              // 无论能否自动粘贴，先放进剪贴板
-        previousApp?.activate()
-        guard Self.ensureAccessibility() else { return }           // 无辅助功能权限：仅复制，用户手动 ⌘V
-        // 等原 App 重新成为前台，再合成 ⌘V
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { Self.postCommandV() }
+    /// ⌘C：当前选中（单条或多条合并）复制到剪贴板并收起，不自动粘贴
+    func copySelection() {
+        guard let action = makeCopyAction() else { return }
+        dismiss(copying: action, thenPaste: false)
+    }
+
+    /// 卡片下的「复制」按钮：该卡在多选集合里则复制整个多选，否则只复制这一条。
+    /// 先原地亮「已复制 ✓」再收起——不无声关面板，用户明确知道复制发生了
+    func copyButtonTapped(at idx: Int) {
+        guard let store, store.items.indices.contains(idx), copiedFlash == nil else { return }
+        let action: (() -> Void)?
+        if selectedSet.count >= 2, selectedSet.contains(idx) {
+            action = makeCopyAction()
+        } else {
+            let item = store.items[idx]
+            action = { [weak store] in store?.copyToPasteboard(item) }
+        }
+        guard let action else { return }
+        action()                                   // copyToPasteboard/copyExternal 会同步 changeCount，不会自捕获
+        copiedFlash = idx
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self, self.panel != nil else { return }
+            self.copiedFlash = nil
+            self.dismiss(copying: nil)             // 已复制完，纯收起
+        }
+    }
+
+    /// 选中集合 → 复制动作：选了什么就复制什么。单条原样复制；多条按剪贴板时间顺序（旧→新）
+    /// 全部进剪贴板——文本合并为一段，图片作为独立对象一并写入
+    private func makeCopyAction() -> (() -> Void)? {
+        guard let store else { return nil }
+        let valid = (selectedSet.isEmpty ? [selectedIndex] : Array(selectedSet))
+            .filter { store.items.indices.contains($0) }
+        guard !valid.isEmpty else { return nil }
+        if valid.count == 1, let i = valid.first {
+            let item = store.items[i]
+            return { [weak store] in store?.copyToPasteboard(item) }
+        }
+        let ordered = valid.sorted(by: >).map { store.items[$0] } // items[0] 最新 → 索引降序 = 时间旧→新
+        return { [weak store] in store?.copyMerged(ordered) }
     }
 
     private static func postCommandV() {
@@ -123,15 +185,22 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
                 switch Int(event.keyCode) {
                 case kVK_LeftArrow:  self.move(-1); return nil
                 case kVK_RightArrow: self.move(1);  return nil
+                case kVK_ANSI_C where event.modifierFlags.contains(.command):
+                    self.copySelection(); return nil               // ⌘C：复制选中（多选=合并）
                 case kVK_Return, kVK_ANSI_KeypadEnter: self.confirm(); return nil
-                case kVK_Escape:     self.dismiss(paste: nil); return nil
+                case kVK_Escape:     self.dismiss(copying: nil); return nil
                 default: return event
                 }
             }
         }
         // 点面板之外 → 收起（全局监听其他 App 的点击；本面板内点击由卡片自身处理）
         clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.dismiss(paste: nil) }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                // 防御：点在面板范围内不算「点外面」（任何路由边界情形都不误关）
+                if let f = self.panel?.frame, f.contains(NSEvent.mouseLocation) { return }
+                self.dismiss(copying: nil)
+            }
         }
     }
 
@@ -142,6 +211,9 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
 }
 
 // MARK: - 视图
+
+/// 选中强调色：固定粉色（不跟随系统强调色变化）
+private let switcherAccent = Color(red: 0.97, green: 0.31, blue: 0.62)
 
 private let switcherTimeFormatter: RelativeDateTimeFormatter = {
     let f = RelativeDateTimeFormatter()
@@ -162,7 +234,7 @@ struct ClipboardSwitcherView: View {
                     .font(.system(size: 13, weight: .semibold)).foregroundColor(.white.opacity(0.9))
                 Text("剪贴板").font(.system(size: 14, weight: .semibold)).foregroundColor(.white)
                 Spacer()
-                Text("← → 选择   ↩ 粘贴   esc 取消")
+                Text("单击 选中 · ⌘单击 多选 · ⇧单击 连选 · ↩ 粘贴 · ⌘C 复制 · esc 取消")
                     .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
             }
             .padding(.horizontal, 18).padding(.top, 14).padding(.bottom, 10)
@@ -171,19 +243,41 @@ struct ClipboardSwitcherView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 12) {
                         ForEach(Array(store.items.enumerated()), id: \.element.id) { idx, item in
-                            ClipboardCard(item: item, selected: idx == controller.selectedIndex)
-                                .id(idx)
-                                .onTapGesture { controller.confirm(at: idx) }
+                            VStack(spacing: 6) {
+                                ClipboardCard(item: item, selected: controller.selectedSet.contains(idx))
+                                    .onTapGesture {
+                                        // 标准图标选择：单击=单选；⌘单击=逐个多选；⇧单击=连选整段
+                                        let mods = NSEvent.modifierFlags
+                                        controller.select(at: idx,
+                                                          command: mods.contains(.command),
+                                                          shift: mods.contains(.shift))
+                                    }
+                                Button {
+                                    controller.copyButtonTapped(at: idx)
+                                } label: {
+                                    Text(controller.copiedFlash == idx ? "已复制 ✓" : "复制")
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundColor(.white.opacity(0.95))
+                                        .padding(.horizontal, 18).padding(.vertical, 4)
+                                        .background(Capsule().fill(
+                                            controller.copiedFlash == idx ? Color.green.opacity(0.75)
+                                                : controller.selectedSet.contains(idx)
+                                                    ? switcherAccent.opacity(0.55) : Color.white.opacity(0.12)))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .id(idx)
                         }
                     }
-                    .padding(.horizontal, 18).padding(.bottom, 18)
+                    .padding(.horizontal, 18).padding(.bottom, 16)
                 }
-                .onChange(of: controller.selectedIndex) { _, new in
-                    withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo(new, anchor: .center) }
+                .onChange(of: controller.keyboardScrollTick) { _, _ in
+                    // 只有键盘 ← → 才滚动居中；鼠标点击不动卡片（点击后卡片位移会导致下一次点击落点错位）
+                    withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo(controller.selectedIndex, anchor: .center) }
                 }
             }
         }
-        .frame(width: 920, height: 360)
+        .frame(width: 920, height: 404)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(Color.black.opacity(0.92)))
@@ -220,7 +314,7 @@ private struct ClipboardCard: View {
                 .fill(Color.white.opacity(selected ? 0.16 : 0.06)))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(selected ? Color.accentColor : Color.white.opacity(0.08),
+                .strokeBorder(selected ? switcherAccent : Color.white.opacity(0.08),
                               lineWidth: selected ? 2 : 0.5))
         .scaleEffect(selected ? 1.0 : 0.97)
         .animation(.easeOut(duration: 0.15), value: selected)
