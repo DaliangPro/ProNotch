@@ -81,29 +81,44 @@ final class ChatStore: ObservableObject {
         let defaults = UserDefaults.standard
         Self.migrateKeysToKeychainIfNeeded()
         let savedURL = defaults.string(forKey: "chatBaseURL") ?? ""
-        // 迁移后 UserDefaults 里只剩测试参数域（-chatAPIKey）可能有值，
-        // 真实 Key 一律从钥匙串读取
-        let savedKey = defaults.string(forKey: "chatAPIKey")
-            ?? KeychainStore.read("chatAPIKey") ?? ""
         let savedModel = defaults.string(forKey: "chatModel") ?? ""
         baseURL = savedURL
-        apiKey = savedKey
         model = savedModel
         draftBaseURL = savedURL
-        draftAPIKey = savedKey
         draftModel = savedModel
-        let savedTavily = defaults.string(forKey: "chatTavilyKey")
-            ?? KeychainStore.read("chatTavilyKey") ?? ""
-        tavilyKey = savedTavily
-        draftTavilyKey = savedTavily
-        let savedBrave = defaults.string(forKey: "chatBraveKey")
-            ?? KeychainStore.read("chatBraveKey") ?? ""
-        braveKey = savedBrave
-        draftBraveKey = savedBrave
+        // Key 先取测试参数域（-chatAPIKey 等，迁移后 UserDefaults 只剩这一来源）；
+        // 真实 Key 在钥匙串里，同步读会在重签后的首启弹授权框并阻塞主线程（历史启动卡死根源），
+        // 改为 init 后台回填（毫秒级完成）
+        let testKey = defaults.string(forKey: "chatAPIKey") ?? ""
+        apiKey = testKey
+        draftAPIKey = testKey
+        let testTavily = defaults.string(forKey: "chatTavilyKey") ?? ""
+        tavilyKey = testTavily
+        draftTavilyKey = testTavily
+        let testBrave = defaults.string(forKey: "chatBraveKey") ?? ""
+        braveKey = testBrave
+        draftBraveKey = testBrave
         let savedEngine = defaults.string(forKey: "chatSearchEngine") ?? SearchEngine.duckduckgo.rawValue
         searchEngine = savedEngine
         draftSearchEngine = savedEngine
         webSearchEnabled = defaults.bool(forKey: "chatWebSearchEnabled")
+        loadKeysFromKeychain()
+    }
+
+    /// 后台线程读取钥匙串回填三个 Key：不阻塞主线程，重签后首启的授权弹框也不再卡住刘海出现。
+    /// 测试参数域已注入的值优先，不覆盖
+    private func loadKeysFromKeychain() {
+        Task.detached(priority: .userInitiated) {
+            let api = KeychainStore.read("chatAPIKey") ?? ""
+            let tavily = KeychainStore.read("chatTavilyKey") ?? ""
+            let brave = KeychainStore.read("chatBraveKey") ?? ""
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if self.apiKey.isEmpty { self.apiKey = api; self.draftAPIKey = api }
+                if self.tavilyKey.isEmpty { self.tavilyKey = tavily; self.draftTavilyKey = tavily }
+                if self.braveKey.isEmpty { self.braveKey = brave; self.draftBraveKey = brave }
+            }
+        }
     }
 
     /// 历史版本把 Key 明文存在 UserDefaults：首次启动搬进钥匙串并抹掉明文
