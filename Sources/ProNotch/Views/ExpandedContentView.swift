@@ -127,12 +127,9 @@ struct ExpandedContentView: View {
             }
             .notchTip("超级截图")
         case .appSettings:
-            StripButton(icon: "gearshape",
-                        help: "打开 ProNotch 设置") {
-                quickActions.openAppSettings()
-                vm.collapseNow()
-            }
-            .notchTip("打开设置")
+            // 不可达：设置入口已固定在防休眠右侧，上游 ForEach 过滤了本枚举值；
+            // 枚举值本身保留（拖动顺序的持久化数据里含它，删会破坏旧用户已存顺序）
+            EmptyView()
         case .lockScreen:
             StripButton(icon: "lock",
                         help: "熄屏锁定") {
