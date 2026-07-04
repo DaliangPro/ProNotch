@@ -83,8 +83,8 @@ enum ScreenshotTranslator {
     }
 
     /// 这串文字「看起来该被翻译」：含拉丁词、字母占比可观，且不是 URL/路径——
-    /// 纯数字、时间、代码符号原样回传是对的，不算漏翻
-    private static func looksTranslatable(_ s: String) -> Bool {
+    /// 纯数字、时间、代码符号原样回传是对的，不算漏翻（internal 供测试）
+    static func looksTranslatable(_ s: String) -> Bool {
         let t = s.trimmingCharacters(in: .whitespaces)
         guard t.count >= 2 else { return false }
         let lower = t.lowercased()
@@ -94,8 +94,8 @@ enum ScreenshotTranslator {
         return t.range(of: "[A-Za-z]{2,}", options: .regularExpression) != nil
     }
 
-    /// 按累计字数（约 budget 字符）切成连续区间，至少 1 条/块——块内保持阅读顺序上下文
-    private static func chunkRanges(_ texts: [String], budget: Int) -> [Range<Int>] {
+    /// 按累计字数（约 budget 字符）切成连续区间，至少 1 条/块——块内保持阅读顺序上下文（internal 供测试）
+    static func chunkRanges(_ texts: [String], budget: Int) -> [Range<Int>] {
         var ranges: [Range<Int>] = []
         var start = 0, chars = 0
         for (i, t) in texts.enumerated() {
