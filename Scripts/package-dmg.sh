@@ -3,6 +3,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# 回归测试闸门：核心逻辑（拼接/版本比较/翻译分块/语言映射）不过关不出包
+echo "回归测试…"
+if ! TEST_OUT=$(swift test 2>&1); then
+    echo "$TEST_OUT" | tail -20
+    echo "❌ 回归测试未通过，中止打包"
+    exit 1
+fi
+echo "✅ 回归测试通过（$(echo "$TEST_OUT" | grep -oE "Executed [0-9]+ tests, with [0-9]+ failures" | tail -1)）"
+
 ./Scripts/build-app.sh release universal
 
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
