@@ -180,18 +180,20 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
 
     private func installMonitors() {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event -> NSEvent? in
-            MainActor.assumeIsolated {                              // 本地监听必在主线程触发，同步处理并返回
-                guard let self else { return event }
+            // 本地监听必在主线程触发；assumeIsolated 只回传 Bool（NSEvent 非 Sendable，不能跨隔离边界返回）
+            let handled = MainActor.assumeIsolated { () -> Bool in
+                guard let self else { return false }
                 switch Int(event.keyCode) {
-                case kVK_LeftArrow:  self.move(-1); return nil
-                case kVK_RightArrow: self.move(1);  return nil
+                case kVK_LeftArrow:  self.move(-1); return true
+                case kVK_RightArrow: self.move(1);  return true
                 case kVK_ANSI_C where event.modifierFlags.contains(.command):
-                    self.copySelection(); return nil               // ⌘C：复制选中（多选=合并）
-                case kVK_Return, kVK_ANSI_KeypadEnter: self.confirm(); return nil
-                case kVK_Escape:     self.dismiss(copying: nil); return nil
-                default: return event
+                    self.copySelection(); return true              // ⌘C：复制选中（多选=合并）
+                case kVK_Return, kVK_ANSI_KeypadEnter: self.confirm(); return true
+                case kVK_Escape:     self.dismiss(copying: nil); return true
+                default: return false
                 }
             }
+            return handled ? nil : event
         }
         // 点面板之外 → 收起（全局监听其他 App 的点击；本面板内点击由卡片自身处理）
         clickMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
