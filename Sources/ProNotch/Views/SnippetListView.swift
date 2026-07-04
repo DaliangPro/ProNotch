@@ -80,7 +80,7 @@ struct SnippetListView: View {
         }
         .padding(.horizontal, edgeInset)
         .onAppear { editorFocused = true }
-        .onChange(of: editorFocused) { vm.keyboardHold = $0 }
+        .onChange(of: editorFocused) { _, v in vm.keyboardHold = v }
     }
 }
 

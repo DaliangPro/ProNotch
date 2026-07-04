@@ -29,7 +29,7 @@ struct LauncherSearchField: View {
         .background(Capsule().fill(Color.white.opacity(focused ? 0.14 : 0.08)))
         .frame(width: 190)
         .help("回车启动第一个结果，Esc 清空")
-        .onChange(of: focused) { vm.keyboardHold = $0 }
+        .onChange(of: focused) { _, v in vm.keyboardHold = v }
         .onDisappear { vm.keyboardHold = false }
     }
 

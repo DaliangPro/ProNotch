@@ -25,7 +25,7 @@ struct CaptureView: View {
                     .padding(.top, 10)
                     .padding(.bottom, 8)
                     .focused($focused)
-                    .onChange(of: focused) { vm.keyboardHold = $0 }
+                    .onChange(of: focused) { _, v in vm.keyboardHold = v }
                 // 自绘占位文字：比正文小一号且用细体，与正文起点对齐
                 if store.draft.isEmpty {
                     Text("记下一闪而过的灵感，回车换行，写完点存入")

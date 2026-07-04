@@ -51,7 +51,7 @@ struct ChatView: View {
                 }
                 .padding(.horizontal, edgeInset)
             }
-            .onChange(of: store.messages.last?.content) { _ in
+            .onChange(of: store.messages.last?.content) { _, _ in
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
             .onAppear {
@@ -85,7 +85,7 @@ struct ChatView: View {
                 .foregroundColor(.white)
                 .focused($inputFocused)
                 .onSubmit { sendDraft() }
-                .onChange(of: inputFocused) { vm.keyboardHold = $0 }
+                .onChange(of: inputFocused) { _, v in vm.keyboardHold = v }
             if store.isStreaming {
                 Button {
                     store.stopStreaming()
@@ -322,7 +322,7 @@ struct ChatSettingsForm: View {
             }
         }
         .padding(.horizontal, edgeInset)
-        .onChange(of: focusedField) { onFocusChange?($0 != nil) }
+        .onChange(of: focusedField) { _, v in onFocusChange?(v != nil) }
         .onDisappear { onFocusChange?(false) }
     }
 
