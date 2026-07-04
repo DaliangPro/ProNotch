@@ -1694,7 +1694,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         }
     }
 
-    private static func framesStable(_ a: CGImage, _ b: CGImage) -> Bool {
+    nonisolated private static func framesStable(_ a: CGImage, _ b: CGImage) -> Bool {
         func sig(_ cg: CGImage) -> [UInt8]? {
             let s = 40
             guard let ctx = CGContext(data: nil, width: s, height: s, bitsPerComponent: 8, bytesPerRow: s,
