@@ -110,9 +110,14 @@ struct ExpandedContentView: View {
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 16)
-        // 内容常驻后不会再 onDisappear，改为收起时清空搜索词
+        // 内容常驻后 onAppear/onDisappear 只触发一次，面板级事件改挂展开状态：
+        // 展开时重扫应用列表（新装 App 才能及时出现），收起时清空搜索词
         .onChange(of: vm.isExpanded) { _, expanded in
-            if !expanded { launcherStore.searchText = "" }
+            if expanded {
+                launcherStore.refreshIfNeeded()
+            } else {
+                launcherStore.searchText = ""
+            }
         }
     }
 
