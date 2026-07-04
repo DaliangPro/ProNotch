@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 /// 轻量版本更新检查：访问 GitHub 最新 Release，与当前版本比较。
 /// 只做"提醒"，不下载、不安装——发现新版后引导用户去 Releases 页面手动下载。
@@ -130,5 +131,43 @@ final class UpdateChecker: ObservableObject {
             if x != y { return x > y }
         }
         return false
+    }
+}
+
+/// 检查更新结果窗（系统弹窗同款式：应用图标 + 标题 + 说明 + 「好」按钮，点按钮才关）。
+/// 关键差别：非模态——NSAlert.runModal 会接管事件循环，弹着时截图等全局快捷键全部失灵；
+/// 本窗是普通浮动窗口，弹着时一切照常，还能被截图分享
+struct UpdateAlertView: View {
+    let title: String
+    let detail: String
+    let onOK: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            if let icon = NSApp.applicationIconImage {
+                Image(nsImage: icon).resizable().frame(width: 56, height: 56)
+            }
+            Text(title)
+                .font(.system(size: 13, weight: .bold))
+                .multilineTextAlignment(.center)
+            Text(detail)
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(action: onOK) {
+                Text("好").font(.system(size: 13, weight: .medium))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 3)
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+        }
+        .padding(20)
+        .frame(width: 262)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(Color(nsColor: .windowBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(Color.primary.opacity(0.15), lineWidth: 0.5))
     }
 }

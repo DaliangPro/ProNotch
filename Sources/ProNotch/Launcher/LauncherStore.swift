@@ -79,6 +79,7 @@ final class LauncherStore: ObservableObject {
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
         NSWorkspace.shared.openApplication(at: app.url, configuration: config)
+        lastScan = .distantPast   // 「新装未用」用过即回默认排序：下次展开立刻重扫重排
     }
 
     func isPinned(_ app: AppEntry) -> Bool {
@@ -115,6 +116,21 @@ final class LauncherStore: ObservableObject {
                 ?? AppEntry(url: URL(fileURLWithPath: path), name: fm.displayName(atPath: path))
         }
         print("[ProNotch] 应用扫描完成：全部 \(allApps.count) 个，置顶 \(pinned.count) 个")
+        prewarmIcons(apps)
+    }
+
+    /// 后台分批预热图标缓存（取图 + 圆角遮罩渲染都有首次成本）：
+    /// 懒加载网格滚到新行才现场渲染会卡前几下，启动后空闲时先焐热就顺了
+    private func prewarmIcons(_ apps: [AppEntry]) {
+        Task(priority: .utility) { @MainActor in
+            for (i, app) in apps.enumerated() {
+                _ = AppIconCache.icon(for: app.url)
+                if i % 8 == 7 {   // 每 8 个让出主线程，不与交互抢帧
+                    await Task.yield()
+                    try? await Task.sleep(nanoseconds: 15_000_000)
+                }
+            }
+        }
     }
 
     /// 递归扫描（最深两层子目录）：覆盖 Chrome Apps.localized 这类嵌套安装，
@@ -146,8 +162,35 @@ final class LauncherStore: ObservableObject {
                 }
             }
         }
-        return result.sorted {
-            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        // 「新装未用」置顶：7 天内加入、且装完还没打开过的 App 排最前（新→旧），
+        // 方便第一时间启用；用过一次即回到默认名称排序
+        let now = Date()
+        let metas = result.map { ($0, installMeta($0.url)) }
+        let fresh = metas
+            .filter { now.timeIntervalSince($0.1.added) < 7 * 86400
+                      && ($0.1.lastUsed ?? .distantPast) <= $0.1.added }
+            .sorted { $0.1.added > $1.1.added }
+            .map(\.0)
+        let freshIDs = Set(fresh.map(\.id))
+        let rest = metas.map(\.0)
+            .filter { !freshIDs.contains($0.id) }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        return fresh + rest
+    }
+
+    /// App 的加入时间与最近使用时间（Spotlight 元数据，免权限；索引缺失退回文件系统时间）。
+    /// lastUsed ≤ added 视为「装完没用过」（重装/更新后未打开也算新）
+    private nonisolated static func installMeta(_ url: URL) -> (added: Date, lastUsed: Date?) {
+        var added = Date.distantPast
+        var used: Date?
+        if let item = MDItemCreateWithURL(kCFAllocatorDefault, url as CFURL) {
+            if let d = MDItemCopyAttribute(item, kMDItemDateAdded) as? Date { added = d }
+            used = MDItemCopyAttribute(item, kMDItemLastUsedDate) as? Date
         }
+        if added == .distantPast {
+            let vals = try? url.resourceValues(forKeys: [.addedToDirectoryDateKey, .creationDateKey])
+            added = vals?.addedToDirectoryDate ?? vals?.creationDate ?? .distantPast
+        }
+        return (added, used)
     }
 }

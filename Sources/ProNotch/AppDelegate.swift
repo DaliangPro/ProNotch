@@ -1,6 +1,12 @@
 import AppKit
 import SwiftUI
 import UserNotifications
+import ScreenCaptureKit
+
+/// 可成为 key 的无边框面板：承载「检查更新」结果窗（按钮可点、回车可关）
+private final class UpdateAlertPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
@@ -12,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let updateChecker = UpdateChecker()
     private var updateMenuItem: NSMenuItem?
     private var updateSeparator: NSMenuItem?
+    private var updateResultPanel: NSPanel?         // 检查更新结果窗（非模态，点「好」关闭）
     /// 超级截图全局快捷键（Carbon RegisterEventHotKey）
     private let screenshotHotKey = GlobalHotKey(id: 1)
     /// 剪贴板切换器全局快捷键
@@ -76,6 +83,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if settingsStore.translateEngine == "system", SystemTranslator.isSupported {
             let lang = settingsStore.translateTargetLang
             Task { _ = try? await SystemTranslator.translate(["Hi"], targetLang: lang) }
+        }
+
+        // 截屏服务预热：首次调 SCShareableContent 要冷启动 ScreenCaptureKit 守护进程连接
+        // （几百毫秒），启动后空闲时焐热，用户第一次按截图快捷键就不卡
+        Task.detached(priority: .utility) {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            _ = try? await SCShareableContent.current
         }
 
         // 超级截图全局快捷键：按下即唤起区域截图；在设置里改快捷键后重新注册
@@ -550,18 +564,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if let release {
             notifyUpdate(release)
         } else if manual {
-            let alert = NSAlert()
-            NSApp.activate(ignoringOtherApps: true)
+            // 非模态结果窗：NSAlert.runModal 会接管事件循环，弹着时截图快捷键等全部失灵；
+            // 这里用同款式的普通浮动窗口，弹着时一切照常（还能被截图分享）
             if let err = updateChecker.lastError {
-                alert.messageText = "检查更新失败"
-                alert.informativeText = err
+                showUpdateResultWindow(title: "检查更新失败", detail: err)
             } else {
-                alert.messageText = "已是最新版本"
-                alert.informativeText = "当前 \(updateChecker.currentVersion) 已是最新。"
+                showUpdateResultWindow(title: "已是最新版本",
+                                       detail: "当前 \(updateChecker.currentVersion) 已是最新。")
             }
-            alert.addButton(withTitle: "好")
-            alert.runModal()
         }
+    }
+
+    /// 系统弹窗同款式的非模态结果窗：屏幕中央偏上，点「好」或回车关闭
+    private func showUpdateResultWindow(title: String, detail: String) {
+        updateResultPanel?.orderOut(nil)
+        let host = NSHostingView(rootView: UpdateAlertView(title: title, detail: detail) { [weak self] in
+            self?.updateResultPanel?.orderOut(nil)
+            self?.updateResultPanel = nil
+        })
+        let size = host.fittingSize
+        host.frame = NSRect(origin: .zero, size: size)
+        let panel = UpdateAlertPanel(contentRect: host.frame, styleMask: [.borderless],
+                                     backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.level = .floating
+        panel.contentView = host
+        let sf = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? .zero
+        panel.setFrameOrigin(NSPoint(x: sf.midX - size.width / 2,
+                                     y: sf.midY - size.height / 2 + sf.height * 0.12))
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        updateResultPanel = panel
     }
 
     private func refreshUpdateMenuItem() {

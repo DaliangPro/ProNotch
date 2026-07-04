@@ -18,7 +18,7 @@ struct ExpandedContentView: View {
     var body: some View {
         VStack(spacing: 10) {
             // 刘海两侧的快捷操作区（中间给真实刘海让位）：
-            // 左侧 = 一次性动作（截图 / 锁屏）+ 防休眠开关；设置入口已移至菜单栏图标
+            // 左侧 = 一次性动作（截图 / 锁屏）+ 防休眠开关（图标式）+ 设置入口
             // 右侧 = 系统外观切换 + Agent 完成提醒总开关
             HStack(spacing: 0) {
                 HStack(spacing: 6) {
@@ -37,8 +37,8 @@ struct ExpandedContentView: View {
                                         dragged: $draggedAction,
                                         store: quickActions))
                     }
-                    // 防休眠（状态类开关）从右侧移来，与截图 / 锁屏同列
-                    StripToggle(title: "防休眠",
+                    // 防休眠（状态类开关）：图标式咖啡杯，开启态青色
+                    StripToggle(icon: quickActions.caffeinateActive ? "cup.and.saucer.fill" : "cup.and.saucer",
                                 active: quickActions.caffeinateActive,
                                 help: quickActions.caffeinateActive
                                     ? "防休眠已开启（点击关闭）"
@@ -46,6 +46,14 @@ struct ExpandedContentView: View {
                                       + "合盖不睡需接电源 + 外接屏（系统合盖模式）") {
                         quickActions.toggleCaffeinate()
                     }
+                    .notchTip(quickActions.caffeinateActive ? "防休眠 · 已开启" : "防休眠")
+                    // 设置入口：固定在防休眠右侧
+                    StripButton(icon: "gearshape",
+                                help: "打开 ProNotch 设置") {
+                        quickActions.openAppSettings()
+                        vm.collapseNow()
+                    }
+                    .notchTip("打开设置")
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
@@ -102,7 +110,10 @@ struct ExpandedContentView: View {
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 16)
-        .onDisappear { launcherStore.searchText = "" }
+        // 内容常驻后不会再 onDisappear，改为收起时清空搜索词
+        .onChange(of: vm.isExpanded) { _, expanded in
+            if !expanded { launcherStore.searchText = "" }
+        }
     }
 
     @ViewBuilder
@@ -343,8 +354,9 @@ private struct ClipboardSectionToggle: View {
 }
 
 /// 纯文字开关胶囊：开启时整体点亮青色
+/// 图标式状态开关（防休眠等）：与 StripButton 同款圆形，激活态青色
 private struct StripToggle: View {
-    let title: String
+    let icon: String
     let active: Bool
     let help: String
     let action: () -> Void
@@ -353,16 +365,14 @@ private struct StripToggle: View {
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(active ? .cyan : .white.opacity(hovering ? 0.9 : 0.55))
-                .padding(.horizontal, 12)
-                // 与外观滑动开关等高（26pt），并排不突兀
-                .frame(height: 26)
-                .background(Capsule().fill(
+            Image(systemName: icon)
+                .font(.system(size: 14))
+                .foregroundColor(active ? .cyan : .white.opacity(hovering ? 0.9 : 0.5))
+                .frame(width: 28, height: 28)
+                .background(Circle().fill(
                     active ? Color.cyan.opacity(0.18)
-                           : Color.white.opacity(hovering ? 0.12 : 0.06)))
-                .contentShape(Capsule())
+                           : Color.white.opacity(hovering ? 0.12 : 0)))
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
