@@ -76,7 +76,7 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
         if let action {
             action()                                               // 先收起再写剪贴板，避免自捕获面板内容
             previousApp?.activate()
-            if thenPaste, Self.ensureAccessibility() {             // 无辅助功能权限：仅复制，用户手动 ⌘V
+            if thenPaste, AXPermission.ensure() {             // 无辅助功能权限：仅复制，用户手动 ⌘V
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { Self.postCommandV() }
             }
         } else {
@@ -168,12 +168,6 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
         up?.flags = .maskCommand
         down?.post(tap: .cghidEventTap)
         up?.post(tap: .cghidEventTap)
-    }
-
-    private static func ensureAccessibility() -> Bool {
-        if AXIsProcessTrusted() { return true }
-        let opt = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        return AXIsProcessTrustedWithOptions(opt)
     }
 
     // MARK: - 监听

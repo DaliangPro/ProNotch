@@ -1468,7 +1468,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         commitEditing()
         guard ocrPanel == nil, hintView == nil, !recordingLong else { return }   // OCR/翻译中或已在录制：忽略
         guard let sel = selection, sel.width > 24, sel.height > 80 else { return }
-        guard Self.ensureAccessibility() else { return }   // 未授权：已弹系统授权框，本次不进入
+        guard AXPermission.ensure() else { return }   // 未授权：已弹系统授权框，本次不进入
         // 工具栏保持在场（选方向阶段还能反悔）；真正开始录制时才隐藏
         tool = .none; selected = nil; activeMarker = nil; markerGrab = nil
         longCaptureRect = sel
@@ -1808,12 +1808,6 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
 
     /// 确认/申请辅助功能权限（合成滚轮事件需要）
-    private static func ensureAccessibility() -> Bool {
-        if AXIsProcessTrusted() { return true }
-        let opt = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-        return AXIsProcessTrustedWithOptions(opt)
-    }
-
     /// 完成：停循环 → 取拼好的长图 → 进入「选择输出」态（带预览）
     private func finishLongShot() {
         longActive = false
