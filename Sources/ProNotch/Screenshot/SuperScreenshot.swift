@@ -1996,7 +1996,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         request.recognitionLanguages = ["zh-Hans", "en-US", "ja-JP", "ko-KR"]
         request.usesLanguageCorrection = true
         try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
-        let obs = (request.results as? [VNRecognizedTextObservation]) ?? []
+        let obs = request.results ?? []
         // 按阅读顺序排：上方在前（y 大），同一行内左侧在前
         let sorted = obs.sorted { a, b in
             if abs(a.boundingBox.midY - b.boundingBox.midY) > 0.012 { return a.boundingBox.midY > b.boundingBox.midY }
@@ -2183,7 +2183,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         request.recognitionLanguages = ["zh-Hans", "en-US", "ja-JP", "ko-KR"]
         request.usesLanguageCorrection = true
         try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])
-        let obs = (request.results as? [VNRecognizedTextObservation]) ?? []
+        let obs = request.results ?? []
         return obs.compactMap { o in
             guard let t = o.topCandidates(1).first?.string, !t.isEmpty else { return nil }
             return (t, o.boundingBox)
