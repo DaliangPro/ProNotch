@@ -617,16 +617,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func notifyUpdate(_ release: UpdateChecker.Release) {
-        let center = UNUserNotificationCenter.current()
-        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+        let version = release.version
+        let urlString = release.url.absoluteString
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
             guard granted else { return }
+            // 回调在任意线程：中心实例在闭包内现取（单例），不跨 @Sendable 边界捕获非 Sendable 对象
             let content = UNMutableNotificationContent()
             content.title = "ProNotch 有新版本"
-            content.body = "\(release.version) 可更新，点击前往下载。"
-            content.userInfo = ["url": release.url.absoluteString]
+            content.body = "\(version) 可更新，点击前往下载。"
+            content.userInfo = ["url": urlString]
             let request = UNNotificationRequest(
-                identifier: "pronotch.update.\(release.version)", content: content, trigger: nil)
-            center.add(request)
+                identifier: "pronotch.update.\(version)", content: content, trigger: nil)
+            UNUserNotificationCenter.current().add(request)
         }
     }
 
