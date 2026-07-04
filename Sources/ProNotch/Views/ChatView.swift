@@ -74,9 +74,9 @@ struct ChatView: View {
                 ? "联网搜索已开启：先搜索再回答（点击关闭）"
                 : "联网搜索已关闭（点击开启）")
             // 纵向可增长（最多 4 行）：粘贴带换行的内容（尤其开头空行）也能看到全部文字，
-            // 不再"看着像没粘上"。回车发送不变，⌥回车换行
+            // 不再"看着像没粘上"。回车发送，⌘回车换行（IM 习惯；系统自带的 ⌥回车也保留）
             TextField("", text: $store.draftMessage,
-                      prompt: Text("输入问题，回车发送")
+                      prompt: Text("输入问题，回车发送 · ⌘回车换行")
                           .foregroundColor(.white.opacity(0.3)),
                       axis: .vertical)
                 .textFieldStyle(.plain)
@@ -85,6 +85,15 @@ struct ChatView: View {
                 .foregroundColor(.white)
                 .focused($inputFocused)
                 .onSubmit { sendDraft() }
+                .onKeyPress(.return, phases: .down) { press in
+                    // ⌘回车 = 在光标处插入换行（走字段编辑器，与 ⌥回车同一原生路径）
+                    guard press.modifiers.contains(.command) else { return .ignored }
+                    if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
+                        editor.insertNewlineIgnoringFieldEditor(nil)
+                        return .handled
+                    }
+                    return .ignored
+                }
                 .onChange(of: inputFocused) { _, v in vm.keyboardHold = v }
             if store.isStreaming {
                 Button {
