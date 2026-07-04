@@ -209,6 +209,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NotificationCenter.default.addObserver(
             self, selector: #selector(openSettings),
             name: NSNotification.Name("ProNotchOpenSettings"), object: nil)
+
+        // 截图问 AI：截图工具栏发来图片 → 挂为闪问附件，展开刘海到闪问页等提问
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ProNotchAskAIWithImage"),
+            object: nil, queue: .main) { [weak self] note in
+            let img = note.object as? NSImage
+            Task { @MainActor in
+                guard let self, let img else { return }
+                self.chatStore.attachScreenshot(img)
+                if let wc = self.windowControllers.first {
+                    wc.viewModel.activeTab = .chat
+                    wc.viewModel.expandProgrammatically()
+                }
+                // 展开动画落定、面板成为 key 后再补一次聚焦，保证光标真正落进输入框
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                    self?.chatStore.focusInputTick += 1
+                }
+            }
+        }
     }
 
     // MARK: - 光晕提醒 pronotch:// 入口
@@ -277,7 +296,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             boxActive: false, penActive: false, mosaicActive: false, noteActive: false, flowActive: false,
             translateTitle: "翻译",
             onBox: {}, onPen: {}, onMosaic: {}, onNote: {}, onFlow: {}, onUndo: {},
-            onOCR: {}, onLongShot: {}, onTranslate: {}, onSave: {}, onCopy: {}, onCancel: {})
+            onOCR: {}, onLongShot: {}, onPin: {}, onAskAI: {}, onTranslate: {}, onSave: {}, onCopy: {}, onCancel: {})
         let probe = NSHostingView(rootView: bar)
         let s = probe.fittingSize
         let root = ZStack { Color(white: 0.08); bar }

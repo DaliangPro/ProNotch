@@ -1143,10 +1143,29 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             onUndo: { [weak self] in self?.undo() },
             onOCR: { [weak self] in self?.runOCR() },
             onLongShot: { [weak self] in self?.startLongShot() },
+            onPin: { [weak self] in self?.pinSelection() },
+            onAskAI: { [weak self] in self?.askAIWithSelection() },
             onTranslate: { [weak self] in self?.translateButtonTapped() },
             onSave: { [weak self] in self?.saveToDesktop() },
             onCopy: { [weak self] in self?.copyToClipboard() },
             onCancel: { [weak self] in self?.close() })
+    }
+
+    /// 钉在屏幕：把当前选区（含标注/译图）原位钉成置顶贴图，随后关闭覆盖层
+    private func pinSelection() {
+        guard let sel = selection, let img = compose() else { return }
+        let global = NSRect(x: screen.frame.minX + sel.minX,
+                            y: screen.frame.minY + sel.minY,
+                            width: sel.width, height: sel.height)
+        PinnedImageController.shared.pin(img, at: global)
+        close()
+    }
+
+    /// 截图问 AI：把当前选区（含标注/译图）交给 AI 闪问作为附件，展开刘海等用户提问
+    private func askAIWithSelection() {
+        guard let img = compose() else { return }
+        NotificationCenter.default.post(name: NSNotification.Name("ProNotchAskAIWithImage"), object: img)
+        close()
     }
 
     private func toggleTool(_ t: Tool) {

@@ -254,6 +254,18 @@ final class NotchViewModel: ObservableObject {
 
     // MARK: - 状态切换
 
+    /// 程序化展开（截图问 AI 等入口）：固定住不自动收起，直到鼠标真正进入面板后
+    /// 交还悬停规则；同时让面板成为 key 窗口，输入框聚焦即可直接打字
+    func expandProgrammatically() {
+        guard !hiddenForFullscreen else { return }
+        if !isExpanded {
+            debugPinned = true
+            expand()
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        panel?.makeKeyAndOrderFront(nil)
+    }
+
     func debugToggle() {
         guard !hiddenForFullscreen else {
             print("[ProNotch] 刘海当前因全屏隐藏，忽略展开请求")

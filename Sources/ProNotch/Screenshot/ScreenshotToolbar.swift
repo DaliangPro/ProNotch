@@ -293,6 +293,8 @@ struct ScreenshotToolbar: View {
     let onUndo: () -> Void
     let onOCR: () -> Void
     let onLongShot: () -> Void
+    let onPin: () -> Void
+    let onAskAI: () -> Void
     let onTranslate: () -> Void
     let onSave: () -> Void
     let onCopy: () -> Void
@@ -315,9 +317,11 @@ struct ScreenshotToolbar: View {
             else { button(translateTitle, "arrow.2.squarepath", action: onTranslate) }
             button("提取文字（OCR）", "text.viewfinder", action: onOCR)
             longShotButton
+            button("截图问 AI", "sparkles", action: onAskAI)
             Divider().frame(height: 20).overlay(Color.white.opacity(0.15)).padding(.horizontal, 1)
             // 完成：取消 / 保存 / 复制(确定)
             button("取消", "xmark", action: onCancel)
+            button("钉在屏幕（贴图）", "pin", action: onPin)
             button("保存到桌面", "arrow.down.to.line", action: onSave)
             button("复制到剪贴板", "checkmark", tint: .green, action: onCopy)
         }

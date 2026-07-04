@@ -12,6 +12,8 @@ struct ChatMessage: Identifiable, Equatable {
     var content: String
     /// 该回复参考的联网搜索结果条数（nil 表示未联网）
     var searchResultCount: Int? = nil
+    /// 随消息发送的截图附件（JPEG 数据；「截图问 AI」入口写入）
+    var imageData: Data? = nil
 }
 
 /// AI 闪问数据源：OpenAI 兼容接口 + SSE 流式输出。
@@ -50,6 +52,10 @@ final class ChatStore: ObservableObject {
     @Published private(set) var isSearching = false
     /// 设置表单显隐（顶行入口与页面内容两处共用）
     @Published var showSettings = false
+    /// 待发送的截图附件（JPEG；随下一条用户消息发出后清空）
+    @Published var draftAttachment: Data?
+    /// 输入框聚焦信号（截图问 AI 唤入时 +1，视图侧聚焦）
+    @Published var focusInputTick = 0
 
     /// API 连通状态（顶行状态灯）
     enum ConnectivityState {
@@ -232,12 +238,56 @@ final class ChatStore: ObservableObject {
         }
     }
 
+    /// 「截图问 AI」入口：压缩截图挂为待发附件，并请求输入框聚焦
+    func attachScreenshot(_ image: NSImage) {
+        draftAttachment = Self.jpegAttachment(from: image)
+        focusInputTick += 1
+    }
+
+    /// 消息 → OpenAI 载荷：带图的用「文本+image_url(data URI)」parts 数组（视觉模型格式），纯文本保持字符串
+    private static func payloadEntry(for m: ChatMessage) -> [String: Any] {
+        guard let data = m.imageData else {
+            return ["role": m.role.rawValue, "content": m.content]
+        }
+        return ["role": m.role.rawValue, "content": [
+            ["type": "text", "text": m.content],
+            ["type": "image_url",
+             "image_url": ["url": "data:image/jpeg;base64," + data.base64EncodedString()]],
+        ]]
+    }
+
+    /// 替换消息内容里的文本（联网搜索注入用）：parts 数组只改 text 部分，保留图片
+    private static func replacingText(in content: Any?, with text: String) -> Any {
+        guard var parts = content as? [[String: Any]] else { return text }
+        for i in parts.indices where (parts[i]["type"] as? String) == "text" { parts[i]["text"] = text }
+        return parts
+    }
+
+    /// 截图附件压缩：长边 ≤1400、JPEG 0.82——视觉模型足够看清，且控制请求体积
+    nonisolated private static func jpegAttachment(from image: NSImage) -> Data? {
+        guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+              let cg = rep.cgImage else { return nil }
+        let w = CGFloat(rep.pixelsWide), h = CGFloat(rep.pixelsHigh)
+        let k = min(1, 1400 / max(w, h))
+        if k >= 1 { return rep.representation(using: .jpeg, properties: [.compressionFactor: 0.82]) }
+        let tw = Int(w * k), th = Int(h * k)
+        guard let ctx = CGContext(data: nil, width: tw, height: th, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        ctx.interpolationQuality = .high
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: tw, height: th))
+        guard let out = ctx.makeImage() else { return nil }
+        return NSBitmapImageRep(cgImage: out).representation(using: .jpeg, properties: [.compressionFactor: 0.82])
+    }
+
     func send(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isStreaming, isConfigured else { return }
         errorText = nil
-        messages.append(ChatMessage(role: .user, content: trimmed))
-        let history = messages.map { ["role": $0.role.rawValue, "content": $0.content] }
+        let attachment = draftAttachment
+        draftAttachment = nil
+        messages.append(ChatMessage(role: .user, content: trimmed, imageData: attachment))
+        let history = messages.map(Self.payloadEntry)
         messages.append(ChatMessage(role: .assistant, content: ""))
         isStreaming = true
         streamTask = Task { [weak self] in
@@ -246,7 +296,7 @@ final class ChatStore: ObservableObject {
     }
 
     /// 完整一轮：可选联网搜索（查询改写 → 搜索 → 结果注入最后一条用户消息）→ 流式请求
-    private func run(question: String, history: [[String: String]]) async {
+    private func run(question: String, history: [[String: Any]]) async {
         var payload = history
         if webSearchEnabled {
             isSearching = true
@@ -262,8 +312,9 @@ final class ChatStore: ObservableObject {
                 }
                 let results = try await WebSearch.search(query: query, engine: engine, key: searchKey)
                 if !results.isEmpty {
-                    payload[payload.count - 1]["content"] =
-                        Self.augmentedPrompt(question: question, results: results)
+                    payload[payload.count - 1]["content"] = Self.replacingText(
+                        in: payload[payload.count - 1]["content"],
+                        with: Self.augmentedPrompt(question: question, results: results))
                     setLastAssistantSearchCount(results.count)
                     print("[ProNotch] 联网搜索返回 \(results.count) 条结果")
                 }
@@ -334,7 +385,7 @@ final class ChatStore: ObservableObject {
     }
 
     /// 用同一个模型做非流式查询改写：把口语化问题与上下文指代还原成搜索词
-    private func rewriteQuery(history: [[String: String]]) async -> String? {
+    private func rewriteQuery(history: [[String: Any]]) async -> String? {
         var payload: [[String: String]] = [[
             "role": "system",
             "content": "你是搜索查询改写器。今天是\(Self.currentDateText())。"
@@ -342,7 +393,14 @@ final class ChatStore: ObservableObject {
                 + "（补全上下文中的指代对象，保留关键实体与时间限定）。"
                 + "只输出查询词本身，不要解释、不要引号。",
         ]]
-        payload += history.suffix(6)
+        // 视觉消息投影成纯文本（改写模型不需要看图）
+        payload += history.suffix(6).map { entry -> [String: String] in
+            let role = entry["role"] as? String ?? "user"
+            if let text = entry["content"] as? String { return ["role": role, "content": text] }
+            let text = ((entry["content"] as? [[String: Any]]) ?? [])
+                .compactMap { $0["text"] as? String }.joined()
+            return ["role": role, "content": text + "（附截图）"]
+        }
         do {
             let raw = try await completeOnce(payload: payload)
             let cleaned = raw
@@ -453,7 +511,7 @@ final class ChatStore: ObservableObject {
         return url
     }
 
-    private func stream(payload: [[String: String]]) async {
+    private func stream(payload: [[String: Any]]) async {
         defer {
             isStreaming = false
             streamTask = nil

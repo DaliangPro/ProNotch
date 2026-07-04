@@ -75,6 +75,19 @@ struct ChatView: View {
                 : "联网搜索已关闭（点击开启）")
             // 纵向可增长（最多 4 行）：粘贴带换行的内容（尤其开头空行）也能看到全部文字，
             // 不再"看着像没粘上"。回车发送，⌘回车换行（IM 习惯；系统自带的 ⌥回车也保留）
+            if let data = store.draftAttachment, let img = NSImage(data: data) {
+                // 待发送的截图附件：缩略图 + 移除；随下一条消息发给视觉模型
+                HStack(spacing: 6) {
+                    Image(nsImage: img).resizable().scaledToFit()
+                        .frame(height: 30)
+                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                    Text("已附截图").font(.system(size: 10)).foregroundColor(.white.opacity(0.5))
+                    Button { store.draftAttachment = nil } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
+                    }.buttonStyle(.plain)
+                }
+            }
             TextField("", text: $store.draftMessage,
                       prompt: Text("输入问题，回车发送 · ⌘回车换行")
                           .foregroundColor(.white.opacity(0.3)),
@@ -95,6 +108,7 @@ struct ChatView: View {
                     return .ignored
                 }
                 .onChange(of: inputFocused) { _, v in vm.keyboardHold = v }
+                .onChange(of: store.focusInputTick) { _, _ in inputFocused = true }
             if store.isStreaming {
                 Button {
                     store.stopStreaming()
@@ -162,6 +176,11 @@ private struct MessageBubble: View {
                                     .font(.system(size: 9))
                             }
                             .foregroundColor(.cyan.opacity(0.75))
+                        }
+                        if let data = message.imageData, let img = NSImage(data: data) {
+                            Image(nsImage: img).resizable().scaledToFit()
+                                .frame(maxWidth: 220, maxHeight: 140)
+                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
                         }
                         if message.role == .assistant {
                             // AI 回复按 Markdown 排版；用户消息保持纯文本
