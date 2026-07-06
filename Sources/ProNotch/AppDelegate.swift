@@ -78,12 +78,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // 清除早期 hooks.json 接入残留的「无 host」pronotch 孤儿（与接入与否无关，幂等）
         GlowHookInstaller.cleanCodexHooksOrphan()
 
-        // 系统翻译预热：翻译服务首次调用有数秒冷启动，启动时后台翻一个词把它焐热，
-        // 用户第一次截图翻译就是毫秒级
-        if settingsStore.translateEngine == "system", SystemTranslator.isSupported {
-            let lang = settingsStore.translateTargetLang
-            Task { _ = try? await SystemTranslator.translate(["Hi"], targetLang: lang) }
-        }
+        // 注：曾在此预热系统翻译（翻个 "Hi" 焐热 session），但未装目标语言包时预热会触发系统
+        // 「下载语言包」弹框、出现在屏幕左下角，用户没主动翻译却被打扰。已移除——首次截图翻译
+        // 时再建 session（那时用户主动发起，弹下载框才合理），仅牺牲首次翻译数秒冷启动。
 
         // 截屏服务预热：首次调 SCShareableContent 要冷启动 ScreenCaptureKit 守护进程连接
         // （几百毫秒），启动后空闲时焐热，用户第一次按截图快捷键就不卡
