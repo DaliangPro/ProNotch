@@ -14,6 +14,18 @@ echo "✅ 回归测试通过（$(echo "$TEST_OUT" | grep -oE "Executed [0-9]+ te
 
 ./Scripts/build-app.sh release universal
 
+# 用固定自签名证书签名（而非每次都变的 ad-hoc）：签名身份恒定，朋友首次授权后更新免重新授权。
+# 缺证书则中止——ad-hoc 分发会让朋友每次更新都要重新授权（隐私授权按签名身份记忆）。
+SIGN_ID="ProNotch Local Signing"
+if ! security find-identity -p codesigning -v 2>/dev/null | grep -q "$SIGN_ID"; then
+    echo "❌ 未找到固定签名证书「$SIGN_ID」，先运行 ./Scripts/create-signing-cert.sh 再发版"
+    echo "   （ad-hoc 签名分发会导致朋友每次更新都要重新授权，已中止）"
+    exit 1
+fi
+codesign --force --sign "$SIGN_ID" build/ProNotch.app
+echo "✅ 已用固定证书签名（Designated Requirement 稳定，跨更新保权限）"
+codesign -dr - build/ProNotch.app 2>&1 | grep "certificate leaf" || true
+
 VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Resources/Info.plist)
 DMG="build/ProNotch-${VERSION}.dmg"
 STAGING="build/dmg-staging"
@@ -28,5 +40,5 @@ hdiutil create -volname "ProNotch ${VERSION}" -srcfolder "$STAGING" \
 rm -rf "$STAGING"
 
 echo "已生成: $DMG"
-echo "提醒: 未签名分发，用户首次打开需右键 → 打开，或执行:"
-echo "  xattr -dr com.apple.quarantine /Applications/ProNotch.app"
+echo "提醒: 固定证书自签名（非 Apple 公证）。朋友首次安装需右键 →「打开」一次绕过 Gatekeeper；"
+echo "      此后更新只要仍用本证书签名，隐私授权（屏幕录制等）自动保留、无需重新授权。"

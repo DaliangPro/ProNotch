@@ -16,9 +16,15 @@ ditto --rsrc "build/ProNotch.app" "/Applications/ProNotch.app"
 # 优先用本机固定的自签名证书签：签名身份稳定，TCC（屏幕录制）与钥匙串权限跨重装保留，
 # 不必每次重装都重新授权。没有该证书（如别人的机器）则回退 ad-hoc 临时签名。
 SIGN_ID="ProNotch Local Signing"
-if security find-identity -p codesigning 2>/dev/null | grep -q "$SIGN_ID"; then
-    codesign --force --sign "$SIGN_ID" "/Applications/ProNotch.app" >/dev/null 2>&1 || true
+if security find-identity -p codesigning -v 2>/dev/null | grep -q "$SIGN_ID"; then
+    if codesign --force --sign "$SIGN_ID" "/Applications/ProNotch.app" 2>/dev/null; then
+        echo "✅ 固定证书签名（跨更新保留授权）"
+    else
+        echo "⚠️  证书签名失败，回退 ad-hoc（更新后可能需重新授权）"
+        codesign --force --sign - "/Applications/ProNotch.app" >/dev/null 2>&1 || true
+    fi
 else
+    echo "⚠️  无固定证书，ad-hoc 签名（更新后需重新授权）；可运行 ./Scripts/create-signing-cert.sh 一次性解决"
     codesign --force --sign - "/Applications/ProNotch.app" >/dev/null 2>&1 || true
 fi
 
