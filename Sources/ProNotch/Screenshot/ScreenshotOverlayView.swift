@@ -74,6 +74,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var translatedOverride: NSImage?   // 翻译后盖在选区上的译图（缓存，切换/导出复用）
     private var translatePartial: [String]?    // 渐进翻译累积（空串=该块未回，渲染跳过保留原文）
     private var showingOriginal = false        // 译图在手时，是否临时显示原文
+    private var translating = false            // 翻译请求进行中（翻译按钮呈「按下」高亮态）
     private var hintView: NSView?              // 「翻译中…」/错误 提示气泡
     private var hintLabel: NSTextField?        // 气泡内文字（原位更新进度，不重建视图）
     private var hintSpinning = false           // 气泡当前是否带转圈
@@ -1131,10 +1132,12 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     private func makeToolbar() -> ScreenshotToolbar {
         let tTitle = translatedOverride == nil ? "翻译" : (showingOriginal ? "显示译文" : "显示原文")
+        // 翻译按钮「按下」高亮：正在翻译，或译图在手且当前显示译文（切回原文则熄灭）
+        let translateActive = translating || (translatedOverride != nil && !showingOriginal)
         return ScreenshotToolbar(
             boxActive: tool == .box, penActive: tool == .pen, mosaicActive: tool == .mosaic,
             noteActive: tool == .note, flowActive: tool == .flow,
-            translateTitle: tTitle,
+            translateTitle: tTitle, translateActive: translateActive,
             onBox: { [weak self] in self?.toggleTool(.box) },
             onPen: { [weak self] in self?.toggleTool(.pen) },
             onMosaic: { [weak self] in self?.toggleTool(.mosaic) },
@@ -1836,57 +1839,164 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         let crop = CGRect(x: sel.minX * scale, y: (bounds.height - sel.maxY) * scale,
                           width: sel.width * scale, height: sel.height * scale)
         guard let cropped = cgImage.cropping(to: crop) else { return }
-        // 工具栏保持在场；翻译中的动效提示浮在选区中央
+        // 工具栏保持在场；翻译中的动效提示浮在选区中央。翻译按钮即刻进入「按下」高亮态
         showHint("翻译中…", spinning: true)
+        translating = true
+        showToolbar(for: sel)
         let outSize = sel.size
         translatePartial = nil
         Task {
             let blocks = Self.recognizeBlocks(cropped)
             if blocks.isEmpty { await MainActor.run { self.translateFailed("未识别到文字") }; return }
-            let texts = blocks.map { $0.text }
-            // 首选系统翻译（本机离线，整批毫秒级）；失败（语言包未装/语种不支持）静默降级到 AI
+            let targetIsCJK = ["zh", "ja", "ko"].contains { SystemTranslator.languageCode(for: lang).hasPrefix($0) }
+            // 只抠出每块里「非目标语言」的片段送翻（中文页面就是抠英文/标识符），中文原样保留、译文就地填回。
+            // 送翻量从「整块中文长句」骤降到「零星英文短词」——AI 秒回不再超时，系统翻译也不再中译中被拒。
+            let blockFrags = blocks.map { Self.translatableFragments(in: $0.text, targetIsCJK: targetIsCJK) }
+            var uniqueList: [String] = []
+            var seen = Set<String>()
+            for frags in blockFrags {
+                for f in frags where !seen.contains(f.text) { seen.insert(f.text); uniqueList.append(f.text) }
+            }
+            guard !uniqueList.isEmpty else {
+                await MainActor.run { self.translateFailed("没有需要翻译的内容") }
+                return
+            }
+            // 首选系统翻译（本机离线毫秒级）；失败（语言包未装等）静默降级到 AI
             if useSystem {
                 do {
-                    let translations = try await SystemTranslator.translate(texts, targetLang: lang)
-                    let img = Self.renderTranslated(base: cropped, size: outSize, blocks: blocks, translations: translations)
-                    await MainActor.run { self.translateDone(img) }
+                    let trans = try await SystemTranslator.translate(uniqueList, targetLang: lang)
+                    await MainActor.run {
+                        let img = Self.renderFragments(base: cropped, size: outSize, blocks: blocks,
+                                                       blockFrags: blockFrags, uniqueList: uniqueList, partial: trans)
+                        self.translateDone(img)
+                    }
                     return
                 } catch {
                     guard aiReady else {
                         await MainActor.run { self.translateFailed(error.localizedDescription) }
                         return
                     }
-                    print("[ProNotch] 系统翻译失败，降级 AI: \(error.localizedDescription)")
                 }
             }
             do {
-                let translations = try await ScreenshotTranslator.translate(
-                    texts, to: lang, prompt: prompt, config: config,
+                let trans = try await ScreenshotTranslator.translate(
+                    uniqueList, to: lang, prompt: prompt, config: config,
                     onPartial: { [weak self] range, chunk, done, total in
-                        // 渐进渲染：哪块先译完先贴回原图哪块，不等全部译完
+                        // 渐进渲染：哪个片段先译完先就地填回哪个，不等全部译完
                         Task { @MainActor in
-                            guard let self, self.hintView != nil else { return }   // 已完成/已关闭则忽略迟到块
-                            var acc = self.translatePartial ?? [String](repeating: "", count: blocks.count)
+                            guard let self, self.hintView != nil else { return }   // 已完成/已关闭则忽略迟到片段
+                            var acc = self.translatePartial ?? [String](repeating: "", count: uniqueList.count)
                             if chunk.count == range.count {
                                 for (k, i) in range.enumerated() { acc[i] = chunk[k] }
                             }
                             self.translatePartial = acc
                             if total > 1 { self.showHint("翻译中… \(done)/\(total)", spinning: true) }
-                            self.translatedOverride = Self.renderTranslated(base: cropped, size: outSize, blocks: blocks, translations: acc)
+                            self.translatedOverride = Self.renderFragments(base: cropped, size: outSize, blocks: blocks,
+                                                                           blockFrags: blockFrags, uniqueList: uniqueList, partial: acc)
                             self.showingOriginal = false
                             self.needsDisplay = true
                         }
                     })
-                let img = Self.renderTranslated(base: cropped, size: outSize, blocks: blocks, translations: translations)
-                await MainActor.run { self.translateDone(img) }
+                await MainActor.run {
+                    let img = Self.renderFragments(base: cropped, size: outSize, blocks: blocks,
+                                                   blockFrags: blockFrags, uniqueList: uniqueList, partial: trans)
+                    self.translateDone(img)
+                }
             } catch {
                 await MainActor.run { self.translateFailed(error.localizedDescription) }
             }
         }
     }
 
+    /// 产品/品牌/技术名白名单（小写匹配）：全小写写法(deepseek/python)与普通英文词字面无法区分，
+    /// 靠白名单兜底保留。正确大小写的产品名(DeepSeek/GitHub/macOS)已被下面的驼峰/全大写规则保留，
+    /// 这里主要补全小写与首字母大写写法。遇到漏网的冷门名字往这里加即可。
+    nonisolated private static let brandKeep: Set<String> = [
+        "deepseek", "openai", "chatgpt", "gpt", "anthropic", "claude", "gemini", "copilot", "llama", "mistral",
+        "github", "gitlab", "google", "apple", "microsoft", "amazon", "azure", "aws", "nvidia", "intel", "amd",
+        "openrouter", "ollama", "docker", "kubernetes", "redis", "nginx", "linux", "ubuntu", "macos", "ios",
+        "ipados", "android", "windows", "chrome", "safari", "firefox", "python", "swift", "swiftui", "java",
+        "javascript", "typescript", "kotlin", "rust", "golang", "react", "vue", "angular", "nodejs", "deno",
+        "npm", "figma", "notion", "slack", "discord", "telegram", "wechat", "xcode", "vscode", "vercel",
+    ]
+
+    /// 拉丁片段是否需要翻译。逐词分两类：保留词＝白名单产品名 / 驼峰标识符 / 下划线 / 全大写缩写；
+    /// 普通英文词＝其余（单字母 a、I 忽略）。规则：
+    /// - 纯普通英文（无保留词）→ 翻（helper、Read a file）；
+    /// - 含保留词时，普通词≥2 视为「自然语言句子里嵌了产品名」→ 整句送翻，产品名交翻译引擎按语义保留
+    ///   （如 "Here is your GitHub sudo authentication code"）；普通词≤1 视为代码/标识符 → 整体保留
+    ///   （如 "import NaturalLanguage"）。
+    nonisolated private static func latinFragNeedsTranslation(_ frag: String) -> Bool {
+        let f = frag.trimmingCharacters(in: .whitespaces)
+        guard f.count >= 2 else { return false }
+        var plain = 0, reserved = 0
+        for word in f.split(separator: " ") {
+            let w = String(word)
+            if w.count < 2 { continue }                                                  // 单字母(a/I)忽略
+            if brandKeep.contains(w.lowercased())                                         // 产品/品牌/技术名
+                || w.contains("_")                                                       // snake_case
+                || w.range(of: "^[A-Z]{2,}$", options: .regularExpression) != nil        // 全大写缩写/常量
+                || Array(w).dropFirst().contains(where: { $0.isUppercase }) {            // 驼峰
+                reserved += 1
+            } else {
+                plain += 1
+            }
+        }
+        return reserved == 0 ? plain >= 1 : plain >= 2
+    }
+
+    /// 从块文本里抠出「非目标语言」的待翻片段（位置+原文）。目标是 CJK（中/日/韩）→ 抠拉丁片段
+    /// （标识符/英文短语，如 "import NaturalLanguage"、"status=200"），产品名/缩写/代码值按上面规则保留；
+    /// 目标是拉丁语言 → 抠连续 CJK 片段。只送这些片段、不送整块——避免中文长句拖慢/中译中被拒。
+    nonisolated private static func translatableFragments(in text: String, targetIsCJK: Bool) -> [(range: NSRange, text: String)] {
+        // 拉丁分支只抠「纯字母词／空格连接的字母短语」（import NaturalLanguage、Read a file、looksTranslatable）；
+        // 含数字的代码值/版本号（status=200、v1.6.0）不匹配此模式，天然留在原文——再靠「紧邻的下一字符是数字或 =」
+        // 兜掉 status 这种「字母紧贴代码值」的前缀，避免把 status 单独抠去翻成「状态=200」。
+        let pattern = targetIsCJK
+            ? "[A-Za-z]+(?: [A-Za-z]+)*"
+            : "[\\x{4E00}-\\x{9FFF}\\x{3400}-\\x{4DBF}\\x{3040}-\\x{30FF}\\x{AC00}-\\x{D7A3}]+"
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let ns = text as NSString
+        var result: [(range: NSRange, text: String)] = []
+        re.enumerateMatches(in: text, range: NSRange(location: 0, length: ns.length)) { m, _, _ in
+            guard let m else { return }
+            if targetIsCJK {                                   // 下一字符是数字或 = → 这是代码值前缀，跳过
+                let end = m.range.location + m.range.length
+                if end < ns.length {
+                    let next = ns.substring(with: NSRange(location: end, length: 1))
+                    if next == "=" || next.range(of: "^[0-9]$", options: .regularExpression) != nil { return }
+                }
+            }
+            let frag = ns.substring(with: m.range)
+            if !targetIsCJK || latinFragNeedsTranslation(frag) { result.append((range: m.range, text: frag)) }
+        }
+        return result
+    }
+
+    /// 把块内片段按译文就地替换（从后往前，避免前面替换改变后面片段的位置），中文与保留项原样不动
+    nonisolated private static func applyFragments(_ text: String,
+        _ frags: [(range: NSRange, text: String)], _ map: [String: String]) -> String {
+        let ms = NSMutableString(string: text)
+        for f in frags.reversed() {
+            guard let tr = map[f.text], !tr.isEmpty, tr != f.text else { continue }
+            ms.replaceCharacters(in: f.range, with: tr)
+        }
+        return ms as String
+    }
+
+    /// 按当前（部分）译文把各块的英文片段就地替换后整体渲染（走主线程，与 renderTranslated 同隔离）
+    private static func renderFragments(base: CGImage, size: NSSize,
+        blocks: [(text: String, box: CGRect)], blockFrags: [[(range: NSRange, text: String)]],
+        uniqueList: [String], partial: [String]) -> NSImage {
+        var map: [String: String] = [:]
+        for (k, t) in uniqueList.enumerated() where k < partial.count && !partial[k].isEmpty { map[t] = partial[k] }
+        let full = zip(blocks, blockFrags).map { applyFragments($0.0.text, $0.1, map) }
+        return renderTranslated(base: base, size: size, blocks: blocks, translations: full)
+    }
+
     private func translateDone(_ img: NSImage) {
         removeHint()
+        translating = false
         translatePartial = nil
         translatedOverride = img
         showingOriginal = false
@@ -1906,9 +2016,11 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     }
 
     private func translateFailed(_ msg: String) {
+        translating = false
         translatePartial = nil
         translatedOverride = nil   // 全部失败：不留半成品译图
         showHint("翻译失败：\(msg)")
+        if let sel = selection { showToolbar(for: sel) }   // 翻译按钮即刻熄灭
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.8) { [weak self] in
             self?.removeHint(); if let s = self?.selection { self?.showToolbar(for: s) }
         }
@@ -1924,20 +2036,22 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         }
         removeHint()
         hintSpinning = spinning
+        let dark = ToolbarChrome.dark                          // 气泡跟随系统深浅色
         let label = NSTextField(labelWithString: text)
         label.font = NSFont.systemFont(ofSize: 14, weight: .medium)
-        label.textColor = .white
+        label.textColor = dark ? .white : NSColor.black.withAlphaComponent(0.85)
         label.sizeToFit()
         let host = NSView(frame: .zero)
         host.wantsLayer = true
-        host.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.85).cgColor
+        host.layer?.backgroundColor = (dark ? NSColor.black.withAlphaComponent(0.85)
+                                            : NSColor.white).cgColor
         host.layer?.cornerRadius = 8
-        if spinning {   // 翻译中：白色小转圈，让人一眼看出「在干活」而不是卡死
+        if spinning {   // 翻译中：小转圈，让人一眼看出「在干活」而不是卡死
             let spin = NSProgressIndicator()
             spin.style = .spinning
             spin.controlSize = .small
             spin.isIndeterminate = true
-            spin.appearance = NSAppearance(named: .darkAqua)   // 深底上渲染成浅色
+            spin.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)   // 随底色渲染深/浅
             spin.sizeToFit()
             spin.startAnimation(nil)
             host.addSubview(spin)

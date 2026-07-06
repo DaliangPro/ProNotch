@@ -86,7 +86,7 @@ final class SettingsStore: ObservableObject {
     /// 翻译提示词（可编辑）；其中 {lang} 翻译时替换为目标语言
     @Published var translatePrompt: String { didSet { UserDefaults.standard.set(translatePrompt, forKey: "translatePrompt") } }
 
-    nonisolated static let defaultTranslatePrompt = "You are a professional translation engine. Translate EVERY string in the input JSON array into {lang}, including single words, labels, UI text and technical terms. If a string is already in {lang} keep it; otherwise you MUST translate it — never leave non-{lang} text untranslated. Keep numbers, URLs and code symbols as-is. Return ONLY a JSON array of translated strings, same length and order, no explanations, no code fences."
+    nonisolated static let defaultTranslatePrompt = "You are a professional translation engine. Translate EVERY string in the input JSON array into {lang}, including single words, labels and UI text. If a string is already in {lang} keep it; otherwise you MUST translate it — never leave non-{lang} text untranslated. Keep as-is: product or brand names (e.g. deepseek, GitHub), code identifiers and function names (e.g. runTranslate, NaturalLanguage), all-letter acronyms (e.g. AI, API, OCR), code values with digits (e.g. status=200, v1.6.0), URLs, file paths and numbers. Return ONLY a JSON array of translated strings, same length and order, no explanations, no code fences."
 
     /// 翻译 API key 走钥匙串、惰性读写（不在启动时读，避免多一个钥匙串弹框）
     func translateAPIKey() -> String { KeychainStore.read("translateAPIKey") ?? "" }

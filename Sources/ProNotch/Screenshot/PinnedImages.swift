@@ -117,7 +117,9 @@ private final class PinContentView: NSView {
         layer?.cornerRadius = 4
         layer?.masksToBounds = true
         layer?.borderWidth = 1
-        layer?.borderColor = NSColor.white.withAlphaComponent(0.35).cgColor
+        // 描边随系统深浅色（钉住那一刻）：深色白描边、浅色深描边，在各自背景上都看得清边界
+        layer?.borderColor = (ToolbarChrome.dark ? NSColor.white : NSColor.black)
+            .withAlphaComponent(0.35).cgColor
     }
 
     required init?(coder: NSCoder) { nil }

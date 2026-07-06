@@ -71,7 +71,8 @@ enum ScreenshotTranslator {
         }
         guard !suspects.isEmpty else { return out }
         let harder = system + "\n\nThe previous attempt returned these strings unchanged or dropped them, which is WRONG. "
-            + "You MUST translate every non-\(lang) string into \(lang) now. Never echo the input."
+            + "Translate every remaining non-\(lang) word or phrase into \(lang) now, "
+            + "but keep product/brand names, code identifiers, function names, acronyms, code values with digits, URLs and numbers unchanged."
         if let fix = try? await request(suspects.map { texts[$0] }, system: harder, temperature: 0.5, config: config),
            fix.count == suspects.count {
             for (k, i) in suspects.enumerated() {
@@ -89,6 +90,9 @@ enum ScreenshotTranslator {
         guard t.count >= 2 else { return false }
         let lower = t.lowercased()
         if lower.hasPrefix("http") || lower.hasPrefix("www.") || lower.hasPrefix("/") || lower.hasPrefix("~/") { return false }
+        // 含数字又带代码符号（=、:、/、_、点分版本号）视为代码值/版本号，保留不补翻（如 status=200、v1.6.0）
+        let hasDigit = t.unicodeScalars.contains { CharacterSet.decimalDigits.contains($0) }
+        if hasDigit, t.range(of: "[=:/_.]", options: .regularExpression) != nil { return false }
         let letters = t.unicodeScalars.filter { CharacterSet.letters.contains($0) }.count
         guard letters >= 3, Double(letters) / Double(t.count) > 0.4 else { return false }
         return t.range(of: "[A-Za-z]{2,}", options: .regularExpression) != nil
@@ -119,7 +123,9 @@ enum ScreenshotTranslator {
             "messages": [["role": "system", "content": system], ["role": "user", "content": inputJSON]]]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, resp) = try await URLSession.shared.data(for: req)
-        if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) { throw err("接口返回 \(http.statusCode)") }
+        if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw err("接口返回 \(http.statusCode)")
+        }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
               let msg = choices.first?["message"] as? [String: Any],

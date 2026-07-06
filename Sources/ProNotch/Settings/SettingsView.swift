@@ -35,7 +35,6 @@ struct SettingsView: View {
     @State private var justSaved = false
     @State private var translateKey = ""   // 翻译独立接口的 API key 草稿（惰性从钥匙串载入）
     @State private var packRequest: [String]?          // [源语言码, 目标语言码]：置值触发系统语言包下载确认
-    @State private var packStatus: [String: String] = [:]   // 各源语言 → installed/supported/unsupported
 
     private var canSave: Bool {
         !chatStore.draftBaseURL.trimmingCharacters(in: .whitespaces).isEmpty
@@ -191,17 +190,13 @@ struct SettingsView: View {
                         Text("语言包").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
                         Spacer()
                         Menu {
-                            // 列出「原文语言 → 目标语言」各语言对：点击即弹系统官方下载确认框
+                            // 列出各原文语言：点击即弹系统官方下载确认框（是否已装由系统判断，
+                            // 不再预查——LanguageAvailability().status 会无限挂起，同翻译卡死根因）
                             ForEach(SettingsStore.translateLangs.filter { $0 != settings.translateTargetLang }, id: \.self) { lang in
-                                let status = packStatus[lang]
-                                Button {
+                                Button(lang) {
                                     packRequest = [SystemTranslator.languageCode(for: lang),
                                                    SystemTranslator.languageCode(for: settings.translateTargetLang)]
-                                } label: {
-                                    Text(status == "installed" ? "\(lang)（已安装 ✓）"
-                                         : status == "unsupported" ? "\(lang)（不支持）" : "\(lang)（未下载）")
                                 }
-                                .disabled(status == "installed" || status == "unsupported")
                             }
                         } label: {
                             HStack(spacing: 4) {
@@ -217,9 +212,6 @@ struct SettingsView: View {
                     .padding(.horizontal, 14).padding(.vertical, 10)
                 }
                 .background(LanguagePackDownloader(request: $packRequest))
-                .onAppear { refreshPackStatus() }
-                .onChange(of: settings.translateTargetLang) { _, _ in refreshPackStatus() }
-                .onChange(of: packRequest) { _, new in if new == nil { refreshPackStatus() } }   // 下载完成后刷新状态
                 Text("本机离线翻译，毫秒级出结果。选择截图原文的语言下载语言包（免费、一次性），系统会弹出下载确认。")
                     .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
                     .fixedSize(horizontal: false, vertical: true)
@@ -263,17 +255,6 @@ struct SettingsView: View {
                 Spacer()
                 Button("恢复默认") { settings.translatePrompt = SettingsStore.defaultTranslatePrompt }
                     .buttonStyle(.plain).font(.system(size: 12)).foregroundColor(.cyan)
-            }
-        }
-    }
-
-    /// 刷新各源语言 → 当前目标语言的语言包安装状态（驱动下载菜单的标注）
-    private func refreshPackStatus() {
-        let target = SystemTranslator.languageCode(for: settings.translateTargetLang)
-        for lang in SettingsStore.translateLangs where lang != settings.translateTargetLang {
-            let src = SystemTranslator.languageCode(for: lang)
-            Task { @MainActor in
-                packStatus[lang] = await SystemTranslator.pairStatus(sourceCode: src, targetCode: target)
             }
         }
     }

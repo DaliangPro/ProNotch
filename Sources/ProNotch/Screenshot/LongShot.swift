@@ -251,18 +251,18 @@ struct LongShotDirectionBar: View {
     let onCancel: () -> Void
     var body: some View {
         VStack(spacing: 12) {
-            Text("选择长截图方向").font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+            Text("选择长截图方向").font(.system(size: 13, weight: .semibold)).foregroundColor(ToolbarChrome.mono(1))
             HStack(spacing: 14) {
                 dirButton("向上", "arrow.up", action: onUp)
                 dirButton("向下", "arrow.down", action: onDown)
             }
             Button(action: onCancel) {
-                Text("取消").font(.system(size: 12)).foregroundColor(.white.opacity(0.7))
+                Text("取消").font(.system(size: 12)).foregroundColor(ToolbarChrome.mono(0.7))
             }.buttonStyle(.plain)
         }
         .padding(.horizontal, 18).padding(.vertical, 14)
-        .background(Color.black.opacity(0.9), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
+        .background(ToolbarChrome.panel(0.9), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolbarChrome.mono(0.12), lineWidth: 0.5))
         .fixedSize()
     }
     private func dirButton(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
@@ -271,10 +271,10 @@ struct LongShotDirectionBar: View {
                 Image(systemName: icon).font(.system(size: 22, weight: .semibold))
                 Text(title).font(.system(size: 12, weight: .medium))
             }
-            .foregroundColor(.white)
+            .foregroundColor(ToolbarChrome.mono(1))
             .frame(width: 80, height: 64)
-            .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(Color.white.opacity(0.13)))
-            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(Color.white.opacity(0.18)))
+            .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(ToolbarChrome.mono(0.13)))
+            .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous).strokeBorder(ToolbarChrome.mono(0.18)))
         }.buttonStyle(.plain)
     }
 }
@@ -302,33 +302,33 @@ struct LongShotResultBar: View {
                 Image(nsImage: preview).resizable().interpolation(.high)
                     .frame(width: size.width, height: size.height)
                     .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Color.white.opacity(0.14)))
+                    .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(ToolbarChrome.mono(0.14)))
                     .contentShape(Rectangle())
                     .onTapGesture(count: 2) { onInspect() }   // 双击放大检查，确认成不成再决定保存
                     .help("双击放大查看")
             }
             HStack(spacing: 10) {
-                Text("长截图 \(sizeText)").font(.system(size: 11)).foregroundColor(.white.opacity(0.55))
+                Text("长截图 \(sizeText)").font(.system(size: 11)).foregroundColor(ToolbarChrome.mono(0.55))
                 Button(action: onDiscard) {
-                    Text("丢弃").font(.system(size: 12)).foregroundColor(.white.opacity(0.85))
+                    Text("丢弃").font(.system(size: 12)).foregroundColor(ToolbarChrome.mono(0.85))
                         .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(Capsule().fill(Color.white.opacity(0.12)))
+                        .background(Capsule().fill(ToolbarChrome.mono(0.12)))
                 }.buttonStyle(.plain)
                 Button(action: onSave) {
-                    Text("保存到桌面").font(.system(size: 12)).foregroundColor(.white)
+                    Text("保存到桌面").font(.system(size: 12)).foregroundColor(ToolbarChrome.mono(1))
                         .padding(.horizontal, 12).padding(.vertical, 6)
-                        .background(Capsule().fill(Color.white.opacity(0.18)))
+                        .background(Capsule().fill(ToolbarChrome.mono(0.18)))
                 }.buttonStyle(.plain)
                 Button(action: onCopy) {
-                    Text("复制").font(.system(size: 12, weight: .semibold)).foregroundColor(.white)
+                    Text("复制").font(.system(size: 12, weight: .semibold)).foregroundColor(ToolbarChrome.mono(1))
                         .padding(.horizontal, 14).padding(.vertical, 6)
                         .background(Capsule().fill(Color.green.opacity(0.85)))
                 }.buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
-        .background(Color.black.opacity(0.9), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
+        .background(ToolbarChrome.panel(0.9), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolbarChrome.mono(0.12), lineWidth: 0.5))
         .fixedSize()
     }
 }
@@ -366,16 +366,16 @@ struct LongShotControlBar: View {
     var body: some View {
         HStack(spacing: 11) {
             ZStack {                                 // 实时长图：随截随长，用户直接看到成果（固定占位，尺寸稳定不跳）
-                RoundedRectangle(cornerRadius: 5, style: .continuous).fill(Color.white.opacity(0.06))
+                RoundedRectangle(cornerRadius: 5, style: .continuous).fill(ToolbarChrome.mono(0.06))
                 if let preview = session.preview {
                     Image(nsImage: preview).resizable().aspectRatio(contentMode: .fit)
                         .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
                 } else {
-                    Image(systemName: "rectangle.portrait").foregroundColor(.white.opacity(0.25)).font(.system(size: 18))
+                    Image(systemName: "rectangle.portrait").foregroundColor(ToolbarChrome.mono(0.25)).font(.system(size: 18))
                 }
             }
             .frame(width: 54, height: 124)
-            .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(Color.white.opacity(0.15)))
+            .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(ToolbarChrome.mono(0.15)))
             .contentShape(Rectangle())
             .onTapGesture(count: 2) { onInspect() }   // 双击放大检查拼接质量
             .help("双击放大查看")
@@ -383,18 +383,18 @@ struct LongShotControlBar: View {
                 HStack(spacing: 7) {
                     Circle().fill(Color.red).frame(width: 8, height: 8)
                     Text(session.phase.label)
-                        .font(.system(size: 12, weight: .medium)).foregroundColor(.white.opacity(0.92))
+                        .font(.system(size: 12, weight: .medium)).foregroundColor(ToolbarChrome.mono(0.92))
                 }
                 Text("已拼 \(session.pointHeight)pt · 想提前结束就点「停止」")
-                    .font(.system(size: 11)).foregroundColor(.white.opacity(0.5)).fixedSize()
+                    .font(.system(size: 11)).foregroundColor(ToolbarChrome.mono(0.5)).fixedSize()
                 HStack(spacing: 8) {
                     Button(action: session.onCancel) {
-                        Text("取消").font(.system(size: 12)).foregroundColor(.white.opacity(0.85))
+                        Text("取消").font(.system(size: 12)).foregroundColor(ToolbarChrome.mono(0.85))
                             .padding(.horizontal, 12).padding(.vertical, 6)
-                            .background(Capsule().fill(Color.white.opacity(0.12)))
+                            .background(Capsule().fill(ToolbarChrome.mono(0.12)))
                     }.buttonStyle(.plain)
                     Button(action: session.onFinish) {
-                        Text("停止").font(.system(size: 12, weight: .semibold)).foregroundColor(.white)
+                        Text("停止").font(.system(size: 12, weight: .semibold)).foregroundColor(ToolbarChrome.mono(1))
                             .padding(.horizontal, 18).padding(.vertical, 6)
                             .background(Capsule().fill(Color.green.opacity(0.9)))
                     }.buttonStyle(.plain)
@@ -402,8 +402,8 @@ struct LongShotControlBar: View {
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
-        .background(Color.black.opacity(0.9), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
+        .background(ToolbarChrome.panel(0.9), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ToolbarChrome.mono(0.12), lineWidth: 0.5))
         .fixedSize()
     }
 }
@@ -421,13 +421,13 @@ struct LongShotInspector: View {
         VStack(spacing: 0) {
             HStack {
                 Text("长图检查 · 滚动查看全图")
-                    .font(.system(size: 12, weight: .medium)).foregroundColor(.white.opacity(0.8))
+                    .font(.system(size: 12, weight: .medium)).foregroundColor(ToolbarChrome.mono(0.8))
                 Spacer()
                 Button(action: onClose) {
                     Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .bold)).foregroundColor(.white.opacity(0.85))
+                        .font(.system(size: 11, weight: .bold)).foregroundColor(ToolbarChrome.mono(0.85))
                         .frame(width: 22, height: 22)
-                        .background(Circle().fill(Color.white.opacity(0.12)))
+                        .background(Circle().fill(ToolbarChrome.mono(0.12)))
                 }.buttonStyle(.plain)
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
@@ -437,7 +437,7 @@ struct LongShotInspector: View {
                     .frame(width: fitWidth, height: fullH)
             }
         }
-        .background(Color.black.opacity(0.94), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5))
+        .background(ToolbarChrome.panel(0.94), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(ToolbarChrome.mono(0.14), lineWidth: 0.5))
     }
 }

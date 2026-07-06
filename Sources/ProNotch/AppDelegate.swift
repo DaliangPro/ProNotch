@@ -294,7 +294,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func debugSnapshotToolbar() {
         let bar = ScreenshotToolbar(
             boxActive: false, penActive: false, mosaicActive: false, noteActive: false, flowActive: false,
-            translateTitle: "翻译",
+            translateTitle: "翻译", translateActive: false,
             onBox: {}, onPen: {}, onMosaic: {}, onNote: {}, onFlow: {}, onUndo: {},
             onOCR: {}, onLongShot: {}, onPin: {}, onAskAI: {}, onTranslate: {}, onSave: {}, onCopy: {}, onCancel: {})
         let probe = NSHostingView(rootView: bar)

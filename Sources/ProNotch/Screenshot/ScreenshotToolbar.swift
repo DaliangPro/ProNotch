@@ -1,6 +1,28 @@
 import AppKit
 import SwiftUI
 
+/// 截图工具栏 / 子选项条调色板：随系统深浅色切换（截图期间读一次 NSApp.effectiveAppearance）。
+/// 深色 = 黑底白字（原样）；浅色 = 白底深字。active 高亮与「复制✓」绿在两种底色下都清晰，不变。
+enum ToolbarChrome {
+    static var dark: Bool { NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) != .aqua }
+    static var panelBG: Color { dark ? Color.black.opacity(0.88) : Color.white }
+    static var hairline: Color { dark ? Color.white.opacity(0.12) : Color.black.opacity(0.14) }
+    static var separator: Color { dark ? Color.white.opacity(0.15) : Color.black.opacity(0.14) }
+    static var accent: Color { .cyan }
+    static var strong: Color { dark ? Color.white : Color.black.opacity(0.8) }
+    /// 图标/前景基色，hover 时更实
+    static func fg(_ hover: Bool = false) -> Color {
+        dark ? Color.white.opacity(hover ? 1 : 0.85) : Color.black.opacity(hover ? 0.95 : 0.75)
+    }
+    static func hoverBG(_ hover: Bool) -> Color {
+        dark ? Color.white.opacity(hover ? 0.13 : 0) : Color.black.opacity(hover ? 0.08 : 0)
+    }
+    /// 通用前景/填充/描边（深=白、浅=黑，同不透明度）——用于 OCR 面板、长截图各条等浮层
+    static func mono(_ o: Double) -> Color { dark ? Color.white.opacity(o) : Color.black.opacity(o) }
+    /// 面板实底（深=近黑半透明、浅=纯白不透明，不透出底下截图）
+    static func panel(_ o: Double = 0.9) -> Color { dark ? Color.black.opacity(o) : Color.white }
+}
+
 /// 框选子选项面板：形状(矩形/椭圆) / 线型(实线/虚线) / 高亮 / 颜色 / 粗细
 struct BoxOptionsBar: View {
     let shape: BoxShape
@@ -32,17 +54,17 @@ struct BoxOptionsBar: View {
             ForEach(Self.widths, id: \.self) { widthBtn($0) }
         }
         .padding(.horizontal, 13).padding(.vertical, 7)
-        .background(Color.black.opacity(0.88), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
+        .background(ToolbarChrome.panelBG, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ToolbarChrome.hairline, lineWidth: 0.5))
         .fixedSize()
     }
 
-    private var sep: some View { Divider().frame(height: 19).overlay(Color.white.opacity(0.15)) }
+    private var sep: some View { Divider().frame(height: 19).overlay(ToolbarChrome.separator) }
 
     private func icon(_ name: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: name).font(.system(size: 15))
-                .foregroundColor(active ? .cyan : .white.opacity(0.85))
+                .foregroundColor(active ? ToolbarChrome.accent : ToolbarChrome.fg())
                 .frame(width: 30, height: 28)
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(active ? Color.cyan.opacity(0.18) : .clear))
                 .contentShape(Capsule())
@@ -55,7 +77,7 @@ struct BoxOptionsBar: View {
                 if d { HStack(spacing: 3) { ForEach(0..<3, id: \.self) { _ in Capsule().frame(width: 5, height: 2.4) } } }
                 else { Capsule().frame(width: 19, height: 2.4) }
             }
-            .foregroundColor(dashed == d ? .cyan : .white.opacity(0.85))
+            .foregroundColor(dashed == d ? ToolbarChrome.accent : ToolbarChrome.fg())
             .frame(width: 30, height: 28)
             .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(dashed == d ? Color.cyan.opacity(0.18) : .clear))
             .contentShape(Capsule())
@@ -66,14 +88,14 @@ struct BoxOptionsBar: View {
         Button { onColor(hex) } label: {
             Circle().fill(Color(hex: hex))
                 .frame(width: 18, height: 18)
-                .overlay(Circle().strokeBorder(Color.white.opacity(colorHex == hex ? 0.95 : 0.25), lineWidth: colorHex == hex ? 2 : 0.5))
+                .overlay(Circle().strokeBorder(colorHex == hex ? ToolbarChrome.strong : ToolbarChrome.hairline, lineWidth: colorHex == hex ? 2 : 0.5))
                 .contentShape(Circle())
         }.buttonStyle(.plain)
     }
 
     private func widthBtn(_ w: CGFloat) -> some View {
         Button { onWidth(w) } label: {
-            Capsule().fill(lineWidth == w ? Color.cyan : Color.white.opacity(0.85))
+            Capsule().fill(lineWidth == w ? ToolbarChrome.accent : ToolbarChrome.fg())
                 .frame(width: 16, height: w)
                 .frame(width: 28, height: 28)
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(lineWidth == w ? Color.cyan.opacity(0.18) : .clear))
@@ -94,22 +116,22 @@ struct PenOptionsBar: View {
             ForEach(BoxOptionsBar.palette, id: \.self) { hex in
                 Button { onColor(hex) } label: {
                     Circle().fill(Color(hex: hex)).frame(width: 18, height: 18)
-                        .overlay(Circle().strokeBorder(Color.white.opacity(colorHex == hex ? 0.95 : 0.25), lineWidth: colorHex == hex ? 2 : 0.5))
+                        .overlay(Circle().strokeBorder(colorHex == hex ? ToolbarChrome.strong : ToolbarChrome.hairline, lineWidth: colorHex == hex ? 2 : 0.5))
                         .contentShape(Circle())
                 }.buttonStyle(.plain)
             }
-            Divider().frame(height: 19).overlay(Color.white.opacity(0.15))
+            Divider().frame(height: 19).overlay(ToolbarChrome.separator)
             ForEach(Self.widths, id: \.self) { w in
                 Button { onWidth(w) } label: {
-                    Circle().fill(lineWidth == w ? Color.cyan : Color.white.opacity(0.85))
+                    Circle().fill(lineWidth == w ? ToolbarChrome.accent : ToolbarChrome.fg())
                         .frame(width: w + 3, height: w + 3).frame(width: 28, height: 28)
                         .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(lineWidth == w ? Color.cyan.opacity(0.18) : .clear)).contentShape(Capsule())
                 }.buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 13).padding(.vertical, 7)
-        .background(Color.black.opacity(0.88), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)).fixedSize()
+        .background(ToolbarChrome.panelBG, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ToolbarChrome.hairline, lineWidth: 0.5)).fixedSize()
     }
 }
 
@@ -122,14 +144,14 @@ struct ColorOptionsBar: View {
             ForEach(BoxOptionsBar.palette, id: \.self) { hex in
                 Button { onColor(hex) } label: {
                     Circle().fill(Color(hex: hex)).frame(width: 19, height: 19)
-                        .overlay(Circle().strokeBorder(Color.white.opacity(colorHex == hex ? 0.95 : 0.25), lineWidth: colorHex == hex ? 2 : 0.5))
+                        .overlay(Circle().strokeBorder(colorHex == hex ? ToolbarChrome.strong : ToolbarChrome.hairline, lineWidth: colorHex == hex ? 2 : 0.5))
                         .contentShape(Circle())
                 }.buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 13).padding(.vertical, 7)
-        .background(Color.black.opacity(0.88), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)).fixedSize()
+        .background(ToolbarChrome.panelBG, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ToolbarChrome.hairline, lineWidth: 0.5)).fixedSize()
     }
 }
 
@@ -145,10 +167,10 @@ struct MosaicOptionsBar: View {
             modeBtn("rectangle.dashed", active: isBox) { onMode(true) }       // 区域（默认、在前）
             modeBtn("paintbrush.pointed", active: !isBox) { onMode(false) }   // 涂抹
             if !isBox {
-                Divider().frame(height: 19).overlay(Color.white.opacity(0.15))
+                Divider().frame(height: 19).overlay(ToolbarChrome.separator)
                 ForEach(Self.widths, id: \.self) { w in
                     Button { onWidth(w) } label: {
-                        Circle().fill(lineWidth == w ? Color.cyan : Color.white.opacity(0.85))
+                        Circle().fill(lineWidth == w ? ToolbarChrome.accent : ToolbarChrome.fg())
                             .frame(width: w / 3 + 5, height: w / 3 + 5).frame(width: 30, height: 28)
                             .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(lineWidth == w ? Color.cyan.opacity(0.18) : .clear)).contentShape(Capsule())
                     }.buttonStyle(.plain)
@@ -156,57 +178,52 @@ struct MosaicOptionsBar: View {
             }
         }
         .padding(.horizontal, 13).padding(.vertical, 7)
-        .background(Color.black.opacity(0.88), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5)).fixedSize()
+        .background(ToolbarChrome.panelBG, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ToolbarChrome.hairline, lineWidth: 0.5)).fixedSize()
     }
     private func modeBtn(_ icon: String, active: Bool, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon).font(.system(size: 15))
-                .foregroundColor(active ? .cyan : .white.opacity(0.85))
+                .foregroundColor(active ? ToolbarChrome.accent : ToolbarChrome.fg())
                 .frame(width: 32, height: 28)
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(active ? Color.cyan.opacity(0.18) : .clear)).contentShape(Capsule())
         }.buttonStyle(.plain)
     }
 }
 
-/// 马赛克图标：圆角方块内的双明度棋盘格（照大梁老师认可的示意图复刻，细密小格更像真实马赛克）
-/// side = 视觉边长，调它即可与工具栏其它 SF Symbol 图标对齐
+/// 马赛克图标：3×3 圆点阵（大梁老师选定，对应 Tabler grid-dots 样式）
 private struct ScreenshotMosaicGlyph: View {
     var color: Color
     var side: CGFloat = 20
-    private let n = 5                       // 5×5 细棋盘
     var body: some View {
-        let cell = side / CGFloat(n)
-        VStack(spacing: 0) {
-            ForEach(0..<n, id: \.self) { r in
-                HStack(spacing: 0) {
-                    ForEach(0..<n, id: \.self) { c in
-                        Rectangle()
-                            .fill(color.opacity((r + c).isMultiple(of: 2) ? 1.0 : 0.4))
-                            .frame(width: cell, height: cell)
+        let dot: CGFloat = 3.2, gap: CGFloat = 2.7   // 点边缘间距 → 点阵约 15×15
+        VStack(spacing: gap) {
+            ForEach(0..<3, id: \.self) { _ in
+                HStack(spacing: gap) {
+                    ForEach(0..<3, id: \.self) { _ in
+                        Circle().fill(color).frame(width: dot, height: dot)
                     }
                 }
             }
         }
         .frame(width: side, height: side)
-        .clipShape(RoundedRectangle(cornerRadius: side * 0.2, style: .continuous))
     }
 }
 
-/// 长截图图标（大梁老师选定方案：竖页三段分割）：竖长圆角页 + 两道分割线，
-/// 墨水高 15.75 与 OCR 等高
+/// 长截图图标：上下双向箭头（大梁老师选定，对应 Tabler arrows-vertical，表示纵向延展截取）
 private struct ScreenshotLongShotGlyph: View {
     var color: Color = .white
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 3.2)
-                .stroke(color, style: StrokeStyle(lineWidth: 1.5))
-                .frame(width: 13.2, height: 16.0)
-            Path { p in   // 一道中分割线
-                p.move(to: CGPoint(x: 4.6, y: 9.0)); p.addLine(to: CGPoint(x: 16.4, y: 9.0))
-            }.stroke(color, style: StrokeStyle(lineWidth: 1.4, lineCap: .round))
+        Path { p in
+            let cx: CGFloat = 10.5
+            p.move(to: CGPoint(x: cx, y: 1.1)); p.addLine(to: CGPoint(x: cx, y: 15.4))          // 竖线
+            p.move(to: CGPoint(x: cx - 3.2, y: 4.2)); p.addLine(to: CGPoint(x: cx, y: 0.9))
+            p.addLine(to: CGPoint(x: cx + 3.2, y: 4.2))                                          // 上箭头
+            p.move(to: CGPoint(x: cx - 3.2, y: 12.3)); p.addLine(to: CGPoint(x: cx, y: 15.6))
+            p.addLine(to: CGPoint(x: cx + 3.2, y: 12.3))                                         // 下箭头
         }
-        .frame(width: 21, height: 18)
+        .stroke(color, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
+        .frame(width: 21, height: 16.5)
     }
 }
 
@@ -253,7 +270,7 @@ private struct ToolbarIconButton<Content: View>: View {
                 .frame(width: 35, height: 31)
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(active ? Color.cyan.opacity(hover ? 0.30 : 0.18)
-                                 : Color.white.opacity(hover ? 0.13 : 0)))
+                                 : ToolbarChrome.hoverBG(hover)))
                 .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -263,11 +280,11 @@ private struct ToolbarIconButton<Content: View>: View {
             if hover {
                 Text(help)
                     .font(.system(size: 11.5, weight: .medium))
-                    .foregroundColor(.white.opacity(0.95))
+                    .foregroundColor(ToolbarChrome.mono(0.95))
                     .fixedSize()
                     .padding(.horizontal, 9).padding(.vertical, 5)
-                    .background(Color.black.opacity(0.92), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
+                    .background(ToolbarChrome.panel(0.92), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(ToolbarChrome.mono(0.12), lineWidth: 0.5))
                     .offset(y: 46)   // 从按钮顶边下推到工具栏下方约 8pt
                     .allowsHitTesting(false)
                     .transition(.opacity)
@@ -285,6 +302,7 @@ struct ScreenshotToolbar: View {
     let noteActive: Bool
     let flowActive: Bool
     let translateTitle: String
+    let translateActive: Bool
     let onBox: () -> Void
     let onPen: () -> Void
     let onMosaic: () -> Void
@@ -302,61 +320,63 @@ struct ScreenshotToolbar: View {
 
     var body: some View {
         HStack(spacing: 3) {
-            // 标注：框选 / 备注 / 流程 / 画笔 / 马赛克
+            // 关闭：单独摆最左角，远离右侧主操作，放弃可点又不误触
+            button("取消", "xmark", action: onCancel)
+            Divider().frame(height: 20).overlay(ToolbarChrome.separator).padding(.horizontal, 1)
+            // 标注编辑：框选 / 备注 / 序号 / 画笔 / 马赛克 + 撤销收尾
             button("框选标注", "rectangle", active: boxActive, action: onBox)
             button("文字备注", "bubble.left", active: noteActive, action: onNote)
             button("步骤序号标注", "list.number", active: flowActive, action: onFlow)
             button("自由画笔", "pencil.tip", active: penActive, action: onPen)
             mosaicButton(active: mosaicActive)
-            Divider().frame(height: 20).overlay(Color.white.opacity(0.15)).padding(.horizontal, 1)
-            // 撤回：独立成组
             button("撤销上一步", "arrow.uturn.backward", action: onUndo)
-            Divider().frame(height: 20).overlay(Color.white.opacity(0.15)).padding(.horizontal, 1)
-            // 智能：翻译 / 提取文字
-            if translateTitle == "翻译" { translateButton }   // 自绘「A ⇄ 文」字形
-            else { button(translateTitle, "arrow.2.squarepath", action: onTranslate) }
+            Divider().frame(height: 20).overlay(ToolbarChrome.separator).padding(.horizontal, 1)
+            // 智能处理：翻译 / OCR / 长截图 / 问 AI
+            translateButton   // 恒为「A ⇄ 文」字形，只靠 active 变色区分开关，不换图标
             button("提取文字（OCR）", "text.viewfinder", action: onOCR)
             longShotButton
             button("截图问 AI", "sparkles", action: onAskAI)
-            Divider().frame(height: 20).overlay(Color.white.opacity(0.15)).padding(.horizontal, 1)
-            // 完成：取消 / 保存 / 复制(确定)
-            button("取消", "xmark", action: onCancel)
+            Divider().frame(height: 20).overlay(ToolbarChrome.separator).padding(.horizontal, 1)
+            // 输出成果：贴图 / 保存 / 复制(确定，绿色压轴)
             button("钉在屏幕（贴图）", "pin", action: onPin)
             button("保存到桌面", "arrow.down.to.line", action: onSave)
             button("复制到剪贴板", "checkmark", tint: .green, action: onCopy)
         }
         .padding(.vertical, 7).padding(.horizontal, 9)
-        .background(Color.black.opacity(0.88), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
+        .background(ToolbarChrome.panelBG, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ToolbarChrome.hairline, lineWidth: 0.5))
         .fixedSize()
     }
 
     /// 长截图按钮：自绘横向矩形字形（与 OCR 图标墨水等高）
     private var longShotButton: some View {
         ToolbarIconButton(help: "长截图", action: onLongShot) { hover in
-            ScreenshotLongShotGlyph(color: .white.opacity(hover ? 1.0 : 0.85))
+            ScreenshotLongShotGlyph(color: ToolbarChrome.fg(hover))
         }
     }
 
     /// 翻译按钮：大梁老师提供的原稿
     private var translateButton: some View {
-        ToolbarIconButton(help: "原位翻译", action: onTranslate) { hover in
-            ScreenshotTranslateGlyph(color: .white.opacity(hover ? 1.0 : 0.85))
+        // 图标恒为「A ⇄ 文」字形，只靠 active 变色区分开关；tooltip 随状态提示下一步动作
+        let tip = translateTitle == "翻译" ? "原位翻译" : translateTitle
+        return ToolbarIconButton(active: translateActive, help: tip, action: onTranslate) { hover in
+            ScreenshotTranslateGlyph(color: translateActive ? ToolbarChrome.accent : ToolbarChrome.fg(hover))
         }
     }
 
     /// 马赛克按钮：棋盘格自绘字形
     private func mosaicButton(active: Bool) -> some View {
         ToolbarIconButton(active: active, help: "马赛克遮挡", action: onMosaic) { hover in
-            ScreenshotMosaicGlyph(color: active ? .cyan : .white.opacity(hover ? 1.0 : 0.85))
+            ScreenshotMosaicGlyph(color: active ? ToolbarChrome.accent : ToolbarChrome.fg(hover))
         }
     }
 
     private func button(_ title: String, _ icon: String, active: Bool = false,
-                        tint: Color = .white, action: @escaping () -> Void) -> some View {
+                        tint: Color? = nil, action: @escaping () -> Void) -> some View {
         ToolbarIconButton(active: active, help: title, action: action) { hover in
             Image(systemName: icon).font(.system(size: 16.5))
-                .foregroundColor(active ? .cyan : tint.opacity(hover ? 1.0 : 0.85))
+                .foregroundColor(active ? ToolbarChrome.accent
+                                        : (tint?.opacity(hover ? 1.0 : 0.85) ?? ToolbarChrome.fg(hover)))
         }
     }
 }
@@ -371,24 +391,24 @@ struct OCRResultPanel: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("识别结果（可编辑修正）")
-                    .font(.system(size: 12, weight: .medium)).foregroundColor(.white.opacity(0.9))
+                    .font(.system(size: 12, weight: .medium)).foregroundColor(ToolbarChrome.mono(0.9))
                 Spacer()
                 Button(action: onClose) { Image(systemName: "xmark").font(.system(size: 11)) }
-                    .buttonStyle(.plain).foregroundColor(.white.opacity(0.5))
+                    .buttonStyle(.plain).foregroundColor(ToolbarChrome.mono(0.5))
             }
             TextEditor(text: $text)
                 .font(.system(size: 13))
-                .foregroundColor(.white)
+                .foregroundColor(ToolbarChrome.mono(1))
                 .scrollContentBackground(.hidden)
                 .frame(width: 400, height: 220)
                 .padding(8)
-                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.08)))
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(ToolbarChrome.mono(0.08)))
             HStack {
                 Text(text.isEmpty ? "未识别到文字" : "\(text.split(separator: "\n").count) 行")
-                    .font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
+                    .font(.system(size: 11)).foregroundColor(ToolbarChrome.mono(0.4))
                 Spacer()
                 Button(action: { onCopy(text) }) {
-                    Text("复制").font(.system(size: 12, weight: .medium)).foregroundColor(.white)
+                    Text("复制").font(.system(size: 12, weight: .medium)).foregroundColor(ToolbarChrome.mono(1))
                         .padding(.horizontal, 18).padding(.vertical, 6)
                         .background(Capsule().fill(Color.green.opacity(0.85)))
                 }
@@ -397,7 +417,7 @@ struct OCRResultPanel: View {
         }
         .padding(16)
         .frame(width: 432)
-        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(Color.black.opacity(0.92)))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
+        .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(ToolbarChrome.panel(0.92)))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(ToolbarChrome.mono(0.12), lineWidth: 0.5))
     }
 }

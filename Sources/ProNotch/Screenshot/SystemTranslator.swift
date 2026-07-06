@@ -1,6 +1,5 @@
 import AppKit
 import SwiftUI
-import NaturalLanguage
 #if canImport(Translation)
 import Translation
 #endif
@@ -37,19 +36,6 @@ enum SystemTranslator {
                           userInfo: [NSLocalizedDescriptionKey: "系统翻译需 macOS 15 或更高"])
         }
         return try await SystemTranslatorCore.shared.translate(texts, targetCode: languageCode(for: targetLang))
-    }
-
-    /// 语言对状态："installed"=已装可用；"supported"=支持但语言包未下载；"unsupported"=不支持
-    static func pairStatus(sourceCode: String, targetCode: String) async -> String {
-        guard #available(macOS 15.0, *) else { return "unsupported" }
-        let status = await LanguageAvailability().status(from: Locale.Language(identifier: sourceCode),
-                                                         to: Locale.Language(identifier: targetCode))
-        switch status {
-        case .installed:   return "installed"
-        case .supported:   return "supported"
-        case .unsupported: return "unsupported"
-        @unknown default:  return "unsupported"
-        }
     }
 }
 
@@ -108,28 +94,15 @@ final class SystemTranslatorCore: ObservableObject {
     func translate(_ texts: [String], targetCode: String) async throws -> [String] {
         ensureWindow()
         guard pending == nil else { throw Self.err("上一次翻译还在进行") }
-        // 快速失败：本地探测源语言，语言包没装/语言对不支持就立刻抛错（调用方秒切 AI），不傻等超时
-        let recognizer = NLLanguageRecognizer()
-        recognizer.processString(String(texts.joined(separator: " ").prefix(300)))
-        if let src = recognizer.dominantLanguage?.rawValue, !targetCode.hasPrefix(src) {
-            let status = await LanguageAvailability().status(from: Locale.Language(identifier: src),
-                                                             to: Locale.Language(identifier: targetCode))
-            switch status {
-            case .supported:
-                throw Self.err("系统翻译语言包未下载（系统设置→通用→语言与地区→翻译语言）")
-            case .unsupported:
-                throw Self.err("系统翻译不支持该语言对（\(src) → \(targetCode)）")
-            default: break
-            }
-        }
+        // 注：曾在此用 LanguageAvailability().status 做「没装语言包就快速失败」，但该 API 会
+        // 无限挂起（中英混杂页面实测直接卡死），且位于看门狗武装之前 → 永久转圈。已移除，
+        // 改为直接翻译、由下方 8 秒看门狗统一兜底降级 AI。系统翻译本身对混杂内容不卡（实测 ~200ms）。
         jobID += 1
         let id = jobID
-        // 看门狗：translationTask 因故未触发（语言包待下载等）时不让调用方无限等
-        DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [weak self] in
-            guard let self, let job = self.pending, job.id == id else { return }
-            self.pending = nil
-            job.cont.resume(throwing: Self.err(
-                "系统翻译超时——语言包可能未下载（系统设置→通用→语言与地区→翻译语言）"))
+        // 看门狗：translations 对某些内容（如中英混杂）会挂起不返回，或语言包待下载时不触发；
+        // 到点统一走 finish 以超时收尾，让调用方降级 AI（不再依赖 pending 未被 run 清空）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            self?.finish(id: id, .failure(Self.err("系统翻译超时，已改用 AI")))
         }
         return try await withCheckedThrowingContinuation { cont in
             pending = Job(id: id, texts: texts, cont: cont)
@@ -144,15 +117,26 @@ final class SystemTranslatorCore: ObservableObject {
     }
 
     /// translationTask 的回调：拿到 session，跑掉当前挂起的批量任务
+    /// 统一收尾：按 job id 匹配，只 resume 一次（run 成功/失败、看门狗超时——谁先到谁收尾）。
+    /// run 不再提前清 pending，避免 translations 挂起时看门狗因 pending==nil 失灵（永久转圈的根因）
+    private func finish(id: Int, _ result: Result<[String], Error>) {
+        guard let job = pending, job.id == id else { return }
+        pending = nil
+        switch result {
+        case .success(let v): job.cont.resume(returning: v)
+        case .failure(let e): job.cont.resume(throwing: e)
+        }
+    }
+
     fileprivate func run(_ session: TranslationSession) async {
         guard let job = pending else { return }
-        pending = nil
+        let id = job.id
         do {
             let requests = job.texts.map { TranslationSession.Request(sourceText: $0) }
             let responses = try await session.translations(from: requests)   // 结果与请求同序
-            job.cont.resume(returning: responses.map(\.targetText))
+            finish(id: id, .success(responses.map(\.targetText)))
         } catch {
-            job.cont.resume(throwing: error)
+            finish(id: id, .failure(error))
         }
     }
 
