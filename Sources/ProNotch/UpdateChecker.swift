@@ -140,6 +140,8 @@ final class UpdateChecker: ObservableObject {
 struct UpdateAlertView: View {
     let title: String
     let detail: String
+    var actionTitle: String? = nil        // 主操作按钮（如「前往下载」）；nil 则只有「好」
+    var onAction: (() -> Void)? = nil
     let onOK: () -> Void
 
     var body: some View {
@@ -155,13 +157,26 @@ struct UpdateAlertView: View {
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
-            Button(action: onOK) {
-                Text("好").font(.system(size: 13, weight: .medium))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 3)
+            if let actionTitle, let onAction {   // 发现新版：主按钮「前往下载」，次按钮「稍后」
+                Button(action: onAction) {
+                    Text(actionTitle).font(.system(size: 13, weight: .medium))
+                        .frame(maxWidth: .infinity).padding(.vertical, 3)
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                Button(action: onOK) {
+                    Text("稍后").font(.system(size: 12)).frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.plain).foregroundColor(.secondary)
+            } else {
+                Button(action: onOK) {
+                    Text("好").font(.system(size: 13, weight: .medium))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 3)
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
             }
-            .buttonStyle(.borderedProminent)
-            .keyboardShortcut(.defaultAction)
         }
         .padding(20)
         .frame(width: 262)

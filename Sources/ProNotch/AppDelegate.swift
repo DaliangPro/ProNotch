@@ -581,7 +581,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func handleUpdate(_ release: UpdateChecker.Release?, manual: Bool) {
         refreshUpdateMenuItem()
         if let release {
-            notifyUpdate(release)
+            if manual {
+                // 用户主动检查：醒目弹窗提示 +「前往下载」按钮（不再只在菜单里改一行字）
+                showUpdateResultWindow(
+                    title: "发现新版本 \(release.version)",
+                    detail: "当前 \(updateChecker.currentVersion)，可更新到 \(release.version)。",
+                    actionTitle: "前往下载",
+                    action: { [weak self] in self?.openLatestRelease() })
+            } else {
+                notifyUpdate(release)   // 启动时静默检查：只发通知 + 菜单标记，不弹窗打扰
+            }
         } else if manual {
             // 非模态结果窗：NSAlert.runModal 会接管事件循环，弹着时截图快捷键等全部失灵；
             // 这里用同款式的普通浮动窗口，弹着时一切照常（还能被截图分享）
@@ -595,12 +604,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     /// 系统弹窗同款式的非模态结果窗：屏幕中央偏上，点「好」或回车关闭
-    private func showUpdateResultWindow(title: String, detail: String) {
+    private func showUpdateResultWindow(title: String, detail: String,
+                                        actionTitle: String? = nil, action: (() -> Void)? = nil) {
         updateResultPanel?.orderOut(nil)
-        let host = NSHostingView(rootView: UpdateAlertView(title: title, detail: detail) { [weak self] in
-            self?.updateResultPanel?.orderOut(nil)
-            self?.updateResultPanel = nil
-        })
+        let host = NSHostingView(rootView: UpdateAlertView(
+            title: title, detail: detail, actionTitle: actionTitle,
+            onAction: action.map { act in { [weak self] in
+                self?.updateResultPanel?.orderOut(nil); self?.updateResultPanel = nil; act()
+            } },
+            onOK: { [weak self] in
+                self?.updateResultPanel?.orderOut(nil)
+                self?.updateResultPanel = nil
+            }))
         let size = host.fittingSize
         host.frame = NSRect(origin: .zero, size: size)
         let panel = UpdateAlertPanel(contentRect: host.frame, styleMask: [.borderless],
