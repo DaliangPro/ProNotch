@@ -387,11 +387,15 @@ private struct StripToggle: View {
 /// 熄灭——由 GlowController 监听 glowEnabled 变更统一处理）。
 private struct AgentReminderToggle: View {
     @EnvironmentObject var settings: SettingsStore
+    @EnvironmentObject var vm: NotchViewModel
 
     @State private var hovering = false
     @State private var breathing = false
 
     private var on: Bool { settings.glowEnabled }
+    /// 只在「开启 且 面板展开」时呼吸——收起态看不见却常驻，无限动画会持续标脏
+    /// 整棵面板视图树、每帧重新布局（曾导致空闲 CPU 30%+）；收起即停
+    private var shouldBreathe: Bool { on && vm.isExpanded }
 
     /// 开启时描边在 0.45↔1 之间呼吸；关闭时恒定（灰描边不呼吸）
     private var strokeOpacity: Double {
@@ -413,14 +417,16 @@ private struct AgentReminderToggle: View {
                     Capsule()
                         .strokeBorder(borderStyle, lineWidth: 1.5)
                         .opacity(strokeOpacity)
-                        .animation(.easeInOut(duration: max(settings.glowBreathPeriod, 0.6) / 2)
-                            .repeatForever(autoreverses: true), value: breathing)
+                        .animation(shouldBreathe
+                            ? .easeInOut(duration: max(settings.glowBreathPeriod, 0.6) / 2).repeatForever(autoreverses: true)
+                            : .easeInOut(duration: 0.2), value: breathing)
                 )
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .onAppear { breathing = true }
+        .onAppear { breathing = shouldBreathe }
+        .onChange(of: shouldBreathe) { _, v in breathing = v }   // 展开/收起、开关切换时启停呼吸
         .help(on ? "Agent 完成提醒：开启（点击全局静音屏幕光晕）"
                  : "Agent 完成提醒：已静音（点击恢复）")
     }
