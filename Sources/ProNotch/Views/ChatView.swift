@@ -6,6 +6,7 @@ struct ChatView: View {
     @EnvironmentObject var store: ChatStore
 
     @FocusState private var inputFocused: Bool
+    @State private var pasteMonitor: Any?
 
     private let edgeInset: CGFloat = 14
 
@@ -27,8 +28,36 @@ struct ChatView: View {
                 inputBar
             }
         }
-        .onAppear { store.checkConnectivity() }
-        .onDisappear { vm.keyboardHold = false }
+        .onAppear {
+            store.checkConnectivity()
+            installPasteMonitor()
+        }
+        .onDisappear {
+            vm.keyboardHold = false
+            if let monitor = pasteMonitor { NSEvent.removeMonitor(monitor); pasteMonitor = nil }
+        }
+    }
+
+    /// ⌘V 粘贴图片为附件：菜单 Paste 的 key equivalent 会先于 SwiftUI onKeyPress 吃掉 ⌘V，
+    /// 用本地事件监听在分发前拦截。剪贴板是图片（截图/网页图/图片文件通用）→ 挂为附件；
+    /// 是文字 → 放行走系统粘贴。仅在面板展开且停留在闪问页时生效
+    private func installPasteMonitor() {
+        guard pasteMonitor == nil else { return }
+        let vm = self.vm
+        let store = self.store
+        pasteMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.modifierFlags.contains(.command),
+                  event.charactersIgnoringModifiers?.lowercased() == "v" else { return event }
+            let attached = MainActor.assumeIsolated {   // 事件监听在主线程回调
+                guard vm.isExpanded, vm.activeTab == .chat,
+                      store.isConfigured, !store.showSettings,
+                      let image = NSImage(pasteboard: .general) else { return false }
+                store.attachScreenshot(image)
+                print("[ProNotch] 已从剪贴板粘贴图片为闪问附件")
+                return true
+            }
+            return attached ? nil : event
+        }
     }
 
     private var messageList: some View {
