@@ -331,9 +331,9 @@ struct ScreenshotToolbar: View {
             mosaicButton(active: mosaicActive)
             button("撤销上一步", "arrow.uturn.backward", action: onUndo)
             Divider().frame(height: 20).overlay(ToolbarChrome.separator).padding(.horizontal, 1)
-            // 智能处理：翻译 / OCR / 长截图 / 问 AI
-            translateButton   // 恒为「A ⇄ 文」字形，只靠 active 变色区分开关，不换图标
+            // 智能处理：OCR / 翻译 / 长截图 / 问 AI
             button("提取文字（OCR）", "text.viewfinder", action: onOCR)
+            translateButton   // 恒为「A ⇄ 文」字形，只靠 active 变色区分开关，不换图标
             longShotButton
             button("截图问 AI", "sparkles", action: onAskAI)
             Divider().frame(height: 20).overlay(ToolbarChrome.separator).padding(.horizontal, 1)
