@@ -562,12 +562,20 @@ final class ChatStore: ObservableObject {
             print("[ProNotch] AI 回复已停止")
         } catch {
             errorText = error.localizedDescription
-            connectivity = .failed(error.localizedDescription)
             // 失败时移除空的占位回复
             if let last = messages.last, last.role == .assistant, last.content.isEmpty {
                 messages.removeLast()
             }
+            // 关键：本次带图的 user 消息若发送失败，去掉它的图片（保留文字）——否则这条 image_url 会
+            // 永久留在历史，之后每次请求都重发它、被不支持图片的模型反复 400，会话彻底卡死。
+            if let idx = messages.indices.last, messages[idx].role == .user, messages[idx].imageData != nil {
+                messages[idx].imageData = nil
+                errorText = "图片发送失败，当前模型可能不支持图片：\(error.localizedDescription)"
+            }
             print("[ProNotch] AI 请求失败: \(error.localizedDescription)")
+            // 状态灯不因单次请求失败就常红——单次失败（尤其 400 请求内容问题，如图片不支持）不代表
+            // 连接坏了。用轻量 GET /models 探测真实连通来定灯色：连接正常自动转绿，真断了才保持红。
+            checkConnectivity(force: true)
         }
     }
 
