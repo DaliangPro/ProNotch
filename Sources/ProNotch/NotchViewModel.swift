@@ -57,6 +57,8 @@ final class NotchViewModel: ObservableObject {
     var shouldHideForFullscreen: (() -> Bool)?
     /// 当前是否因全屏而隐藏
     private(set) var hiddenForFullscreen = false
+    /// 全屏隐藏期间被程序化展开（截图问 AI）临时召唤现身；收起时重新评估是否恢复隐藏
+    private var forcedShowOverFullscreen = false
     /// 空间切换通知 token（进入/退出全屏即切换空间，事件驱动零轮询）
     private var spaceObserver: Any?
     private var settingObserver: Any?
@@ -255,9 +257,16 @@ final class NotchViewModel: ObservableObject {
     // MARK: - 状态切换
 
     /// 程序化展开（截图问 AI 等入口）：固定住不自动收起，直到鼠标真正进入面板后
-    /// 交还悬停规则；同时让面板成为 key 窗口，输入框聚焦即可直接打字
+    /// 交还悬停规则；同时让面板成为 key 窗口，输入框聚焦即可直接打字。
+    /// 用户显式召唤压过「全屏自动隐藏」：曾因 guard hiddenForFullscreen 静默放弃，导致在全屏
+    /// App 里点「截图问 AI」刘海必不弹。面板本就具备 fullScreenAuxiliary，可临时现身盖在全屏
+    /// 空间上；收起时（collapse）重新评估，仍在全屏则恢复隐藏
     func expandProgrammatically() {
-        guard !hiddenForFullscreen else { return }
+        if hiddenForFullscreen {
+            hiddenForFullscreen = false
+            forcedShowOverFullscreen = true
+            panel?.orderFrontRegardless()
+        }
         if !isExpanded {
             debugPinned = true
             expand()
@@ -301,6 +310,13 @@ final class NotchViewModel: ObservableObject {
         keyboardHold = false
         pendingCollapse?.cancel()
         pendingCollapse = nil
+        // 全屏期间被截图问 AI 临时召唤的：收起即重新评估，仍在全屏空间则恢复隐藏
+        if forcedShowOverFullscreen {
+            forcedShowOverFullscreen = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + animationDuration) { [weak self] in
+                Task { @MainActor [weak self] in self?.updateFullscreenHiding() }
+            }
+        }
         // 收起后窗口对鼠标完全隐形，假刘海区域的点击会穿透到下层
         panel?.ignoresMouseEvents = true
         withAnimation(.spring(response: animationDuration, dampingFraction: 0.9)) {
