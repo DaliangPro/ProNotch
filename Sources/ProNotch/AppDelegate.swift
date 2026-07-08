@@ -290,10 +290,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// 调试用：离屏渲染超级截图工具栏到 PNG（生成 README 配图）
     @objc private func debugSnapshotToolbar() {
         let bar = ScreenshotToolbar(
-            boxActive: false, penActive: false, mosaicActive: false, noteActive: false, flowActive: false,
+            boxActive: false, penActive: false, arrowActive: false, mosaicActive: false,
+            noteActive: false, flowActive: false, wmActive: false,
             translateTitle: "翻译", translateActive: false,
-            onBox: {}, onPen: {}, onMosaic: {}, onNote: {}, onFlow: {}, onUndo: {},
-            onOCR: {}, onLongShot: {}, onPin: {}, onAskAI: {}, onTranslate: {}, onSave: {}, onCopy: {}, onCancel: {})
+            onBox: {}, onPen: {}, onArrow: {}, onMosaic: {}, onNote: {}, onFlow: {}, onWatermark: {}, onUndo: {},
+            onOCR: {}, onLongShot: {}, onPin: {}, onAskAI: {}, onTranslate: {}, onSave: {}, onCopy: {}, onCancel: {},
+            onDragToolbar: { _, _ in })
         let probe = NSHostingView(rootView: bar)
         let s = probe.fittingSize
         let root = ZStack { Color(white: 0.08); bar }

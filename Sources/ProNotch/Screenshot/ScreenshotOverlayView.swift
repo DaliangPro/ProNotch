@@ -31,12 +31,15 @@ enum BoxShape { case rect, oval }
 /// 选区 + 压暗 + 标注（框选 / 备注 / 流程）的绘制与交互视图（AppKit 左下原点）
 final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private enum Phase { case selecting, editing }
-    /// 标注工具：none=可重新框选，box=框选，pen=画笔，mosaic=马赛克，note=备注，flow=流程
-    private enum Tool { case none, box, pen, mosaic, note, flow }
+    /// 标注工具：none=可重新框选，box=框选，pen=画笔，arrow=箭头，mosaic=马赛克，
+    /// note=备注，flow=流程，watermark=水印
+    private enum Tool { case none, box, pen, arrow, mosaic, note, flow, watermark }
     /// 马赛克模式：brush=像笔一样涂抹，box=框选区域
     private enum MosaicMode { case brush, box }
     /// 画笔/马赛克自由笔画
     private struct Stroke { var points: [NSPoint]; var colorHex: String; var lineWidth: CGFloat }
+    /// 箭头：起点 → 终点两点拖出 + 颜色 + 粗细
+    private struct Arrow { var start: NSPoint; var end: NSPoint; var colorHex: String; var lineWidth: CGFloat }
     private struct MosaicStroke { var points: [NSPoint]; var lineWidth: CGFloat }
     /// 框选：矩形 + 样式（形状/线型/颜色/粗细/高亮，逐框独立）
     private struct Box {
@@ -64,7 +67,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     /// 当前选中的标注（单击选中，可 ESC 删除）
     private enum AnnotationRef: Equatable { case box(Int); case marker(Int); case step(Int) }
     /// 撤回快照：所有标注
-    private struct Snapshot { let boxes: [Box]; let markers: [Marker]; let steps: [Step]; let pen: [Stroke]; let mosaicS: [MosaicStroke]; let mosaicR: [NSRect] }
+    private struct Snapshot { let boxes: [Box]; let markers: [Marker]; let steps: [Step]; let pen: [Stroke]; let arrows: [Arrow]; let mosaicS: [MosaicStroke]; let mosaicR: [NSRect] }
 
     private let cgImage: CGImage
     private let nsImage: NSImage
@@ -99,6 +102,17 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var penStrokes: [Stroke] = []
     private var penColorHex = "#FFFFFF"   // 画笔颜色（默认白）
     private var penLineWidth: CGFloat = 4
+    // 箭头（起点 → 终点拖出）
+    private var arrows: [Arrow] = []
+    private var currentArrow: Arrow?         // 正在拖的箭头预览
+    private var arrowColorHex = "#FFFFFF"    // 箭头颜色（默认白）
+    private var arrowLineWidth: CGFloat = 4
+    // 水印：铺满选区的重复斜排文字；文字现场输入（无默认），为空＝无水印。
+    // 属全局显示态而非单笔标注，不进撤销栈——清空文字即移除
+    private var wmText = ""
+    private var wmColorHex = "#FFFFFF"
+    private var wmOpacity: Double = 0.3
+    private var wmDensity = 1                // 0 稀 / 1 中 / 2 密
     private var noteColorHex = "#FFFFFF"  // 备注新建颜色（默认白）
     private var flowColorHex = "#FFFFFF"  // 流程新建颜色（默认白）
     // 马赛克
@@ -123,6 +137,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var undoStack: [Snapshot] = []      // 撤回栈（Cmd+Z）
 
     private var toolbarHost: NSHostingView<ScreenshotToolbar>?
+    private var toolbarMoved = false        // 用户拖过工具栏 → 保持手动位置，不再自动跟随选区
+    private var toolbarDragBase: NSPoint?   // 本次拖拽起始时的工具栏 origin（位移基准）
     private var ocrPanel: NSHostingView<OCRResultPanel>?
 
     // 长截图（程序自动匀速滚动 + 逐帧拼接）
@@ -333,6 +349,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             drawStep(s, editingNumber: isEditing(.stepNumber(i)), editingText: isEditing(.stepText(i)))
         }
         drawPenStrokes(dx: 0, dy: 0)   // 画笔：盖在最上层
+        drawArrows(dx: 0, dy: 0)       // 箭头：与画笔同层
+        drawWatermark(in: sel, dx: 0, dy: 0)   // 水印：铺在所有标注之上
         if let sel = selected {
             if editingField == nil, activeMarker == nil { drawSelection(sel) }   // 空闲选中＝虚线高亮
             drawDeleteButton(sel)                                                 // 选中即显示删除按钮(×)，点它删整个组件
@@ -620,6 +638,77 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         path.lineWidth = width; path.lineCapStyle = .round; path.lineJoinStyle = .round; path.stroke()
     }
 
+    /// 箭头：已落定 + 正在拖的预览（屏上与导出共用，dx/dy 平移）
+    private func drawArrows(dx: CGFloat, dy: CGFloat) {
+        for a in arrows { strokeArrow(a, dx: dx, dy: dy) }
+        if let c = currentArrow { strokeArrow(c, dx: dx, dy: dy) }
+    }
+    /// 一体成型锥形箭头（大梁老师定稿）：尾端最细 → 杆身微微渐宽 → 三角头最宽，
+    /// 整支箭是一个填充多边形，杆与头无拼接痕。头长随粗细走、短箭头自动收敛不失衡
+    private func strokeArrow(_ a: Arrow, dx: CGFloat, dy: CGFloat) {
+        let s = NSPoint(x: a.start.x + dx, y: a.start.y + dy)
+        let e = NSPoint(x: a.end.x + dx, y: a.end.y + dy)
+        let len = hypot(e.x - s.x, e.y - s.y)
+        guard len > 0.5 else { return }
+        let ang = atan2(e.y - s.y, e.x - s.x)
+        let ux = cos(ang), uy = sin(ang)     // 箭身方向单位向量
+        let nx = -uy, ny = ux                // 法线单位向量（宽度方向）
+        let w = a.lineWidth
+        let headLen = min(max(11, w * 3.4), len * 0.55)   // 头长
+        let barbHalf = max(4.5, w * 1.6)     // 头根半宽：全箭最宽处
+        let rootHalf = max(1.6, w * 0.62)    // 杆身到头根处的半宽
+        let tailHalf = max(0.6, w * 0.22)    // 尾端半宽：最细
+        let root = NSPoint(x: e.x - headLen * ux, y: e.y - headLen * uy)
+        func off(_ p: NSPoint, _ k: CGFloat) -> NSPoint { NSPoint(x: p.x + nx * k, y: p.y + ny * k) }
+        let path = NSBezierPath()
+        path.move(to: off(s, tailHalf))      // 尾上缘
+        path.line(to: off(root, rootHalf))   // 杆身渐宽至头根
+        path.line(to: off(root, barbHalf))   // 张开成头
+        path.line(to: e)                     // 箭尖
+        path.line(to: off(root, -barbHalf))
+        path.line(to: off(root, -rootHalf))
+        path.line(to: off(s, -tailHalf))     // 尾下缘
+        path.close()
+        withShadow(blur: 4, alpha: 0.3) {
+            NSColor(Color(hex: a.colorHex)).setFill()
+            path.fill()
+        }
+    }
+
+    /// 水印：选区内平铺 -30° 斜排半透明文字（文字为空不画）；隔行错位半步铺得更自然。
+    /// 屏上与导出共用：dx/dy 把选区坐标平移到目标上下文
+    private func drawWatermark(in sel: NSRect, dx: CGFloat, dy: CGFloat) {
+        let text = wmText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        let rect = sel.offsetBy(dx: dx, dy: dy)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 15, weight: .medium),
+            .foregroundColor: NSColor(Color(hex: wmColorHex)).withAlphaComponent(wmOpacity)]
+        let sz = (text as NSString).size(withAttributes: attrs)
+        let gapScale: [CGFloat] = [2.6, 1.5, 0.7]   // 稀 / 中 / 密：间距倍数
+        let g = gapScale[min(max(wmDensity, 0), 2)]
+        let stepX = sz.width + 90 * g
+        let stepY = sz.height + 55 * g
+        NSGraphicsContext.saveGraphicsState()
+        NSBezierPath(rect: rect).addClip()
+        let t = NSAffineTransform()
+        t.translateX(by: rect.midX, yBy: rect.midY)
+        t.rotate(byDegrees: -30)
+        t.concat()
+        // 旋转后以选区对角线为半径平铺，保证四角无空缺
+        let r = hypot(rect.width, rect.height) / 2 + max(stepX, stepY)
+        var y = -r, row = 0
+        while y < r {
+            var x = -r + (row % 2 == 0 ? 0 : stepX / 2)
+            while x < r {
+                (text as NSString).draw(at: NSPoint(x: x, y: y), withAttributes: attrs)
+                x += stepX
+            }
+            y += stepY; row += 1
+        }
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
     // MARK: - 鼠标
 
     override func mouseDown(with event: NSEvent) {
@@ -640,6 +729,13 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         // 区域马赛克：拖矩形
         if phase == .editing, tool == .mosaic, mosaicMode == .box {
             commitEditing(); selected = nil; boxOrigin = pt; currentBox = NSRect(origin: pt, size: .zero); needsDisplay = true
+            return
+        }
+        // 箭头：按下起点，拖出终点
+        if phase == .editing, tool == .arrow {
+            commitEditing(); selected = nil
+            currentArrow = Arrow(start: pt, end: pt, colorHex: arrowColorHex, lineWidth: arrowLineWidth)
+            needsDisplay = true
             return
         }
         if phase == .editing { selected = hitAnnotation(at: pt) }   // 命中标注＝选中，空白＝清空
@@ -688,11 +784,13 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                 boxOrigin = pt
                 currentBox = NSRect(origin: pt, size: .zero)
             }
+        } else if phase == .editing, tool == .watermark {
+            commitEditing()   // 水印工具下点画布不作画，避免误触重新框选（水印靠子选项条输入）
         } else {
             phase = .selecting
             removeToolbar()
             commitEditing()
-            boxes.removeAll(); markers.removeAll(); steps.removeAll(); penStrokes.removeAll(); mosaicStrokes.removeAll(); mosaicRects.removeAll()
+            boxes.removeAll(); markers.removeAll(); steps.removeAll(); penStrokes.removeAll(); arrows.removeAll(); mosaicStrokes.removeAll(); mosaicRects.removeAll()
             activeMarker = nil; selected = nil; undoStack.removeAll()
             dragOrigin = pt
             selection = NSRect(origin: pt, size: .zero)
@@ -704,6 +802,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         guard !recordingLong, !longFinished else { return }
         let pt = convert(event.locationInWindow, from: nil)
         if currentStroke != nil { currentStroke?.append(pt); needsDisplay = true; return }   // 自由笔画
+        if currentArrow != nil { currentArrow?.end = pt; needsDisplay = true; return }       // 箭头拖拽预览
         if var grab = markerGrab, let i = activeMarker, markers.indices.contains(i) {
             if !grab.moved { record() }   // 首次移动前记录撤回点
             grab.moved = true; markerGrab = grab
@@ -750,6 +849,12 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                 if tool == .pen { penStrokes.append(Stroke(points: pts, colorHex: penColorHex, lineWidth: penLineWidth)) }
                 else { mosaicStrokes.append(MosaicStroke(points: pts, lineWidth: mosaicLineWidth)) }
             }
+            needsDisplay = true
+            return
+        }
+        if let a = currentArrow {   // 箭头收尾：拖出最短长度才落定（单击不留孤点）
+            currentArrow = nil
+            if hypot(a.end.x - a.start.x, a.end.y - a.start.y) >= 8 { record(); arrows.append(a) }
             needsDisplay = true
             return
         }
@@ -859,7 +964,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     /// 撤回：记录当前标注快照 / 回退到上一步
     private func record() {
-        undoStack.append(Snapshot(boxes: boxes, markers: markers, steps: steps, pen: penStrokes, mosaicS: mosaicStrokes, mosaicR: mosaicRects))
+        undoStack.append(Snapshot(boxes: boxes, markers: markers, steps: steps, pen: penStrokes, arrows: arrows, mosaicS: mosaicStrokes, mosaicR: mosaicRects))
         if undoStack.count > 80 { undoStack.removeFirst() }
     }
     private func undo() {
@@ -867,8 +972,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         f?.removeFromSuperview()
         guard let s = undoStack.popLast() else { return }
         boxes = s.boxes; markers = s.markers; steps = s.steps
-        penStrokes = s.pen; mosaicStrokes = s.mosaicS; mosaicRects = s.mosaicR
-        selected = nil; activeMarker = nil; markerGrab = nil; pendingBubble = nil; pendingBadge = nil; currentStroke = nil
+        penStrokes = s.pen; arrows = s.arrows; mosaicStrokes = s.mosaicS; mosaicRects = s.mosaicR
+        selected = nil; activeMarker = nil; markerGrab = nil; pendingBubble = nil; pendingBadge = nil; currentStroke = nil; currentArrow = nil
         window?.makeFirstResponder(self)
         needsDisplay = true
     }
@@ -1052,6 +1157,14 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         host.rootView = makeToolbar()
         if toolbarHost == nil { addSubview(host); toolbarHost = host }
         let size = host.fittingSize
+        if toolbarMoved {   // 用户拖过 → 保持手动位置，只按新尺寸原位适配（不跳回自动定位）
+            var o = host.frame.origin
+            o.x = max(4, min(o.x, bounds.width - size.width - 4))
+            o.y = max(4, min(o.y, bounds.height - size.height - 4))
+            host.frame = NSRect(origin: o, size: size)
+            updateToolOptions(below: host.frame)
+            return
+        }
         var y = sel.minY - size.height - 8            // 首选：选区下方
         if y < 8 { y = sel.maxY + 8 }                 // 放不下 → 选区上方
         var x = sel.midX - size.width / 2
@@ -1064,7 +1177,26 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         updateToolOptions(below: host.frame)   // 框选/画笔/马赛克时主栏下方弹子选项面板（放不下自动翻到上方）
     }
 
-    private func removeToolbar() { toolbarHost?.removeFromSuperview(); toolbarHost = nil; removeToolOptions() }
+    /// 拖拽手柄回调：SwiftUI 手势给全局累计位移（y 向下），换算到视图坐标（y 向上）移动整条工具栏。
+    /// 位移基于拖拽起始 origin 计算，避免逐帧叠加误差；子选项条随行
+    private func dragToolbar(translation: CGSize, ended: Bool) {
+        guard let host = toolbarHost else { return }
+        let base = toolbarDragBase ?? host.frame.origin
+        toolbarDragBase = base
+        var o = NSPoint(x: base.x + translation.width, y: base.y - translation.height)
+        o.x = max(4, min(o.x, bounds.width - host.frame.width - 4))
+        o.y = max(4, min(o.y, bounds.height - host.frame.height - 4))
+        host.setFrameOrigin(o)
+        toolbarMoved = true
+        updateToolOptions(below: host.frame)
+        if ended { toolbarDragBase = nil }
+    }
+
+    private func removeToolbar() {
+        toolbarHost?.removeFromSuperview(); toolbarHost = nil
+        toolbarMoved = false; toolbarDragBase = nil   // 工具栏退场即忘掉手动位置，下次回到自动定位
+        removeToolOptions()
+    }
 
     /// 工具子选项面板：框选/画笔/马赛克各自的样式选项，显示在主工具栏下方
     private func updateToolOptions(below main: NSRect) {
@@ -1096,6 +1228,18 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                 colorHex: penColorHex, lineWidth: penLineWidth,
                 onColor: { [weak self] in self?.penColorHex = $0; self?.refreshToolbars() },
                 onWidth: { [weak self] in self?.penLineWidth = $0; self?.refreshToolbars() }))
+        case .arrow:   // 箭头子选项：颜色 + 粗细（与画笔同一套面板）
+            return AnyView(PenOptionsBar(
+                colorHex: arrowColorHex, lineWidth: arrowLineWidth,
+                onColor: { [weak self] in self?.arrowColorHex = $0; self?.refreshToolbars() },
+                onWidth: { [weak self] in self?.arrowLineWidth = $0; self?.refreshToolbars() }))
+        case .watermark:
+            return AnyView(WatermarkOptionsBar(
+                text: wmText, density: wmDensity, colorHex: wmColorHex, opacity: wmOpacity,
+                onText: { [weak self] in self?.wmText = $0; self?.needsDisplay = true },   // 输入不重建面板，避免丢焦点
+                onDensity: { [weak self] in self?.wmDensity = $0; self?.refreshToolbars() },
+                onColor: { [weak self] in self?.wmColorHex = $0; self?.refreshToolbars() },
+                onOpacity: { [weak self] in self?.wmOpacity = $0; self?.refreshToolbars() }))
         case .mosaic:
             return AnyView(MosaicOptionsBar(
                 isBox: mosaicMode == .box, lineWidth: mosaicLineWidth,
@@ -1135,14 +1279,17 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         // 翻译按钮「按下」高亮：正在翻译，或译图在手且当前显示译文（切回原文则熄灭）
         let translateActive = translating || (translatedOverride != nil && !showingOriginal)
         return ScreenshotToolbar(
-            boxActive: tool == .box, penActive: tool == .pen, mosaicActive: tool == .mosaic,
-            noteActive: tool == .note, flowActive: tool == .flow,
+            boxActive: tool == .box, penActive: tool == .pen, arrowActive: tool == .arrow,
+            mosaicActive: tool == .mosaic, noteActive: tool == .note, flowActive: tool == .flow,
+            wmActive: tool == .watermark,
             translateTitle: tTitle, translateActive: translateActive,
             onBox: { [weak self] in self?.toggleTool(.box) },
             onPen: { [weak self] in self?.toggleTool(.pen) },
+            onArrow: { [weak self] in self?.toggleTool(.arrow) },
             onMosaic: { [weak self] in self?.toggleTool(.mosaic) },
             onNote: { [weak self] in self?.toggleTool(.note) },
             onFlow: { [weak self] in self?.toggleTool(.flow) },
+            onWatermark: { [weak self] in self?.toggleTool(.watermark) },
             onUndo: { [weak self] in self?.undo() },
             onOCR: { [weak self] in self?.runOCR() },
             onLongShot: { [weak self] in self?.startLongShot() },
@@ -1151,7 +1298,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             onTranslate: { [weak self] in self?.translateButtonTapped() },
             onSave: { [weak self] in self?.saveToDesktop() },
             onCopy: { [weak self] in self?.copyToClipboard() },
-            onCancel: { [weak self] in self?.close() })
+            onCancel: { [weak self] in self?.close() },
+            onDragToolbar: { [weak self] in self?.dragToolbar(translation: $0, ended: $1) })
     }
 
     /// 钉在屏幕：把当前选区（含标注/译图）原位钉成置顶贴图，随后关闭覆盖层
@@ -1230,6 +1378,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                      editingNumber: false, editingText: false)
         }
         drawPenStrokes(dx: dx, dy: dy)   // 画笔：最上层
+        drawArrows(dx: dx, dy: dy)       // 箭头：与画笔同层
+        drawWatermark(in: sel, dx: dx, dy: dy)   // 水印：铺在最上
         result.unlockFocus()
         return result
     }

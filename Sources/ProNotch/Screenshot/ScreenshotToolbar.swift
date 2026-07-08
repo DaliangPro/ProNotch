@@ -191,6 +191,69 @@ struct MosaicOptionsBar: View {
     }
 }
 
+/// 水印子选项：文字输入（现场输入，无默认水印）+ 密度三档 + 颜色 + 透明度三档
+struct WatermarkOptionsBar: View {
+    @State var text: String
+    let density: Int          // 0 稀 / 1 中 / 2 密
+    let colorHex: String
+    let opacity: Double
+    let onText: (String) -> Void
+    let onDensity: (Int) -> Void
+    let onColor: (String) -> Void
+    let onOpacity: (Double) -> Void
+
+    static let opacities: [Double] = [0.16, 0.3, 0.5]
+    private static let densityNames = ["稀", "中", "密"]
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 5) {
+            TextField("输入水印文字", text: $text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12.5))
+                .foregroundColor(ToolbarChrome.mono(0.95))
+                .frame(width: 128)
+                .padding(.horizontal, 9).padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(ToolbarChrome.mono(0.08)))
+                .focused($focused)
+                .onChange(of: text) { _, t in onText(t) }
+                .onAppear { focused = true }   // 打开即可直接打字
+            Divider().frame(height: 19).overlay(ToolbarChrome.separator)
+            // 密度：稀 / 中 / 密
+            ForEach(0..<3, id: \.self) { d in
+                Button { onDensity(d) } label: {
+                    Text(Self.densityNames[d]).font(.system(size: 12, weight: .medium))
+                        .foregroundColor(density == d ? ToolbarChrome.accent : ToolbarChrome.fg())
+                        .frame(width: 26, height: 28)
+                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(density == d ? Color.cyan.opacity(0.18) : .clear))
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain).help("水印密度：\(Self.densityNames[d])")
+            }
+            Divider().frame(height: 19).overlay(ToolbarChrome.separator)
+            ForEach(BoxOptionsBar.palette, id: \.self) { hex in
+                Button { onColor(hex) } label: {
+                    Circle().fill(Color(hex: hex)).frame(width: 18, height: 18)
+                        .overlay(Circle().strokeBorder(colorHex == hex ? ToolbarChrome.strong : ToolbarChrome.hairline, lineWidth: colorHex == hex ? 2 : 0.5))
+                        .contentShape(Circle())
+                }.buttonStyle(.plain)
+            }
+            Divider().frame(height: 19).overlay(ToolbarChrome.separator)
+            // 透明度：淡 / 中 / 浓（圆点浓淡即所选透明度）
+            ForEach(Self.opacities, id: \.self) { o in
+                Button { onOpacity(o) } label: {
+                    Circle().fill(ToolbarChrome.fg().opacity(o + 0.12))
+                        .frame(width: 15, height: 15).frame(width: 26, height: 28)
+                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(opacity == o ? Color.cyan.opacity(0.18) : .clear))
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain).help("透明度 \(Int(o * 100))%")
+            }
+        }
+        .padding(.horizontal, 13).padding(.vertical, 7)
+        .background(ToolbarChrome.panelBG, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ToolbarChrome.hairline, lineWidth: 0.5)).fixedSize()
+    }
+}
+
 /// 马赛克图标：3×3 圆点阵（大梁老师选定，对应 Tabler grid-dots 样式）
 private struct ScreenshotMosaicGlyph: View {
     var color: Color
@@ -294,20 +357,25 @@ private struct ToolbarIconButton<Content: View>: View {
     }
 }
 
-/// 截图工具栏：框选 / 备注 / 流程 / 保存到桌面 / 取消 / 复制（确定）
+/// 截图工具栏：标注（框选/备注/序号/画笔/箭头/马赛克/水印）/ 智能处理 / 输出（取消红、复制绿压轴）；
+/// 最左拖拽手柄按住可整条自由移动
 struct ScreenshotToolbar: View {
     let boxActive: Bool
     let penActive: Bool
+    let arrowActive: Bool
     let mosaicActive: Bool
     let noteActive: Bool
     let flowActive: Bool
+    let wmActive: Bool
     let translateTitle: String
     let translateActive: Bool
     let onBox: () -> Void
     let onPen: () -> Void
+    let onArrow: () -> Void
     let onMosaic: () -> Void
     let onNote: () -> Void
     let onFlow: () -> Void
+    let onWatermark: () -> Void
     let onUndo: () -> Void
     let onOCR: () -> Void
     let onLongShot: () -> Void
@@ -317,18 +385,24 @@ struct ScreenshotToolbar: View {
     let onSave: () -> Void
     let onCopy: () -> Void
     let onCancel: () -> Void
+    /// 拖拽手柄回调：(全局累计位移, 是否结束)——宿主视图据此移动整条工具栏
+    let onDragToolbar: (CGSize, Bool) -> Void
+
+    @State private var draggingBar = false
 
     var body: some View {
         HStack(spacing: 3) {
-            // 关闭：单独摆最左角，远离右侧主操作，放弃可点又不误触
-            button("取消", "xmark", action: onCancel)
+            // 拖拽手柄：按住整条工具栏跟手移动（子选项条随行）
+            dragHandle
             Divider().frame(height: 20).overlay(ToolbarChrome.separator).padding(.horizontal, 1)
-            // 标注编辑：框选 / 备注 / 序号 / 画笔 / 马赛克 + 撤销收尾
+            // 标注编辑：框选 / 备注 / 序号 / 画笔 / 箭头 / 马赛克 / 水印 + 撤销收尾
             button("框选标注", "rectangle", active: boxActive, action: onBox)
             button("文字备注", "bubble.left", active: noteActive, action: onNote)
             button("步骤序号标注", "list.number", active: flowActive, action: onFlow)
             button("自由画笔", "pencil.tip", active: penActive, action: onPen)
+            button("箭头标注", "arrow.up.right", active: arrowActive, action: onArrow)
             mosaicButton(active: mosaicActive)
+            button("加水印", "drop", active: wmActive, action: onWatermark)
             button("撤销上一步", "arrow.uturn.backward", action: onUndo)
             Divider().frame(height: 20).overlay(ToolbarChrome.separator).padding(.horizontal, 1)
             // 智能处理：OCR / 翻译 / 长截图 / 问 AI
@@ -337,15 +411,30 @@ struct ScreenshotToolbar: View {
             longShotButton
             button("截图问 AI", "sparkles", action: onAskAI)
             Divider().frame(height: 20).overlay(ToolbarChrome.separator).padding(.horizontal, 1)
-            // 输出成果：贴图 / 保存 / 复制(确定，绿色压轴)
+            // 输出成果：贴图 / 保存 / 取消(红，紧邻确定) / 复制(确定，绿色压轴)
             button("钉在屏幕（贴图）", "pin", action: onPin)
             button("保存到桌面", "arrow.down.to.line", action: onSave)
+            button("取消", "xmark", tint: .red, action: onCancel)
             button("复制到剪贴板", "checkmark", tint: .green, action: onCopy)
         }
         .padding(.vertical, 7).padding(.horizontal, 9)
         .background(ToolbarChrome.panelBG, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ToolbarChrome.hairline, lineWidth: 0.5))
         .fixedSize()
+    }
+
+    /// 拖拽手柄：三道短横线，按住把整条工具栏拖到任意位置。
+    /// 位移用全局坐标系累计（工具栏自身在动，局部坐标会自反馈漂移）
+    private var dragHandle: some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundColor(ToolbarChrome.mono(draggingBar ? 0.85 : 0.4))
+            .frame(width: 17, height: 31)
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                .onChanged { draggingBar = true; onDragToolbar($0.translation, false) }
+                .onEnded { draggingBar = false; onDragToolbar($0.translation, true) })
+            .help("按住拖动，移动工具栏")
     }
 
     /// 长截图按钮：自绘横向矩形字形（与 OCR 图标墨水等高）
