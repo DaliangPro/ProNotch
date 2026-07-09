@@ -5,6 +5,12 @@ final class NotchPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
+    /// 锚定 frame：构造完成后钉死。刘海窗口 frame 在架构上永不改变（展开/收起只动窗口内部内容，
+    /// 窗口本身始终等于 windowFrame），故任何把它挪离此 frame 的 setFrame——尤其窗口管理插件
+    /// （Rectangle / Magnet / 旺铺等）经 Accessibility(AX) 强改位置或尺寸——一律吸附回锚点。
+    /// isMovable=false 只能挡鼠标拖动、挡不住 AX 赋值，这里补上这道兜底。
+    private var anchoredFrame: NSRect?
+
     init(frame: CGRect) {
         super.init(contentRect: frame,
                    styleMask: [.borderless, .nonactivatingPanel],
@@ -25,5 +31,30 @@ final class NotchPanel: NSPanel {
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
         animationBehavior = .none
+        anchoredFrame = frame   // 放最后：构造期间的初始 frame 照常生效，此后位置/尺寸钉死
     }
+
+    // MARK: - 位置钉死（挡窗口管理插件经 AX 的强制挪动）
+
+    /// 锚定后一切外部改动都吸附回锚点；ProNotch 自身构造后从不改 frame，故无需放行任何合法调用
+    override func setFrame(_ frameRect: NSRect, display flag: Bool) {
+        super.setFrame(anchoredFrame ?? frameRect, display: flag)
+    }
+    override func setFrame(_ frameRect: NSRect, display flag: Bool, animate: Bool) {
+        super.setFrame(anchoredFrame ?? frameRect, display: flag, animate: anchoredFrame == nil && animate)
+    }
+    override func setFrameOrigin(_ point: NSPoint) {
+        super.setFrameOrigin(anchoredFrame?.origin ?? point)
+    }
+    override func setContentSize(_ size: NSSize) {
+        if anchoredFrame != nil { return }   // 尺寸也钉死，防"最大化 / 铺满半屏"经 AX 改 size
+        super.setContentSize(size)
+    }
+
+    // MARK: - 对窗口管理插件隐身
+
+    /// 非标准 subrole：让按 kAXStandardWindow 过滤的窗口管理插件（Rectangle / Magnet / 旺铺等）
+    /// 把刘海当系统浮层直接跳过——列表里根本不出现刘海，自然无从选中或摆放。
+    /// 仅改窗口这一层的角色，内部搜索框、按钮等子元素的可访问性不受影响
+    override func accessibilitySubrole() -> NSAccessibility.Subrole? { .floatingWindow }
 }
