@@ -9,6 +9,7 @@ final class SuperScreenshotController {
     weak var settings: SettingsStore?   // AppDelegate 注入，翻译时惰性读配置
     private var window: ScreenshotOverlayWindow?
     private var busy = false
+    private var warmedUp = false
 
     func capture() {
         guard !busy, window == nil else { return }   // 防重入：覆盖层已在或正在截
@@ -17,6 +18,18 @@ final class SuperScreenshotController {
             defer { busy = false }
             guard let (image, screen) = await Self.grabActiveDisplay() else { return }
             self.present(image, on: screen)
+        }
+    }
+
+    /// 冷启动预热：ScreenCaptureKit 首次 SCShareableContent.current 要初始化截屏子系统、
+    /// 核对权限、枚举窗口，冷启开销几百 ms~1s，导致"截图第一下慢"。启动后台提前跑一次把
+    /// 这笔开销挪到开机阶段，用户首次截图即走热路径。失败（如未授权）静默忽略，不触发实际捕获。
+    func warmUp() {
+        guard !warmedUp else { return }
+        warmedUp = true
+        Task.detached(priority: .utility) {
+            _ = try? await SCShareableContent.current
+            print("[ProNotch] 截图子系统已预热")
         }
     }
 

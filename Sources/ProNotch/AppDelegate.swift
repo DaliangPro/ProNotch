@@ -91,6 +91,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         // 超级截图全局快捷键：按下即唤起区域截图；在设置里改快捷键后重新注册
         SuperScreenshotController.shared.settings = settingsStore   // 翻译时惰性读配置
+        SuperScreenshotController.shared.warmUp()   // 后台预热截图子系统，消除"截图第一下慢"
         screenshotHotKey.onTrigger = {
             Task { @MainActor in SuperScreenshotController.shared.capture() }
         }
