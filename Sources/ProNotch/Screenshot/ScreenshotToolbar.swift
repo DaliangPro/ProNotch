@@ -254,25 +254,6 @@ struct WatermarkOptionsBar: View {
     }
 }
 
-/// 马赛克图标：3×3 圆点阵（大梁老师选定，对应 Tabler grid-dots 样式）
-private struct ScreenshotMosaicGlyph: View {
-    var color: Color
-    var side: CGFloat = 20
-    var body: some View {
-        let dot: CGFloat = 3.2, gap: CGFloat = 2.7   // 点边缘间距 → 点阵约 15×15
-        VStack(spacing: gap) {
-            ForEach(0..<3, id: \.self) { _ in
-                HStack(spacing: gap) {
-                    ForEach(0..<3, id: \.self) { _ in
-                        Circle().fill(color).frame(width: dot, height: dot)
-                    }
-                }
-            }
-        }
-        .frame(width: side, height: side)
-    }
-}
-
 /// 长截图图标：上下双向箭头（大梁老师选定，对应 Tabler arrows-vertical，表示纵向延展截取）
 private struct ScreenshotLongShotGlyph: View {
     var color: Color = .white
@@ -402,7 +383,7 @@ struct ScreenshotToolbar: View {
             button("自由画笔", "pencil.tip", active: penActive, action: onPen)
             button("箭头标注", "arrow.up.right", active: arrowActive, action: onArrow)
             mosaicButton(active: mosaicActive)
-            button("加水印", "drop", active: wmActive, action: onWatermark)
+            button("加水印", "signature", active: wmActive, action: onWatermark)
             button("撤销上一步", "arrow.uturn.backward", action: onUndo)
             Divider().frame(height: 20).overlay(ToolbarChrome.separator).padding(.horizontal, 1)
             // 智能处理：OCR / 翻译 / 长截图 / 问 AI
@@ -423,13 +404,13 @@ struct ScreenshotToolbar: View {
         .fixedSize()
     }
 
-    /// 拖拽手柄：三道短横线，按住把整条工具栏拖到任意位置。
+    /// 拖拽手柄：四向移动箭头，按住把整条工具栏拖到任意位置。
     /// 位移用全局坐标系累计（工具栏自身在动，局部坐标会自反馈漂移）
     private var dragHandle: some View {
-        Image(systemName: "line.3.horizontal")
-            .font(.system(size: 12, weight: .semibold))
+        Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+            .font(.system(size: 11.5, weight: .semibold))
             .foregroundColor(ToolbarChrome.mono(draggingBar ? 0.85 : 0.4))
-            .frame(width: 17, height: 31)
+            .frame(width: 19, height: 31)
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
                 .onChanged { draggingBar = true; onDragToolbar($0.translation, false) }
@@ -453,10 +434,11 @@ struct ScreenshotToolbar: View {
         }
     }
 
-    /// 马赛克按钮：棋盘格自绘字形
+    /// 马赛克按钮：九宫格实心块（SF Symbol square.grid.3x3.fill）
     private func mosaicButton(active: Bool) -> some View {
         ToolbarIconButton(active: active, help: "马赛克遮挡", action: onMosaic) { hover in
-            ScreenshotMosaicGlyph(color: active ? ToolbarChrome.accent : ToolbarChrome.fg(hover))
+            Image(systemName: "square.grid.3x3.fill").font(.system(size: 16))
+                .foregroundColor(active ? ToolbarChrome.accent : ToolbarChrome.fg(hover))
         }
     }
 
