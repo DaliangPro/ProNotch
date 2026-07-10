@@ -8,7 +8,7 @@ import SwiftUI
 @MainActor
 final class NotchViewModel: ObservableObject {
     enum Tab: String, CaseIterable {
-        case launcher, clipboard, chat, capture
+        case launcher, clipboard, chat, capture, usage
 
         var title: String {
             switch self {
@@ -16,6 +16,7 @@ final class NotchViewModel: ObservableObject {
             case .clipboard: return "剪贴板"
             case .chat: return "AI 闪问"
             case .capture: return "妙记"
+            case .usage: return "额度"
             }
         }
 
@@ -25,6 +26,7 @@ final class NotchViewModel: ObservableObject {
             case .clipboard: return "clipboard"
             case .chat: return "bubble"
             case .capture: return "pencil.line"
+            case .usage: return "speedometer"
             }
         }
 

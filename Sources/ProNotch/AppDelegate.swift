@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import UserNotifications
 import ScreenCaptureKit
+import Combine
 
 /// 可成为 key 的无边框面板：承载「检查更新」结果窗（按钮可点、回车可关）
 private final class UpdateAlertPanel: NSPanel {
@@ -14,6 +15,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// 屏幕参数变化的防抖重建任务（合并系统成批发送的通知，避开中间态坐标）
     private var pendingScreenRebuild: DispatchWorkItem?
     private var statusItem: NSStatusItem?
+    private var usageStatusItem: NSStatusItem?                    // 独立可开关的「额度」菜单栏项
+    private weak var usageToggleItem: NSMenuItem?                 // 主菜单里的开关项（同步勾选态）
+    private var usageMenuHosting: NSHostingView<UsageMenuView>?   // 额度项下拉里的详情卡
+    private lazy var showUsageInMenuBar = UserDefaults.standard.bool(forKey: "showUsageInMenuBar")
+    private var usageTimer: Timer?
+    private var usageCancellable: AnyCancellable?
     private var glowController: GlowController?
     private let updateChecker = UpdateChecker()
     private var updateMenuItem: NSMenuItem?
@@ -30,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var snippetStore: SnippetStore!
     private var chatStore: ChatStore!
     private var captureStore: CaptureStore!
+    private var usageStore: UsageStore!
     private var quickActions: QuickActionsStore!
     private var settingsStore: SettingsStore!
     private let settingsWindow = SettingsWindowController()
@@ -52,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         snippetStore = SnippetStore()
         chatStore = ChatStore()
         captureStore = CaptureStore()
+        usageStore = UsageStore()
         quickActions = QuickActionsStore()
         settingsStore = SettingsStore()
         launcherStore.refreshIfNeeded()
@@ -467,7 +476,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 chatStore: chatStore,
                 quickActions: quickActions,
                 captureStore: captureStore,
-                settingsStore: settingsStore)
+                settingsStore: settingsStore,
+                usageStore: usageStore)
         }
     }
 
@@ -525,6 +535,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // macOS 26 会按标题词汇给菜单项自动配图标（设置→齿轮、退出→叉），
         // image 为 nil 时才会注入；显式塞 1×1 透明空图占住槽位即可禁用
         let emptyImage = NSImage(size: NSSize(width: 1, height: 1))
+        // 「在菜单栏显示额度」开关：开→菜单栏独立出现额度栏，关→移除（状态持久化）
+        let usageToggle = NSMenuItem(title: "Agent 额度", action: #selector(toggleUsageMenuBar), keyEquivalent: "")
+        usageToggle.target = self
+        usageToggle.image = emptyImage
+        usageToggle.state = showUsageInMenuBar ? .on : .off
+        menu.addItem(usageToggle)
+        usageToggleItem = usageToggle
+        menu.addItem(.separator())
 
         // 顶部「发现新版本」项：默认隐藏，检查到新版才显示
         let updateItem = NSMenuItem(title: "↓ 发现新版本",
@@ -568,7 +586,90 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         menu.addItem(quitItem)
         item.menu = menu
         statusItem = item
+
+        // 数据变化即刷新额度栏标题（定时拉取交给 applyUsageVisibility，只在额度栏显示时跑）
+        usageCancellable = usageStore.objectWillChange
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in self?.updateUsageTitle() }
+        applyUsageVisibility()   // 按持久化开关状态显隐额度栏并启停定时刷新
     }
+
+    // MARK: - 独立「额度」菜单栏项（可开关）
+
+    @objc private func toggleUsageMenuBar() {
+        showUsageInMenuBar.toggle()
+        UserDefaults.standard.set(showUsageInMenuBar, forKey: "showUsageInMenuBar")
+        usageToggleItem?.state = showUsageInMenuBar ? .on : .off
+        applyUsageVisibility()
+    }
+
+    /// 用 NSStatusItem.isVisible 显隐额度栏（不销毁重建，避开「关掉再打开消失」的重建坑）：
+    /// 首次开启才真正创建 item，此后只切 isVisible + 启停 60 秒定时刷新
+    private func applyUsageVisibility() {
+        if showUsageInMenuBar {
+            if usageStatusItem == nil { createUsageStatusItem() }
+            usageStatusItem?.isVisible = true
+            updateUsageTitle()
+            usageStore.refresh(force: true)
+            startUsageTimer()
+        } else {
+            usageStatusItem?.isVisible = false
+            stopUsageTimer()
+        }
+    }
+
+    /// 只创建一次：变宽额度栏，常驻 C<5h%> X<5h%>，点开是详情卡（两服务 5h/7d 进度条）
+    private func createUsageStatusItem() {
+        guard usageStatusItem == nil else { return }
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.toolTip = "AI 编码额度（Claude / Codex 5 小时窗）"
+        let menu = NSMenu()
+        menu.delegate = self   // 打开时强制刷新
+        let hosting = NSHostingView(rootView: UsageMenuView(store: usageStore))
+        hosting.frame = NSRect(x: 0, y: 0, width: 300, height: 150)
+        let header = NSMenuItem(); header.view = hosting
+        menu.addItem(header)
+        usageMenuHosting = hosting
+        let refresh = NSMenuItem(title: "刷新额度", action: #selector(refreshUsageFromMenu), keyEquivalent: "r")
+        refresh.target = self
+        menu.addItem(refresh)
+        item.menu = menu
+        usageStatusItem = item
+    }
+
+    /// 定时刷新只在额度栏显示时运行——隐藏即停，不再无谓访问 Claude / ChatGPT 接口
+    private func startUsageTimer() {
+        guard usageTimer == nil else { return }
+        usageTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.usageStore.refresh() }
+        }
+    }
+    private func stopUsageTimer() { usageTimer?.invalidate(); usageTimer = nil }
+
+    /// 额度栏标题：C<5h%> · X<5h%>，高占用变色；无数据的服务省略。仅额度栏存在时更新
+    private func updateUsageTitle() {
+        guard let button = usageStatusItem?.button else { return }
+        let parts: [(String, ServiceQuota?)] = [("C", usageStore.claude), ("X", usageStore.codex)]
+        let title = NSMutableAttributedString()
+        let base: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)]
+        for (tag, q) in parts {
+            guard let pct = q?.primary?.usedPercent else { continue }
+            if title.length > 0 { title.append(NSAttributedString(string: "  ", attributes: base)) }
+            var seg = base
+            seg[.foregroundColor] = pctColor(pct)
+            title.append(NSAttributedString(string: "\(tag)\(Int(pct.rounded()))%", attributes: seg))
+        }
+        button.attributedTitle = title.length > 0 ? title
+            : NSAttributedString(string: "额度…", attributes: base)   // 还没数据时占位，别空着
+    }
+
+    private func pctColor(_ pct: Double) -> NSColor {
+        if pct >= 85 { return NSColor.systemRed }
+        if pct >= 60 { return NSColor.systemOrange }
+        return NSColor.labelColor   // 正常用系统前景色，自动适配深浅色菜单栏
+    }
+
+    @objc private func refreshUsageFromMenu() { usageStore.refresh(force: true) }
 
     // MARK: - 检查更新
 
@@ -682,5 +783,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
         completionHandler()
+    }
+}
+
+extension AppDelegate: NSMenuDelegate {
+    /// 打开菜单栏下拉时强制拉一次最新额度（比 90 秒定时更即时）
+    func menuWillOpen(_ menu: NSMenu) {
+        usageStore.refresh(force: true)
     }
 }

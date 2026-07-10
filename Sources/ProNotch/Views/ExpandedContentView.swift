@@ -104,6 +104,8 @@ struct ExpandedContentView: View {
                     ChatView()
                 case .capture:
                     CaptureView()
+                case .usage:
+                    UsageView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -199,6 +201,8 @@ struct ExpandedContentView: View {
                 captureStore.openInbox()
                 vm.collapseNow()
             }
+        case .usage:
+            EmptyView()   // 刷新按钮在页面内部（右上角）
         }
     }
 }
