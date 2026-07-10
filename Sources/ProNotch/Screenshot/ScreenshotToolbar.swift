@@ -6,7 +6,8 @@ import SwiftUI
 enum ToolbarChrome {
     static var dark: Bool { NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) != .aqua }
     static var panelBG: Color { dark ? Color.black.opacity(0.88) : Color.white }
-    static var hairline: Color { dark ? Color.white.opacity(0.12) : Color.black.opacity(0.14) }
+    // 深色描边 0.12 → 0.30：纯黑截图背景下 0.12 几乎隐形，工具栏边缘看不出来（大梁老师反馈）
+    static var hairline: Color { dark ? Color.white.opacity(0.30) : Color.black.opacity(0.14) }
     static var separator: Color { dark ? Color.white.opacity(0.15) : Color.black.opacity(0.14) }
     static var accent: Color { .cyan }
     static var strong: Color { dark ? Color.white : Color.black.opacity(0.8) }
@@ -383,7 +384,7 @@ struct ScreenshotToolbar: View {
             button("自由画笔", "pencil.tip", active: penActive, action: onPen)
             button("箭头标注", "arrow.up.right", active: arrowActive, action: onArrow)
             mosaicButton(active: mosaicActive)
-            button("加水印", "signature", active: wmActive, action: onWatermark)
+            button("加水印", "c.circle", active: wmActive, action: onWatermark)
             button("撤销上一步", "arrow.uturn.backward", action: onUndo)
             Divider().frame(height: 20).overlay(ToolbarChrome.separator).padding(.horizontal, 1)
             // 智能处理：OCR / 翻译 / 长截图 / 问 AI
@@ -404,18 +405,21 @@ struct ScreenshotToolbar: View {
         .fixedSize()
     }
 
-    /// 拖拽手柄：四向移动箭头，按住把整条工具栏拖到任意位置。
+    /// 拖拽手柄：竖排三小点（自绘），窄而淡、存在感弱，按住把整条工具栏拖到任意位置。
     /// 位移用全局坐标系累计（工具栏自身在动，局部坐标会自反馈漂移）
     private var dragHandle: some View {
-        Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
-            .font(.system(size: 11.5, weight: .semibold))
-            .foregroundColor(ToolbarChrome.mono(draggingBar ? 0.85 : 0.4))
-            .frame(width: 19, height: 31)
-            .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                .onChanged { draggingBar = true; onDragToolbar($0.translation, false) }
-                .onEnded { draggingBar = false; onDragToolbar($0.translation, true) })
-            .help("按住拖动，移动工具栏")
+        VStack(spacing: 2.6) {
+            ForEach(0..<3, id: \.self) { _ in
+                Circle().fill(ToolbarChrome.mono(draggingBar ? 0.7 : 0.3))
+                    .frame(width: 2.4, height: 2.4)
+            }
+        }
+        .frame(width: 11, height: 31)
+        .contentShape(Rectangle())
+        .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .global)
+            .onChanged { draggingBar = true; onDragToolbar($0.translation, false) }
+            .onEnded { draggingBar = false; onDragToolbar($0.translation, true) })
+        .help("按住拖动，移动工具栏")
     }
 
     /// 长截图按钮：自绘横向矩形字形（与 OCR 图标墨水等高）
@@ -434,10 +438,10 @@ struct ScreenshotToolbar: View {
         }
     }
 
-    /// 马赛克按钮：九宫格实心块（SF Symbol square.grid.3x3.fill）
+    /// 马赛克按钮：井字九宫分割（SF Symbol rectangle.split.3x3.fill）
     private func mosaicButton(active: Bool) -> some View {
         ToolbarIconButton(active: active, help: "马赛克遮挡", action: onMosaic) { hover in
-            Image(systemName: "square.grid.3x3.fill").font(.system(size: 16))
+            Image(systemName: "rectangle.split.3x3.fill").font(.system(size: 16))
                 .foregroundColor(active ? ToolbarChrome.accent : ToolbarChrome.fg(hover))
         }
     }
