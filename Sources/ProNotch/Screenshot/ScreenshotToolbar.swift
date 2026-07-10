@@ -24,13 +24,16 @@ enum ToolbarChrome {
     static func panel(_ o: Double = 0.9) -> Color { dark ? Color.black.opacity(o) : Color.white }
 }
 
-/// 框选子选项面板：形状(矩形/椭圆) / 线型(实线/虚线) / 高亮 / 颜色 / 粗细
+/// 框选子选项面板：形状(矩形/椭圆) / 线型(实线/虚线) / [高亮] / 颜色 / 粗细。
+/// showHighlight：高亮已是工具栏一级工具，框选工具态不再显示灯泡；
+/// 选中已有框时仍显示，用于把该框在高亮/普通间切换
 struct BoxOptionsBar: View {
     let shape: BoxShape
     let dashed: Bool
     let highlight: Bool
     let colorHex: String
     let lineWidth: CGFloat
+    var showHighlight = true
     let onShape: (BoxShape) -> Void
     let onDashed: (Bool) -> Void
     let onHighlight: () -> Void
@@ -48,8 +51,10 @@ struct BoxOptionsBar: View {
             lineBtn(false)
             lineBtn(true)
             sep
-            icon("lightbulb", active: highlight, action: onHighlight)
-            sep
+            if showHighlight {
+                icon("lightbulb", active: highlight, action: onHighlight)
+                sep
+            }
             ForEach(Self.palette, id: \.self) { swatch($0) }
             sep
             ForEach(Self.widths, id: \.self) { widthBtn($0) }
@@ -100,6 +105,31 @@ struct BoxOptionsBar: View {
                 .frame(width: 16, height: w)
                 .frame(width: 28, height: 28)
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(lineWidth == w ? Color.cyan.opacity(0.18) : .clear))
+                .contentShape(Capsule())
+        }.buttonStyle(.plain)
+    }
+}
+
+/// 高亮子选项：形状（矩形/椭圆）——高亮框无描边样式，只选形状
+struct HighlightOptionsBar: View {
+    let shape: BoxShape
+    let onShape: (BoxShape) -> Void
+    var body: some View {
+        HStack(spacing: 5) {
+            btn("rectangle", .rect)
+            btn("circle", .oval)
+        }
+        .padding(.horizontal, 13).padding(.vertical, 7)
+        .background(ToolbarChrome.panelBG, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ToolbarChrome.hairline, lineWidth: 0.5))
+        .fixedSize()
+    }
+    private func btn(_ name: String, _ s: BoxShape) -> some View {
+        Button { onShape(s) } label: {
+            Image(systemName: name).font(.system(size: 15))
+                .foregroundColor(shape == s ? ToolbarChrome.accent : ToolbarChrome.fg())
+                .frame(width: 30, height: 28)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(shape == s ? Color.cyan.opacity(0.18) : .clear))
                 .contentShape(Capsule())
         }.buttonStyle(.plain)
     }
@@ -343,6 +373,7 @@ private struct ToolbarIconButton<Content: View>: View {
 /// 最左拖拽手柄按住可整条自由移动
 struct ScreenshotToolbar: View {
     let boxActive: Bool
+    let hlActive: Bool
     let penActive: Bool
     let arrowActive: Bool
     let mosaicActive: Bool
@@ -352,6 +383,7 @@ struct ScreenshotToolbar: View {
     let translateTitle: String
     let translateActive: Bool
     let onBox: () -> Void
+    let onHighlightTool: () -> Void
     let onPen: () -> Void
     let onArrow: () -> Void
     let onMosaic: () -> Void
@@ -377,8 +409,9 @@ struct ScreenshotToolbar: View {
             // 拖拽手柄：按住整条工具栏跟手移动（子选项条随行）
             dragHandle
             Divider().frame(height: 20).overlay(ToolbarChrome.separator).padding(.horizontal, 1)
-            // 标注编辑：框选 / 备注 / 序号 / 画笔 / 箭头 / 马赛克 / 水印 + 撤销收尾
+            // 标注编辑：框选 / 高亮 / 备注 / 序号 / 画笔 / 箭头 / 马赛克 / 水印 + 撤销收尾
             button("框选标注", "rectangle", active: boxActive, action: onBox)
+            button("高亮标注（聚光灯）", "lightbulb", active: hlActive, action: onHighlightTool)
             button("文字备注", "bubble.left", active: noteActive, action: onNote)
             button("步骤序号标注", "list.number", active: flowActive, action: onFlow)
             button("自由画笔", "pencil.tip", active: penActive, action: onPen)

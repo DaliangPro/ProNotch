@@ -31,9 +31,9 @@ enum BoxShape { case rect, oval }
 /// 选区 + 压暗 + 标注（框选 / 备注 / 流程）的绘制与交互视图（AppKit 左下原点）
 final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private enum Phase { case selecting, editing }
-    /// 标注工具：none=可重新框选，box=框选，pen=画笔，arrow=箭头，mosaic=马赛克，
-    /// note=备注，flow=流程，watermark=水印
-    private enum Tool { case none, box, pen, arrow, mosaic, note, flow, watermark }
+    /// 标注工具：none=可重新框选，box=框选，highlight=高亮（聚光灯），pen=画笔，arrow=箭头，
+    /// mosaic=马赛克，note=备注，flow=流程，watermark=水印
+    private enum Tool { case none, box, highlight, pen, arrow, mosaic, note, flow, watermark }
     /// 马赛克模式：brush=像笔一样涂抹，box=框选区域
     private enum MosaicMode { case brush, box }
     /// 画笔/马赛克自由笔画
@@ -49,6 +49,17 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         var highlight = false
         var colorHex = "#FFFFFF"
         var lineWidth: CGFloat = 2.5
+        var rotation: CGFloat = 0   // 绕中心旋转角（弧度），选中后拖旋转手柄调整
+        var center: NSPoint { NSPoint(x: rect.midX, y: rect.midY) }
+    }
+    /// 点绕 c 旋转 angle 弧度
+    private static func rotatePoint(_ p: NSPoint, around c: NSPoint, by angle: CGFloat) -> NSPoint {
+        let dx = p.x - c.x, dy = p.y - c.y, ca = cos(angle), sa = sin(angle)
+        return NSPoint(x: c.x + dx * ca - dy * sa, y: c.y + dx * sa + dy * ca)
+    }
+    /// 旋转框命中：把点逆旋转回框的本地坐标系再判包含
+    private static func boxContains(_ b: Box, _ pt: NSPoint, inset: CGFloat = 0) -> Bool {
+        b.rect.insetBy(dx: inset, dy: inset).contains(rotatePoint(pt, around: b.center, by: -b.rotation))
     }
     /// 备注：框 + 引导线 + 文字气泡（框/线可调色）
     private struct Marker { var box: NSRect; var textRect: NSRect; var text: String; var colorHex = "#FFFFFF" }
@@ -91,11 +102,11 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var hoverWindowRect: NSRect?    // 光标当前所在窗口的吸附框
 
     private var boxes: [Box] = []
-    private var boxHighlight = false        // 框选样式：是否高亮（聚光灯）
     private var boxShape: BoxShape = .rect   // 框选样式：矩形 / 椭圆
     private var boxDashed = false            // 框选样式：实线 / 虚线
     private var boxColorHex = "#FFFFFF"      // 框选样式：颜色（默认白）
     private var boxLineWidth: CGFloat = 2.5  // 框选样式：粗细
+    private var hlShape: BoxShape = .rect    // 高亮工具形状：矩形 / 椭圆（高亮是一级工具，画出即聚光灯框）
     private var optionsHost: NSHostingView<AnyView>?   // 工具子选项面板（框选/画笔/马赛克）
 
     // 画笔
@@ -134,8 +145,18 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var activeMarker: Int?              // 双击备注框＝进入几何调整（拖框身移动、拖角缩放，文字保留）
     private var markerGrab: MarkerGrab?
     /// 选中的框选/箭头的拖拽调整：move=整体移动，boxResize=四角缩放(对角固定)，arrowEnd=拖箭头某一端
-    private enum SelGrabMode { case move(NSPoint); case boxResize(fixed: NSPoint); case arrowEnd(start: Bool) }
+    /// 选中框选/箭头的拖拽调整：move=整体移动；boxResize=四角缩放（fixed 为本地坐标系对角，
+    /// center/angle 记拖拽起始时的旋转中心与角度，全程用它换算避免漂移）；boxRotate=拖旋转手柄；arrowEnd=拖箭头端
+    private enum SelGrabMode {
+        case move(NSPoint)
+        case boxResize(fixed: NSPoint, center: NSPoint, angle: CGFloat)
+        case boxRotate(center: NSPoint)
+        case arrowEnd(start: Bool)
+    }
     private var selGrab: (mode: SelGrabMode, moved: Bool)?
+    /// 截图选区自身的边缘调整：拖四角（对角固定）或四条边（单边移动），没截准不用重来
+    private enum SelRectMode { case corner(fixed: NSPoint); case left, right, top, bottom }
+    private var selRectGrab: SelRectMode?
     private var selected: AnnotationRef? {      // 单击选中的标注，ESC 可删除 / 二次调参
         didSet {
             guard selected != oldValue else { return }
@@ -347,12 +368,13 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         drawMosaics(dx: 0, dy: 0)   // 马赛克：盖在原图上、压在标注下
 
         // 聚光灯：仅「高亮」框（含正在拖的高亮框）作亮窗，选区内其余压暗；没有高亮框就不压暗
-        var spots: [(rect: NSRect, shape: BoxShape)] = boxes.filter { $0.highlight }.map { ($0.rect, $0.shape) }
-        if tool == .box, boxHighlight, let c = currentBox { spots.append((c, boxShape)) }
+        var spots: [(rect: NSRect, shape: BoxShape, rotation: CGFloat)] = boxes.filter { $0.highlight }.map { ($0.rect, $0.shape, $0.rotation) }
+        if tool == .highlight, let c = currentBox { spots.append((c, hlShape, 0)) }   // 高亮工具拖拽预览
         if !spots.isEmpty { drawSpotlight(spots, in: sel) }
 
         NSColor.white.withAlphaComponent(0.9).setStroke()
         let border = NSBezierPath(rect: sel); border.lineWidth = 1; border.stroke()
+        if phase == .editing { drawSelectionEdgeHandles(sel) }   // 选区可调提示：四角+四边中点手柄
 
         for b in boxes where !b.highlight { drawBoxStyled(b) }   // 非高亮框按各自样式画
         for (i, m) in markers.enumerated() { drawMarker(m, editing: isEditing(.markerText(i)), active: i == activeMarker) }
@@ -367,7 +389,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             drawDeleteButton(sel)                                                 // 选中即显示删除按钮(×)，点它删整个组件
         }
         if let c = currentBox {
-            if tool == .box, !boxHighlight { drawBoxStyled(currentStyleBox(c)) }   // 框选预览（高亮预览走聚光灯）
+            if tool == .box { drawBoxStyled(currentStyleBox(c)) }   // 框选预览（高亮工具预览走聚光灯）
             else if tool == .note { strokeBox(c, color: NSColor(Color(hex: noteColorHex))) }   // 备注框预览（当前色）
         }
         drawMosaicHints()   // 马赛克范围提示（框/轮廓/笔刷光标）
@@ -405,20 +427,29 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     /// 用当前框选样式包一个 Box（新框 / 预览用）
     private func currentStyleBox(_ rect: NSRect) -> Box {
-        Box(rect: rect, shape: boxShape, dashed: boxDashed, highlight: boxHighlight, colorHex: boxColorHex, lineWidth: boxLineWidth)
+        Box(rect: rect, shape: boxShape, dashed: boxDashed, highlight: false, colorHex: boxColorHex, lineWidth: boxLineWidth)
     }
 
-    /// 按框各自样式画：矩形/椭圆、实线/虚线、颜色、粗细
+    /// 按框各自样式画：矩形/椭圆、实线/虚线、颜色、粗细、旋转
     private func drawBoxStyled(_ box: Box) {
         let path = box.shape == .oval
             ? NSBezierPath(ovalIn: box.rect)
             : NSBezierPath(roundedRect: box.rect, xRadius: 6, yRadius: 6)
+        if box.rotation != 0 { path.transform(using: Self.rotationTransform(box.rotation, around: box.center)) }
         path.lineWidth = box.lineWidth
         if box.dashed { path.setLineDash([box.lineWidth * 2.6, box.lineWidth * 2.3], count: 2, phase: 0) }
         withShadow(blur: 4, alpha: 0.28) {
             NSColor(Color(hex: box.colorHex)).setStroke()
             path.stroke()
         }
+    }
+
+    /// 绕 c 旋转 angle 的仿射变换（NSBezierPath 用）
+    private static func rotationTransform(_ angle: CGFloat, around c: NSPoint) -> AffineTransform {
+        var t = AffineTransform(translationByX: c.x, byY: c.y)
+        t.rotate(byRadians: angle)
+        t.translate(x: -c.x, y: -c.y)
+        return t
     }
 
     private func drawMarker(_ m: Marker, editing: Bool, active: Bool = false) {
@@ -454,7 +485,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             p.lineWidth = 1.5; p.setLineDash([4, 3], count: 2, phase: 0); p.stroke()
         }
         switch ref {
-        case .box(let i):    if boxes.indices.contains(i) { ring(boxes[i].rect); drawHandles(boxes[i].rect) }
+        case .box(let i):    if boxes.indices.contains(i) { drawBoxSelectionChrome(boxes[i]) }
         case .marker(let i): if markers.indices.contains(i) { ring(markers[i].box) }
         case .arrow(let i):  if arrows.indices.contains(i) {
             let a = arrows[i]
@@ -472,12 +503,47 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         }
     }
 
+    /// 选中框选的整套调整手柄：旋转的虚线环 + 四角缩放手柄 + 顶部旋转手柄（全部跟随框的旋转角）
+    private func drawBoxSelectionChrome(_ b: Box) {
+        let t = Self.rotationTransform(b.rotation, around: b.center)
+        // 虚线环（随框旋转）
+        NSColor.white.withAlphaComponent(0.95).setStroke()
+        let ringPath = NSBezierPath(roundedRect: b.rect.insetBy(dx: -4, dy: -4), xRadius: 8, yRadius: 8)
+        if b.rotation != 0 { ringPath.transform(using: t) }
+        ringPath.lineWidth = 1.5; ringPath.setLineDash([4, 3], count: 2, phase: 0); ringPath.stroke()
+        // 四角缩放手柄（白底方块 + 主色描边，位置随旋转）
+        let s: CGFloat = 7
+        for corner in [NSPoint(x: b.rect.minX, y: b.rect.minY), NSPoint(x: b.rect.maxX, y: b.rect.minY),
+                       NSPoint(x: b.rect.minX, y: b.rect.maxY), NSPoint(x: b.rect.maxX, y: b.rect.maxY)] {
+            let p = Self.rotatePoint(corner, around: b.center, by: b.rotation)
+            let r = NSRect(x: p.x - s / 2, y: p.y - s / 2, width: s, height: s)
+            NSColor.white.setFill(); NSBezierPath(roundedRect: r, xRadius: 1.5, yRadius: 1.5).fill()
+            Self.accent.setStroke()
+            let bp = NSBezierPath(roundedRect: r, xRadius: 1.5, yRadius: 1.5); bp.lineWidth = 1.5; bp.stroke()
+        }
+        // 旋转手柄：顶边中点向外伸的连线 + 圆钮
+        let topMid = Self.rotatePoint(NSPoint(x: b.rect.midX, y: b.rect.maxY), around: b.center, by: b.rotation)
+        let knob = Self.boxRotateHandle(b)
+        Self.accent.withAlphaComponent(0.85).setStroke()
+        let line = NSBezierPath(); line.move(to: topMid); line.line(to: knob); line.lineWidth = 1.2; line.stroke()
+        let kr = NSRect(x: knob.x - 5, y: knob.y - 5, width: 10, height: 10)
+        NSColor.white.setFill(); NSBezierPath(ovalIn: kr).fill()
+        Self.accent.setStroke(); let kp = NSBezierPath(ovalIn: kr); kp.lineWidth = 1.5; kp.stroke()
+    }
+
+    /// 旋转手柄圆钮位置：未旋转坐标系顶边中点上方 18pt，再随框旋转
+    private static func boxRotateHandle(_ b: Box) -> NSPoint {
+        rotatePoint(NSPoint(x: b.rect.midX, y: b.rect.maxY + 18), around: b.center, by: b.rotation)
+    }
+
     /// 选中组件右上角的删除按钮(×)矩形；命中它＝删除整个组件
     private func deleteButtonRect(_ ref: AnnotationRef) -> NSRect {
         let s: CGFloat = 19
         var corner = NSPoint.zero
         switch ref {
-        case .box(let i):    guard boxes.indices.contains(i) else { return .zero }; corner = NSPoint(x: boxes[i].rect.maxX, y: boxes[i].rect.maxY)
+        case .box(let i):    guard boxes.indices.contains(i) else { return .zero }
+            corner = Self.rotatePoint(NSPoint(x: boxes[i].rect.maxX, y: boxes[i].rect.maxY),
+                                      around: boxes[i].center, by: boxes[i].rotation)   // 右上角随旋转走
         case .marker(let i): guard markers.indices.contains(i) else { return .zero }; corner = NSPoint(x: markers[i].box.maxX, y: markers[i].box.maxY)
         case .step(let i):   guard steps.indices.contains(i) else { return .zero }; corner = NSPoint(x: steps[i].center.x + badgeRadius, y: steps[i].center.y + badgeRadius)
         case .arrow(let i):  guard arrows.indices.contains(i) else { return .zero }; corner = arrows[i].end   // 删除按钮放箭尖
@@ -566,7 +632,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     /// 聚光灯：在选区内离屏铺一层暗，再把每个高亮框从暗层里挖空（destinationOut）透出原图。
     /// 重叠区只挖不补，不会像 even-odd 那样被反选回暗色。
-    private func drawSpotlight(_ spots: [(rect: NSRect, shape: BoxShape)], in sel: NSRect) {
+    private func drawSpotlight(_ spots: [(rect: NSRect, shape: BoxShape, rotation: CGFloat)], in sel: NSRect) {
         guard !spots.isEmpty, sel.width > 0, sel.height > 0 else { return }
         let layer = NSImage(size: sel.size)
         layer.lockFocus()
@@ -576,7 +642,11 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         NSColor.black.setFill()
         for s in spots {
             let r = s.rect.offsetBy(dx: -sel.minX, dy: -sel.minY)
-            (s.shape == .oval ? NSBezierPath(ovalIn: r) : NSBezierPath(rect: r)).fill()
+            let path = s.shape == .oval ? NSBezierPath(ovalIn: r) : NSBezierPath(rect: r)
+            if s.rotation != 0 {   // 挖洞随框旋转
+                path.transform(using: Self.rotationTransform(s.rotation, around: NSPoint(x: r.midX, y: r.midY)))
+            }
+            path.fill()
         }
         layer.unlockFocus()
         layer.draw(in: sel)   // 叠到主上下文：框外半透明黑(暗)、框内透明(露原图)
@@ -731,6 +801,50 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     // MARK: - 鼠标
 
+    /// 选区可调手柄：四角 + 四边中点共 8 个白底方点（编辑态常显，提示边缘可拖）
+    private func drawSelectionEdgeHandles(_ sel: NSRect) {
+        let s: CGFloat = 6
+        let pts = [
+            NSPoint(x: sel.minX, y: sel.minY), NSPoint(x: sel.midX, y: sel.minY), NSPoint(x: sel.maxX, y: sel.minY),
+            NSPoint(x: sel.minX, y: sel.midY), NSPoint(x: sel.maxX, y: sel.midY),
+            NSPoint(x: sel.minX, y: sel.maxY), NSPoint(x: sel.midX, y: sel.maxY), NSPoint(x: sel.maxX, y: sel.maxY),
+        ]
+        for p in pts {
+            let r = NSRect(x: p.x - s / 2, y: p.y - s / 2, width: s, height: s)
+            NSColor.white.setFill(); NSBezierPath(rect: r).fill()
+            NSColor.black.withAlphaComponent(0.35).setStroke()
+            let bp = NSBezierPath(rect: r); bp.lineWidth = 0.5; bp.stroke()
+        }
+    }
+
+    /// 选区边缘命中 → 调整模式：四角 ±7pt（对角固定）优先，四条边 ±7pt 带（单边移动）次之
+    private func selectionGrabMode(at pt: NSPoint) -> SelRectMode? {
+        guard let sel = selection else { return nil }
+        let t: CGFloat = 7
+        let corners: [(NSPoint, NSPoint)] = [
+            (NSPoint(x: sel.minX, y: sel.minY), NSPoint(x: sel.maxX, y: sel.maxY)),
+            (NSPoint(x: sel.maxX, y: sel.minY), NSPoint(x: sel.minX, y: sel.maxY)),
+            (NSPoint(x: sel.minX, y: sel.maxY), NSPoint(x: sel.maxX, y: sel.minY)),
+            (NSPoint(x: sel.maxX, y: sel.maxY), NSPoint(x: sel.minX, y: sel.minY)),
+        ]
+        for (corner, fixed) in corners where abs(pt.x - corner.x) <= t && abs(pt.y - corner.y) <= t {
+            return .corner(fixed: fixed)
+        }
+        let insideY = pt.y >= sel.minY - t && pt.y <= sel.maxY + t
+        let insideX = pt.x >= sel.minX - t && pt.x <= sel.maxX + t
+        if abs(pt.x - sel.minX) <= t, insideY { return .left }
+        if abs(pt.x - sel.maxX) <= t, insideY { return .right }
+        if abs(pt.y - sel.maxY) <= t, insideX { return .top }
+        if abs(pt.y - sel.minY) <= t, insideX { return .bottom }
+        return nil
+    }
+
+    /// 译图与渐进翻译缓存作废（选区变更时调用，避免旧译图错位/拉伸变形）
+    private func clearTranslationOverride() {
+        guard translatedOverride != nil || translatePartial != nil else { return }
+        translatedOverride = nil; translatePartial = nil; showingOriginal = false
+    }
+
     override func mouseDown(with event: NSEvent) {
         guard !recordingLong, !longFinished else { return }      // 长截图录制/选方向/出图阶段，覆盖层不响应背景点击
         guard ocrPanel == nil, hintView == nil else { return }   // OCR 面板/翻译中不响应背景点击
@@ -743,7 +857,22 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         }
         // 已选中框选/箭头：命中手柄=缩放/拖端点，命中身体=整体移动（像系统选中对象，优先于画新）
         if phase == .editing, let g = hitSelectedGrab(at: pt) {
-            commitEditing(); selGrab = g; needsDisplay = true
+            commitEditing()
+            // 双击旋转手柄 → 恢复默认角度（归零）
+            if case .boxRotate = g.mode, event.clickCount >= 2,
+               case .box(let i)? = selected, boxes.indices.contains(i) {
+                record(); boxes[i].rotation = 0; needsDisplay = true
+                return
+            }
+            selGrab = g; needsDisplay = true
+            return
+        }
+        // 选区自身边缘调整：拖四角/四边重截边界，没截准不用重来（不影响已画标注）
+        if phase == .editing, let mode = selectionGrabMode(at: pt) {
+            commitEditing(); selected = nil
+            clearTranslationOverride()   // 选区将变，按旧选区渲染的译图作废
+            selRectGrab = mode
+            needsDisplay = true
             return
         }
         // 画笔 / 马赛克涂抹：自由起笔（优先于标注交互）
@@ -800,7 +929,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             } else if event.clickCount == 1, (selection ?? .zero).contains(pt) {
                 addStep(at: pt)                                        // 单击空白 → 新角标
             }
-        } else if phase == .editing, tool == .box || tool == .note {
+        } else if phase == .editing, tool == .box || tool == .note || tool == .highlight {
             commitEditing()
             if tool == .note, let i = markerBoxIndex(at: pt) {
                 // 备注单击：同时进入文字编辑 + 几何调整（输入框、四角手柄一起出现）
@@ -827,6 +956,18 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     override func mouseDragged(with event: NSEvent) {
         guard !recordingLong, !longFinished else { return }
         let pt = convert(event.locationInWindow, from: nil)
+        if let mode = selRectGrab, var sel = selection {   // 选区边缘调整（宽高保底 8pt 防翻面）
+            switch mode {
+            case .corner(let fixed): sel = Self.rect(fixed, pt)
+            case .left:   sel = NSRect(x: min(pt.x, sel.maxX - 8), y: sel.minY, width: max(8, sel.maxX - pt.x), height: sel.height)
+            case .right:  sel = NSRect(x: sel.minX, y: sel.minY, width: max(8, pt.x - sel.minX), height: sel.height)
+            case .top:    sel = NSRect(x: sel.minX, y: sel.minY, width: sel.width, height: max(8, pt.y - sel.minY))
+            case .bottom: sel = NSRect(x: sel.minX, y: min(pt.y, sel.maxY - 8), width: sel.width, height: max(8, sel.maxY - pt.y))
+            }
+            selection = sel
+            needsDisplay = true
+            return
+        }
         if currentStroke != nil { currentStroke?.append(pt); needsDisplay = true; return }   // 自由笔画
         if currentArrow != nil { currentArrow?.end = pt; needsDisplay = true; return }       // 箭头拖拽预览
         if var grab = markerGrab, let i = activeMarker, markers.indices.contains(i) {
@@ -864,7 +1005,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             needsDisplay = true
             return
         }
-        if (tool == .box || tool == .note || (tool == .mosaic && mosaicMode == .box)), let o = boxOrigin {
+        if (tool == .box || tool == .note || tool == .highlight || (tool == .mosaic && mosaicMode == .box)), let o = boxOrigin {
             currentBox = Self.rect(o, pt).intersection(selection ?? .zero)
         } else if let o = dragOrigin {
             selection = Self.rect(o, pt)
@@ -876,6 +1017,12 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     override func mouseUp(with event: NSEvent) {
         guard !recordingLong, !longFinished else { return }
+        if selRectGrab != nil {   // 结束选区边缘调整：按新选区重定位工具栏
+            selRectGrab = nil
+            if let sel = selection { showToolbar(for: sel) }
+            needsDisplay = true
+            return
+        }
         if selGrab != nil { selGrab = nil; needsDisplay = true; return }   // 结束选中对象的拖拽调整
         if let pts = currentStroke {   // 画笔 / 马赛克涂抹收尾
             currentStroke = nil
@@ -931,14 +1078,14 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         } else if phase == .editing, tool == .mosaic, mosaicMode == .box, let b = currentBox {
             currentBox = nil; boxOrigin = nil
             if b.width >= 6, b.height >= 6 { record(); mosaicRects.append(b) }   // 区域马赛克
-        } else if phase == .editing, tool == .box || tool == .note, let b = currentBox {
-            let origin = boxOrigin
+        } else if phase == .editing, tool == .box || tool == .note || tool == .highlight, let b = currentBox {
             currentBox = nil; boxOrigin = nil
             if b.width >= 6, b.height >= 6 {
                 if tool == .box { record(); boxes.append(currentStyleBox(b)) }
+                else if tool == .highlight {   // 高亮工具：拖出即聚光灯框（一级工具，不再走框选灯泡/双击）
+                    record(); boxes.append(Box(rect: b, shape: hlShape, highlight: true))
+                }
                 else { addMarker(box: b) }
-            } else if tool == .box, event.clickCount >= 2, let o = origin, let i = boxes.lastIndex(where: { $0.rect.contains(o) }) {
-                record(); boxes[i].highlight.toggle()   // 双击已有框 → 切换高亮；单击只选中(可删除)，避免误触
             }
         } else {
             currentBox = nil; boxOrigin = nil
@@ -982,7 +1129,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         if let i = steps.lastIndex(where: { !$0.text.isEmpty && $0.textRect.contains(pt) }) { return .step(i) }
         if let i = steps.lastIndex(where: { hypot($0.center.x - pt.x, $0.center.y - pt.y) <= badgeRadius + 2 }) { return .step(i) }
         if let i = arrows.lastIndex(where: { Self.pointSegDistance(pt, $0.start, $0.end) <= max(10, $0.lineWidth + 6) }) { return .arrow(i) }
-        if let i = boxes.lastIndex(where: { $0.rect.contains(pt) }) { return .box(i) }
+        if let i = boxes.lastIndex(where: { Self.boxContains($0, pt) }) { return .box(i) }
         return nil
     }
 
@@ -1011,9 +1158,18 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private func hitSelectedGrab(at pt: NSPoint) -> (mode: SelGrabMode, moved: Bool)? {
         switch selected {
         case .box(let i)? where boxes.indices.contains(i):
-            let b = boxes[i].rect
-            if let fixed = resizeAnchor(b, at: pt) { return (.boxResize(fixed: fixed), false) }
-            if b.insetBy(dx: -6, dy: -6).contains(pt) { return (.move(NSPoint(x: pt.x - b.minX, y: pt.y - b.minY)), false) }
+            let b = boxes[i]
+            // 旋转手柄优先（圆钮 10pt 命中带）
+            let knob = Self.boxRotateHandle(b)
+            if hypot(pt.x - knob.x, pt.y - knob.y) <= 10 { return (.boxRotate(center: b.center), false) }
+            // 四角缩放/框身移动：都换算到框的本地坐标系判断（跟随旋转）
+            let local = Self.rotatePoint(pt, around: b.center, by: -b.rotation)
+            if let fixed = resizeAnchor(b.rect, at: local) {
+                return (.boxResize(fixed: fixed, center: b.center, angle: b.rotation), false)
+            }
+            if b.rect.insetBy(dx: -6, dy: -6).contains(local) {
+                return (.move(NSPoint(x: pt.x - b.rect.minX, y: pt.y - b.rect.minY)), false)
+            }
         case .arrow(let i)? where arrows.indices.contains(i):
             let a = arrows[i]
             if hypot(pt.x - a.end.x, pt.y - a.end.y) <= 11 { return (.arrowEnd(start: false), false) }
@@ -1026,13 +1182,19 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         return nil
     }
 
-    /// 应用选中对象拖拽：整体移动 / 框四角缩放 / 拖箭头某端（不限制到选区，可到整屏）
+    /// 应用选中对象拖拽：整体移动 / 框四角缩放 / 框旋转 / 拖箭头某端（不限制到选区，可到整屏）
     private func applySelGrab(_ mode: SelGrabMode, to pt: NSPoint) {
         switch selected {
         case .box(let i)? where boxes.indices.contains(i):
             switch mode {
             case .move(let o): boxes[i].rect.origin = NSPoint(x: pt.x - o.x, y: pt.y - o.y)
-            case .boxResize(let fixed): boxes[i].rect = Self.rect(fixed, pt)
+            case .boxResize(let fixed, let center, let angle):
+                // 拖点换算到拖拽起始时的本地坐标系再定新框（中心/角度用起始快照，避免逐帧漂移）
+                let local = Self.rotatePoint(pt, around: center, by: -angle)
+                boxes[i].rect = Self.rect(fixed, local)
+            case .boxRotate(let center):
+                // 拖点相对中心的方位角 − 手柄初始方位（正上方 π/2）＝旋转角
+                boxes[i].rotation = atan2(pt.y - center.y, pt.x - center.x) - .pi / 2
             case .arrowEnd: break
             }
         case .arrow(let i)? where arrows.indices.contains(i):
@@ -1044,7 +1206,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                 arrows[i].end = NSPoint(x: arrows[i].end.x + dx, y: arrows[i].end.y + dy)
             case .arrowEnd(let isStart):
                 if isStart { arrows[i].start = pt } else { arrows[i].end = pt }
-            case .boxResize: break
+            case .boxResize, .boxRotate: break
             }
         default: break
         }
@@ -1341,13 +1503,19 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         }
         switch tool {
         case .box:
+            // 工具态不显示灯泡：高亮已是一级工具；选中已有框时（上方 selected 分支）仍可切换
             return AnyView(BoxOptionsBar(
-                shape: boxShape, dashed: boxDashed, highlight: boxHighlight, colorHex: boxColorHex, lineWidth: boxLineWidth,
+                shape: boxShape, dashed: boxDashed, highlight: false, colorHex: boxColorHex, lineWidth: boxLineWidth,
+                showHighlight: false,
                 onShape: { [weak self] in self?.boxShape = $0; self?.refreshToolbars() },
                 onDashed: { [weak self] in self?.boxDashed = $0; self?.refreshToolbars() },
-                onHighlight: { [weak self] in self?.toggleBoxHighlight() },
+                onHighlight: {},
                 onColor: { [weak self] in self?.boxColorHex = $0; self?.refreshToolbars() },
                 onWidth: { [weak self] in self?.boxLineWidth = $0; self?.refreshToolbars() }))
+        case .highlight:   // 高亮工具子选项：只有形状
+            return AnyView(HighlightOptionsBar(
+                shape: hlShape,
+                onShape: { [weak self] in self?.hlShape = $0; self?.refreshToolbars() }))
         case .pen:
             return AnyView(PenOptionsBar(
                 colorHex: penColorHex, lineWidth: penLineWidth,
@@ -1404,11 +1572,13 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         // 翻译按钮「按下」高亮：正在翻译，或译图在手且当前显示译文（切回原文则熄灭）
         let translateActive = translating || (translatedOverride != nil && !showingOriginal)
         return ScreenshotToolbar(
-            boxActive: tool == .box, penActive: tool == .pen, arrowActive: tool == .arrow,
+            boxActive: tool == .box, hlActive: tool == .highlight, penActive: tool == .pen,
+            arrowActive: tool == .arrow,
             mosaicActive: tool == .mosaic, noteActive: tool == .note, flowActive: tool == .flow,
             wmActive: tool == .watermark,
             translateTitle: tTitle, translateActive: translateActive,
             onBox: { [weak self] in self?.toggleTool(.box) },
+            onHighlightTool: { [weak self] in self?.toggleTool(.highlight) },
             onPen: { [weak self] in self?.toggleTool(.pen) },
             onArrow: { [weak self] in self?.toggleTool(.arrow) },
             onMosaic: { [weak self] in self?.toggleTool(.mosaic) },
@@ -1452,13 +1622,6 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         needsDisplay = true
     }
 
-    /// 框选「高亮」子开关：只决定接下来新画框默认是否高亮；已有框各自单击切换，互不影响
-    private func toggleBoxHighlight() {
-        boxHighlight.toggle()
-        if let sel = selection { showToolbar(for: sel) }   // 刷新勾选状态
-        needsDisplay = true
-    }
-
     // MARK: - 合成 / 输出
 
     /// 所有标注的并集包围盒（视图坐标，含线宽余量）；无标注返回 nil。
@@ -1466,7 +1629,16 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private func annotationsBounds() -> NSRect? {
         var r: NSRect?
         func add(_ rect: NSRect) { r = r.map { $0.union(rect) } ?? rect }
-        for b in boxes { add(b.rect) }
+        for b in boxes {
+            if b.rotation == 0 { add(b.rect) } else {
+                // 旋转框：四角旋转后的包围盒
+                let corners = [NSPoint(x: b.rect.minX, y: b.rect.minY), NSPoint(x: b.rect.maxX, y: b.rect.minY),
+                               NSPoint(x: b.rect.minX, y: b.rect.maxY), NSPoint(x: b.rect.maxX, y: b.rect.maxY)]
+                    .map { Self.rotatePoint($0, around: b.center, by: b.rotation) }
+                let xs = corners.map(\.x), ys = corners.map(\.y)
+                add(NSRect(x: xs.min()!, y: ys.min()!, width: xs.max()! - xs.min()!, height: ys.max()! - ys.min()!))
+            }
+        }
         for m in markers { add(m.box); if !m.text.isEmpty { add(m.textRect) } }
         for s in steps {
             add(NSRect(x: s.center.x - badgeRadius, y: s.center.y - badgeRadius, width: badgeRadius * 2, height: badgeRadius * 2))
@@ -1516,7 +1688,11 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             NSColor.black.setFill()
             for b in spots {
                 let r = b.rect.offsetBy(dx: dx, dy: dy)
-                (b.shape == .oval ? NSBezierPath(ovalIn: r) : NSBezierPath(rect: r)).fill()
+                let path = b.shape == .oval ? NSBezierPath(ovalIn: r) : NSBezierPath(rect: r)
+                if b.rotation != 0 {   // 挖洞随框旋转
+                    path.transform(using: Self.rotationTransform(b.rotation, around: NSPoint(x: r.midX, y: r.midY)))
+                }
+                path.fill()
             }
             layer.unlockFocus()
             layer.draw(in: NSRect(origin: .zero, size: outSize))
