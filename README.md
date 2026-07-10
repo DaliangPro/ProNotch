@@ -54,7 +54,7 @@
 
 1. 从 [Releases](../../releases) 下载最新的 `ProNotch-x.y.z.dmg`
 2. 打开 DMG，把 ProNotch 拖进「应用程序」
-3. **首次打开**：本应用未做 Apple 签名公证（个人开源项目，不想交每年 99 美元），系统会提示无法打开。两种解决办法任选：
+3. **首次打开**：本应用当前未做 Apple 签名公证，系统会提示无法打开。两种解决办法任选：
    - 在「应用程序」里**右键 ProNotch → 打开 → 再点打开**
    - 或在终端执行：`xattr -dr com.apple.quarantine /Applications/ProNotch.app`
 4. 启动后菜单栏出现图标，鼠标移到屏幕顶部中间的刘海位置即可展开面板
@@ -111,6 +111,9 @@ swift -e 'import Foundation; DistributedNotificationCenter.default().postNotific
 - 数据层（启动台/剪贴板/话术/对话/妙记/快捷区/设置）全部由 AppDelegate 持有，换屏重建窗口不丢状态
 - 全屏检测走空间切换事件驱动（零轮询）；深浅色切换走 System Events 脚本接口
 
-## 许可
+## 版权
 
-[MIT](LICENSE)
+Copyright (c) 2026 DaliangPro. All rights reserved.
+
+本项目为专有软件。未经 DaliangPro 事先书面许可，不得使用、复制、修改、分发、
+再许可或销售本项目及其源码。详见 [LICENSE](LICENSE)。
