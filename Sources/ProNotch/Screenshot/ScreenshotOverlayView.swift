@@ -758,7 +758,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         }
         // 箭头：按下起点，拖出终点
         if phase == .editing, tool == .arrow {
-            commitEditing(); selected = nil
+            commitEditing()
+            selected = hitAnnotation(at: pt)   // 点在已有箭头/标注上先选中：没拖=保留选中（二次调参），拖了=画新箭头
             currentArrow = Arrow(start: pt, end: pt, colorHex: arrowColorHex, lineWidth: arrowLineWidth)
             needsDisplay = true
             return
@@ -885,9 +886,9 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             needsDisplay = true
             return
         }
-        if let a = currentArrow {   // 箭头收尾：拖出最短长度才落定（单击不留孤点）
+        if let a = currentArrow {   // 箭头收尾：拖出才画新箭头；没拖=保留 mouseDown 时选中的已有标注（二次调参）
             currentArrow = nil
-            if hypot(a.end.x - a.start.x, a.end.y - a.start.y) >= 8 { record(); arrows.append(a) }
+            if hypot(a.end.x - a.start.x, a.end.y - a.start.y) >= 8 { record(); arrows.append(a); selected = nil }
             needsDisplay = true
             return
         }
