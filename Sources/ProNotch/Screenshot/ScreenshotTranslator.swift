@@ -18,8 +18,10 @@ enum ScreenshotTranslator {
         let raw = prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? SettingsStore.defaultTranslatePrompt : prompt
         let system = raw.replacingOccurrences(of: "{lang}", with: lang)
-        // 并行开关关闭（接口限流严）或文字少：单请求，无拆分开销
-        let ranges = config.parallel ? chunkRanges(texts, budget: 400) : [0..<texts.count]
+        // 并行开关关闭（接口限流严）或文字少：单请求，无拆分开销。
+        // 预算 400→120：片段模式抠出的英文短语总量常不足 400，一直落成单块、并行与渐进渲染全都
+        // 没机会介入（大梁老师实测慢的一环）；120 让零星片段也能切 3~4 块并发，先译完先上屏
+        let ranges = config.parallel ? chunkRanges(texts, budget: 120) : [0..<texts.count]
         guard ranges.count > 1 else {
             let out = try await translateChunk(texts, to: lang, system: system, config: config)
             onPartial?(0..<texts.count, out, 1, 1)
@@ -67,7 +69,10 @@ enum ScreenshotTranslator {
         while out.count < texts.count { out.append("") }
         let suspects = texts.indices.filter { i in
             let o = out[i].trimmingCharacters(in: .whitespaces)
-            return o.isEmpty || (o == texts[i].trimmingCharacters(in: .whitespaces) && looksTranslatable(texts[i]))
+            if o.isEmpty { return true }   // 条目被丢：必补
+            // 原样回传：仅「自然语句」才补翻。品牌名/驼峰标识符/缩写被模型保留是正确行为，
+            // 此前一律当漏翻跑二轮 harder 请求——几乎每屏必触发、总时长近乎翻倍（超时主因之一）
+            return o == texts[i].trimmingCharacters(in: .whitespaces) && isRetryWorthySentence(texts[i])
         }
         guard !suspects.isEmpty else { return out }
         let harder = system + "\n\nThe previous attempt returned these strings unchanged or dropped them, which is WRONG. "
@@ -81,6 +86,26 @@ enum ScreenshotTranslator {
             }
         }
         return out
+    }
+
+    /// 原样回传的条目是否值得二轮补翻：仅当它是「≥2 个普通词的自然语句」（或含中文的句子）。
+    /// 普通词 = 纯字母、非驼峰、非全大写缩写；单个词条目（Settings、DeepSeek、GitHub 等）
+    /// 多为专名/短标签，模型保留原样是合理输出，不再为它们跑二轮请求（internal 供测试）
+    static func isRetryWorthySentence(_ s: String) -> Bool {
+        guard looksTranslatable(s) else { return false }
+        var plain = 0
+        for word in s.split(whereSeparator: { $0 == " " || $0 == "\n" }) {
+            let w = String(word).trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+            guard w.count >= 2 else { continue }
+            if w.range(of: "^[A-Za-z]+$", options: .regularExpression) != nil {
+                let interiorUpper = Array(w).dropFirst().contains { $0.isUppercase }   // 驼峰（DeepSeek/ProNotch）
+                let allUpper = w == w.uppercased()                                      // 全大写缩写（API/OCR）
+                if !interiorUpper, !allUpper { plain += 1 }
+            } else if w.range(of: "\\p{Han}", options: .regularExpression) != nil {
+                plain += 2   // 含中文＝目标为外语时的整句漏翻，直接够格补翻
+            }
+        }
+        return plain >= 2
     }
 
     /// 这串文字「看起来该被翻译」：含拉丁词、字母占比可观，且不是 URL/路径——

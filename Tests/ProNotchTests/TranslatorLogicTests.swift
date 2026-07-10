@@ -25,4 +25,19 @@ final class TranslatorLogicTests: XCTestCase {
         // 中文本身不需要再翻
         XCTAssertFalse(ScreenshotTranslator.looksTranslatable("已经是中文了"))
     }
+
+    func test补翻判定_只补自然语句不补专名() {
+        // 该补：≥2 个普通词的自然语句（真漏翻）
+        XCTAssertTrue(ScreenshotTranslator.isRetryWorthySentence("Download the latest version"))
+        XCTAssertTrue(ScreenshotTranslator.isRetryWorthySentence("Sign in to continue"))
+        // 中英混排句照补
+        XCTAssertTrue(ScreenshotTranslator.isRetryWorthySentence("请下载 latest version"))
+        // 不该补：品牌/驼峰/全大写缩写/单词条目——模型原样保留是正确输出，
+        // 此前误判它们为漏翻导致几乎每屏都多跑一轮补翻请求
+        XCTAssertFalse(ScreenshotTranslator.isRetryWorthySentence("DeepSeek"))
+        XCTAssertFalse(ScreenshotTranslator.isRetryWorthySentence("GitHub Copilot"))
+        XCTAssertFalse(ScreenshotTranslator.isRetryWorthySentence("OCR API"))
+        XCTAssertFalse(ScreenshotTranslator.isRetryWorthySentence("Settings"))
+        XCTAssertFalse(ScreenshotTranslator.isRetryWorthySentence("已经是中文了"))
+    }
 }
