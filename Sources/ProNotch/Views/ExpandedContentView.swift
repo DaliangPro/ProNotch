@@ -37,8 +37,8 @@ struct ExpandedContentView: View {
                                         dragged: $draggedAction,
                                         store: quickActions))
                     }
-                    // 防休眠（状态类开关）：图标式咖啡杯，开启态青色
-                    StripToggle(icon: quickActions.caffeinateActive ? "cup.and.saucer.fill" : "cup.and.saucer",
+                    // 防休眠（状态类开关）：显示器图标（大梁老师选定），恒定字形、开启态青色区分
+                    StripToggle(icon: "display",
                                 active: quickActions.caffeinateActive,
                                 help: quickActions.caffeinateActive
                                     ? "防休眠已开启（点击关闭）"
