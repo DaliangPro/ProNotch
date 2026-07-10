@@ -31,9 +31,9 @@ enum BoxShape { case rect, oval }
 /// 选区 + 压暗 + 标注（框选 / 备注 / 流程）的绘制与交互视图（AppKit 左下原点）
 final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private enum Phase { case selecting, editing }
-    /// 标注工具：none=可重新框选，box=框选，highlight=高亮（聚光灯），pen=画笔，arrow=箭头，
-    /// mosaic=马赛克，note=备注，flow=流程，watermark=水印
-    private enum Tool { case none, box, highlight, pen, arrow, mosaic, note, flow, watermark }
+    /// 标注工具：none=可重新框选，box=框选，highlight=高亮（聚光灯），text=输入文字，pen=画笔，
+    /// arrow=箭头，mosaic=马赛克，note=备注，flow=流程，watermark=水印
+    private enum Tool { case none, box, highlight, text, pen, arrow, mosaic, note, flow, watermark }
     /// 马赛克模式：brush=像笔一样涂抹，box=框选区域
     private enum MosaicMode { case brush, box }
     /// 画笔/马赛克自由笔画
@@ -66,7 +66,9 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     /// 流程：序号角标 + 引导线 + 文字气泡（角标/线可调色）
     private struct Step { var center: NSPoint; var number: String; var textRect: NSRect; var text: String; var colorHex = "#FFFFFF" }
     /// 当前正在编辑的目标
-    private enum Editing { case markerText(Int), stepText(Int), stepNumber(Int) }
+    private enum Editing { case markerText(Int), stepText(Int), stepNumber(Int), annoText(Int) }
+    /// 纯文字标注：点击处直接输入，落定后按颜色/字号渲染在图上（无框无引导线）
+    private struct TextAnno { var rect: NSRect; var text: String; var colorHex: String; var fontSize: CGFloat }
     /// 拖动中的说明气泡引用（回车后可拖动文字框）
     private enum BubbleRef { case marker(Int); case step(Int) }
     private struct PendingBubble { let ref: BubbleRef; let grab: NSPoint; let down: NSPoint; var moved: Bool }
@@ -76,9 +78,9 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private enum MarkerGrabMode { case move(NSPoint); case resize(fixed: NSPoint) }
     private struct MarkerGrab { let mode: MarkerGrabMode; var moved: Bool }
     /// 当前选中的标注（单击选中，可 ESC 删除）
-    private enum AnnotationRef: Equatable { case box(Int); case marker(Int); case step(Int); case arrow(Int) }
+    private enum AnnotationRef: Equatable { case box(Int); case marker(Int); case step(Int); case arrow(Int); case text(Int) }
     /// 撤回快照：所有标注
-    private struct Snapshot { let boxes: [Box]; let markers: [Marker]; let steps: [Step]; let pen: [Stroke]; let arrows: [Arrow]; let mosaicS: [MosaicStroke]; let mosaicR: [NSRect] }
+    private struct Snapshot { let boxes: [Box]; let markers: [Marker]; let steps: [Step]; let pen: [Stroke]; let arrows: [Arrow]; let texts: [TextAnno]; let mosaicS: [MosaicStroke]; let mosaicR: [NSRect] }
 
     private let cgImage: CGImage
     private let nsImage: NSImage
@@ -116,8 +118,12 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     // 箭头（起点 → 终点拖出）
     private var arrows: [Arrow] = []
     private var currentArrow: Arrow?         // 正在拖的箭头预览
-    private var arrowColorHex = "#FFFFFF"    // 箭头颜色（默认白）
-    private var arrowLineWidth: CGFloat = 4
+    private var arrowColorHex = "#FF453A"    // 箭头颜色（默认红，大梁老师定）
+    private var arrowLineWidth: CGFloat = 6.5 // 箭头粗细（默认最粗档）
+    // 文字标注（点击处直接输入）
+    private var texts: [TextAnno] = []
+    private var textColorHex = "#FF453A"     // 文字颜色（默认红）
+    private var textFontSize: CGFloat = 18   // 文字字号（14/18/24 三档取中）
     // 水印：铺满选区的重复斜排文字；文字现场输入（无默认），为空＝无水印。
     // 属全局显示态而非单笔标注，不进撤销栈——清空文字即移除
     private var wmText = ""
@@ -383,6 +389,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         }
         drawPenStrokes(dx: 0, dy: 0)   // 画笔：盖在最上层
         drawArrows(dx: 0, dy: 0)       // 箭头：与画笔同层
+        drawTexts(dx: 0, dy: 0)        // 文字标注：与画笔同层
         drawWatermark(in: sel, dx: 0, dy: 0)   // 水印：铺在所有标注之上
         if let sel = selected {
             if editingField == nil, activeMarker == nil { drawSelection(sel) }   // 空闲选中＝虚线高亮
@@ -401,6 +408,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         case (.markerText(let a), .markerText(let b)): return a == b
         case (.stepText(let a), .stepText(let b)): return a == b
         case (.stepNumber(let a), .stepNumber(let b)): return a == b
+        case (.annoText(let a), .annoText(let b)): return a == b
         default: return false
         }
     }
@@ -487,6 +495,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         switch ref {
         case .box(let i):    if boxes.indices.contains(i) { drawBoxSelectionChrome(boxes[i]) }
         case .marker(let i): if markers.indices.contains(i) { ring(markers[i].box) }
+        case .text(let i):   if texts.indices.contains(i) { ring(texts[i].rect) }
         case .arrow(let i):  if arrows.indices.contains(i) {
             let a = arrows[i]
             for p in [a.start, a.end] {   // 两端圆手柄：可拖动调整箭头起点/终点
@@ -547,6 +556,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         case .marker(let i): guard markers.indices.contains(i) else { return .zero }; corner = NSPoint(x: markers[i].box.maxX, y: markers[i].box.maxY)
         case .step(let i):   guard steps.indices.contains(i) else { return .zero }; corner = NSPoint(x: steps[i].center.x + badgeRadius, y: steps[i].center.y + badgeRadius)
         case .arrow(let i):  guard arrows.indices.contains(i) else { return .zero }; corner = arrows[i].end   // 删除按钮放箭尖
+        case .text(let i):   guard texts.indices.contains(i) else { return .zero }; corner = NSPoint(x: texts[i].rect.maxX, y: texts[i].rect.maxY)
         }
         return NSRect(x: corner.x - s / 2, y: corner.y - s / 2, width: s, height: s)
     }
@@ -728,6 +738,22 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         path.lineWidth = width; path.lineCapStyle = .round; path.lineJoinStyle = .round; path.stroke()
     }
 
+    /// 文字标注：按各自颜色/字号渲染 + 轻阴影（屏上与导出共用，dx/dy 平移）。
+    /// 屏上（dx=dy=0）正在编辑的那条交给输入框显示，跳过
+    private func drawTexts(dx: CGFloat, dy: CGFloat) {
+        for (i, t) in texts.enumerated() {
+            if dx == 0, dy == 0, isEditing(.annoText(i)) { continue }
+            guard !t.text.isEmpty else { continue }
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: t.fontSize, weight: .semibold),
+                .foregroundColor: NSColor(Color(hex: t.colorHex))]
+            withShadow(blur: 3, alpha: 0.45) {
+                // 与编辑输入框同套内边距，落定后文字位置与编辑时严丝合缝
+                (t.text as NSString).draw(in: t.rect.offsetBy(dx: dx, dy: dy).insetBy(dx: bubblePadX, dy: bubblePadY), withAttributes: attrs)
+            }
+        }
+    }
+
     /// 箭头：已落定 + 正在拖的预览（屏上与导出共用，dx/dy 平移）
     private func drawArrows(dx: CGFloat, dy: CGFloat) {
         for a in arrows { strokeArrow(a, dx: dx, dy: dy) }
@@ -893,6 +919,23 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             needsDisplay = true
             return
         }
+        // 文字：点已有文字重新编辑，点空白新建输入
+        if phase == .editing, tool == .text {
+            commitEditing()
+            if let i = texts.lastIndex(where: { $0.rect.contains(pt) }) {
+                selected = nil
+                startTextEdit(i)
+            } else if (selection ?? .zero).insetBy(dx: -40, dy: -40).contains(pt) {   // 选区外围也可放字（导出会带上）
+                selected = nil
+                record()
+                let size = bubbleSize("", maxWidth: bubbleMaxWidth)
+                texts.append(TextAnno(rect: NSRect(x: pt.x, y: pt.y - size.height, width: size.width, height: size.height),
+                                      text: "", colorHex: textColorHex, fontSize: textFontSize))
+                startTextEdit(texts.count - 1)
+            }
+            needsDisplay = true
+            return
+        }
         if phase == .editing { selected = hitAnnotation(at: pt) }   // 命中标注＝选中，空白＝清空
         // 几何调整态：优先处理 activeMarker 的角手柄/框身（拖角缩放、拖身移动、点框外退出）
         if phase == .editing, let i = activeMarker, markers.indices.contains(i) {
@@ -945,7 +988,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             phase = .selecting
             removeToolbar()
             commitEditing()
-            boxes.removeAll(); markers.removeAll(); steps.removeAll(); penStrokes.removeAll(); arrows.removeAll(); mosaicStrokes.removeAll(); mosaicRects.removeAll()
+            boxes.removeAll(); markers.removeAll(); steps.removeAll(); penStrokes.removeAll(); arrows.removeAll(); texts.removeAll(); mosaicStrokes.removeAll(); mosaicRects.removeAll()
             activeMarker = nil; selected = nil; undoStack.removeAll()
             dragOrigin = pt
             selection = NSRect(origin: pt, size: .zero)
@@ -1023,7 +1066,15 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             needsDisplay = true
             return
         }
-        if selGrab != nil { selGrab = nil; needsDisplay = true; return }   // 结束选中对象的拖拽调整
+        if let g = selGrab {   // 结束选中对象的拖拽调整；文字标注没拖＝单击 → 重新编辑
+            selGrab = nil
+            if !g.moved, case .move = g.mode, case .text(let i)? = selected, texts.indices.contains(i) {
+                selected = nil
+                startTextEdit(i)
+            }
+            needsDisplay = true
+            return
+        }
         if let pts = currentStroke {   // 画笔 / 马赛克涂抹收尾
             currentStroke = nil
             if !pts.isEmpty {
@@ -1124,6 +1175,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     /// 命中任意标注（备注气泡/框、流程气泡/角标、箭头、框选）→ 用于「单击选中、ESC 删除、二次调参」
     private func hitAnnotation(at pt: NSPoint) -> AnnotationRef? {
+        if let i = texts.lastIndex(where: { !$0.text.isEmpty && $0.rect.contains(pt) }) { return .text(i) }
         if let i = markers.lastIndex(where: { !$0.text.isEmpty && $0.textRect.contains(pt) }) { return .marker(i) }
         if let i = markers.lastIndex(where: { $0.box.contains(pt) }) { return .marker(i) }
         if let i = steps.lastIndex(where: { !$0.text.isEmpty && $0.textRect.contains(pt) }) { return .step(i) }
@@ -1153,6 +1205,19 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         guard case .arrow(let i)? = selected, arrows.indices.contains(i) else { return }
         record(); change(&arrows[i]); refreshToolbars()
     }
+    /// 改选中文字标注的颜色/字号（二次调参）；字号变了按新字体重排文字框（左上角固定）
+    private func updateSelectedText(_ change: (inout TextAnno) -> Void) {
+        guard case .text(let i)? = selected, texts.indices.contains(i) else { return }
+        record(); change(&texts[i])
+        let t = texts[i]
+        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: t.fontSize, weight: .semibold)]
+        let bound = (t.text as NSString).boundingRect(
+            with: NSSize(width: bubbleMaxWidth - bubblePadX * 2, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attrs)
+        let size = NSSize(width: ceil(bound.width) + bubblePadX * 2, height: ceil(bound.height) + bubblePadY * 2)
+        texts[i].rect = NSRect(x: t.rect.minX, y: t.rect.maxY - size.height, width: size.width, height: size.height)
+        refreshToolbars()
+    }
 
     /// 命中已选中的框选/箭头 → 拖拽模式：框四角=缩放、框内=移动；箭头端点=拖端、线身=移动
     private func hitSelectedGrab(at pt: NSPoint) -> (mode: SelGrabMode, moved: Bool)? {
@@ -1176,6 +1241,11 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             if hypot(pt.x - a.start.x, pt.y - a.start.y) <= 11 { return (.arrowEnd(start: true), false) }
             if Self.pointSegDistance(pt, a.start, a.end) <= max(11, a.lineWidth + 6) {
                 return (.move(NSPoint(x: pt.x - a.start.x, y: pt.y - a.start.y)), false)
+            }
+        case .text(let i)? where texts.indices.contains(i):
+            let r = texts[i].rect
+            if r.insetBy(dx: -4, dy: -4).contains(pt) {
+                return (.move(NSPoint(x: pt.x - r.minX, y: pt.y - r.minY)), false)
             }
         default: break
         }
@@ -1208,6 +1278,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                 if isStart { arrows[i].start = pt } else { arrows[i].end = pt }
             case .boxResize, .boxRotate: break
             }
+        case .text(let i)? where texts.indices.contains(i):
+            if case .move(let o) = mode { texts[i].rect.origin = NSPoint(x: pt.x - o.x, y: pt.y - o.y) }
         default: break
         }
     }
@@ -1219,6 +1291,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         case .marker(let i): if markers.indices.contains(i) { markers.remove(at: i) }
         case .step(let i):   if steps.indices.contains(i) { steps.remove(at: i) }
         case .arrow(let i):  if arrows.indices.contains(i) { arrows.remove(at: i) }
+        case .text(let i):   if texts.indices.contains(i) { texts.remove(at: i) }
         case .none: break
         }
         selected = nil; activeMarker = nil
@@ -1226,7 +1299,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     /// 撤回：记录当前标注快照 / 回退到上一步
     private func record() {
-        undoStack.append(Snapshot(boxes: boxes, markers: markers, steps: steps, pen: penStrokes, arrows: arrows, mosaicS: mosaicStrokes, mosaicR: mosaicRects))
+        undoStack.append(Snapshot(boxes: boxes, markers: markers, steps: steps, pen: penStrokes, arrows: arrows, texts: texts, mosaicS: mosaicStrokes, mosaicR: mosaicRects))
         if undoStack.count > 80 { undoStack.removeFirst() }
     }
     private func undo() {
@@ -1234,7 +1307,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         f?.removeFromSuperview()
         guard let s = undoStack.popLast() else { return }
         boxes = s.boxes; markers = s.markers; steps = s.steps
-        penStrokes = s.pen; arrows = s.arrows; mosaicStrokes = s.mosaicS; mosaicRects = s.mosaicR
+        penStrokes = s.pen; arrows = s.arrows; texts = s.texts; mosaicStrokes = s.mosaicS; mosaicRects = s.mosaicR
         selected = nil; activeMarker = nil; markerGrab = nil; pendingBubble = nil; pendingBadge = nil; currentStroke = nil; currentArrow = nil
         window?.makeFirstResponder(self)
         needsDisplay = true
@@ -1309,10 +1382,11 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     // MARK: - 文字编辑（统一）
 
     @discardableResult
-    private func makeField(_ frame: NSRect, value: String, placeholder: String, numeric: Bool) -> AnnotationTextView {
+    private func makeField(_ frame: NSRect, value: String, placeholder: String, numeric: Bool,
+                           font: NSFont? = nil) -> AnnotationTextView {
         var size = numeric ? frame.size : bubbleSize(value, maxWidth: bubbleMaxWidth)
         let tv = AnnotationTextView(frame: NSRect(origin: frame.origin, size: size))   // 左下角锚点
-        tv.font = numeric ? numFont : textFont
+        tv.font = font ?? (numeric ? numFont : textFont)   // 文字标注传自定字号，与落定渲染一致
         tv.textColor = .white
         tv.insertionPointColor = .white
         tv.drawsBackground = false
@@ -1323,7 +1397,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         tv.alignment = numeric ? .center : .left          // 序号居中；说明左对齐
         tv.delegate = self
         tv.placeholder = placeholder
-        tv.placeholderAttrs = [.font: numeric ? numFont : textFont, .foregroundColor: NSColor.white.withAlphaComponent(0.4)]
+        tv.placeholderAttrs = [.font: tv.font ?? textFont, .foregroundColor: NSColor.white.withAlphaComponent(0.4)]
         // 内边距与换行宽度：textContainerInset 是系统级留白，编辑态/多行都精确生效
         let padX: CGFloat = numeric ? 5 : bubblePadX
         let numLineH = ceil(numFont.ascender - numFont.descender)
@@ -1354,6 +1428,12 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         makeField(markers[i].textRect, value: markers[i].text, placeholder: "输入说明…", numeric: false)
         editing = .markerText(i)
     }
+    private func startTextEdit(_ i: Int) {
+        commitEditing()
+        makeField(texts[i].rect, value: texts[i].text, placeholder: "输入文字…", numeric: false,
+                  font: .systemFont(ofSize: texts[i].fontSize, weight: .semibold))
+        editing = .annoText(i)
+    }
     private func startStepTextEdit(_ i: Int) {
         commitEditing()
         makeField(steps[i].textRect, value: steps[i].text, placeholder: "输入说明…", numeric: false)
@@ -1383,6 +1463,14 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             steps[i].textRect = field.frame
         }
         case .stepNumber(let i): if steps.indices.contains(i), !v.isEmpty, steps[i].number != v { record(); steps[i].number = v }
+        case .annoText(let i): if texts.indices.contains(i) {
+            if v.isEmpty { texts.remove(at: i); selected = nil }   // 空文字＝放弃（创建前快照已在栈里，可撤）
+            else {
+                if texts[i].text != v { record() }
+                texts[i].text = v
+                texts[i].rect = field.frame   // 采用输入框最终位置+尺寸
+            }
+        }
         }
         field.removeFromSuperview()
         window?.makeFirstResponder(self)
@@ -1397,7 +1485,10 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         let size = tv.string.isEmpty ? bubbleSize("", maxWidth: bubbleMaxWidth) : fittedSize(tv)
         guard tv.frame.size != size else { return }
         var origin = tv.frame.origin
-        if case .markerText = e { origin.y = tv.frame.maxY - size.height }   // 备注：左上角固定(向下长)；流程：左下角固定(向上长)
+        switch e {   // 备注/文字标注：左上角固定(向下长)；流程：左下角固定(向上长)
+        case .markerText, .annoText: origin.y = tv.frame.maxY - size.height
+        default: break
+        }
         tv.frame = NSRect(origin: origin, size: size)
         needsDisplay = true   // 引导线跟随
     }
@@ -1494,6 +1585,12 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                     colorHex: a.colorHex, lineWidth: a.lineWidth,
                     onColor: { [weak self] v in self?.updateSelectedArrow { $0.colorHex = v } },
                     onWidth: { [weak self] v in self?.updateSelectedArrow { $0.lineWidth = v } }))
+            case .text(let i) where texts.indices.contains(i):
+                let t = texts[i]
+                return AnyView(TextOptionsBar(
+                    colorHex: t.colorHex, fontSize: t.fontSize,
+                    onColor: { [weak self] v in self?.updateSelectedText { $0.colorHex = v } },
+                    onSize: { [weak self] v in self?.updateSelectedText { $0.fontSize = v } }))
             case .marker(let i) where markers.indices.contains(i):
                 return AnyView(ColorOptionsBar(colorHex: markers[i].colorHex, onColor: { [weak self] in self?.applyNoteColor($0) }))
             case .step(let i) where steps.indices.contains(i):
@@ -1516,6 +1613,11 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             return AnyView(HighlightOptionsBar(
                 shape: hlShape,
                 onShape: { [weak self] in self?.hlShape = $0; self?.refreshToolbars() }))
+        case .text:        // 文字工具子选项：颜色 + 字号
+            return AnyView(TextOptionsBar(
+                colorHex: textColorHex, fontSize: textFontSize,
+                onColor: { [weak self] in self?.textColorHex = $0; self?.refreshToolbars() },
+                onSize: { [weak self] in self?.textFontSize = $0; self?.refreshToolbars() }))
         case .pen:
             return AnyView(PenOptionsBar(
                 colorHex: penColorHex, lineWidth: penLineWidth,
@@ -1572,13 +1674,15 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         // 翻译按钮「按下」高亮：正在翻译，或译图在手且当前显示译文（切回原文则熄灭）
         let translateActive = translating || (translatedOverride != nil && !showingOriginal)
         return ScreenshotToolbar(
-            boxActive: tool == .box, hlActive: tool == .highlight, penActive: tool == .pen,
+            boxActive: tool == .box, hlActive: tool == .highlight, textActive: tool == .text,
+            penActive: tool == .pen,
             arrowActive: tool == .arrow,
             mosaicActive: tool == .mosaic, noteActive: tool == .note, flowActive: tool == .flow,
             wmActive: tool == .watermark,
             translateTitle: tTitle, translateActive: translateActive,
             onBox: { [weak self] in self?.toggleTool(.box) },
             onHighlightTool: { [weak self] in self?.toggleTool(.highlight) },
+            onTextTool: { [weak self] in self?.toggleTool(.text) },
             onPen: { [weak self] in self?.toggleTool(.pen) },
             onArrow: { [weak self] in self?.toggleTool(.arrow) },
             onMosaic: { [weak self] in self?.toggleTool(.mosaic) },
@@ -1649,6 +1753,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                        width: abs(a.end.x - a.start.x), height: abs(a.end.y - a.start.y)).insetBy(dx: -a.lineWidth * 2, dy: -a.lineWidth * 2))
         }
         for st in penStrokes { for p in st.points { add(NSRect(x: p.x - st.lineWidth, y: p.y - st.lineWidth, width: st.lineWidth * 2, height: st.lineWidth * 2)) } }
+        for t in texts where !t.text.isEmpty { add(t.rect) }
         return r
     }
 
@@ -1711,6 +1816,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         }
         drawPenStrokes(dx: dx, dy: dy)   // 画笔：最上层
         drawArrows(dx: dx, dy: dy)       // 箭头：与画笔同层
+        drawTexts(dx: dx, dy: dy)        // 文字标注：与画笔同层
         drawWatermark(in: sel, dx: dx, dy: dy)   // 水印：铺在最上
         result.unlockFocus()
         return result
@@ -2287,7 +2393,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                 NSPasteboard.general.setString(t, forType: .string)
                 self?.close()
             },
-            onClose: { [weak self] in self?.dismissOCRPanel() })
+            onClose: { [weak self] in self?.dismissOCRPanel() },
+            onTranslate: { [weak self] t, done in self?.translateOCRText(t, done) })
         let host = NSHostingView(rootView: panel)
         let size = host.fittingSize
         host.frame = NSRect(x: (bounds.width - size.width) / 2, y: (bounds.height - size.height) / 2,
@@ -2300,6 +2407,32 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private func dismissOCRPanel() {
         ocrPanel?.removeFromSuperview(); ocrPanel = nil
         if let sel = selection { showToolbar(for: sel) }
+    }
+
+    /// OCR 面板的「翻译」：按行拆分送翻（空行原样保留、行数对应），引擎与截图翻译同一套
+    /// （系统翻译优先、失败降级 AI），译完整体回填编辑框；失败回调 nil 由面板显示提示
+    private func translateOCRText(_ text: String, _ done: @escaping (String?) -> Void) {
+        guard let (config, lang, prompt) = translateProvider() else { done(nil); return }
+        let aiReady = !config.baseURL.isEmpty && !config.apiKey.isEmpty && !config.model.isEmpty
+        let useSystem = config.useSystemEngine && SystemTranslator.isSupported
+        guard useSystem || aiReady else { done(nil); return }
+        let lines = text.components(separatedBy: "\n")
+        let idx = lines.indices.filter { !lines[$0].trimmingCharacters(in: .whitespaces).isEmpty }
+        let src = idx.map { lines[$0] }
+        guard !src.isEmpty else { done(nil); return }
+        Task {
+            var out: [String]?
+            if useSystem { out = try? await SystemTranslator.translate(src, targetLang: lang) }
+            if out == nil, aiReady {
+                out = try? await ScreenshotTranslator.translate(src, to: lang, prompt: prompt, config: config)
+            }
+            await MainActor.run {
+                guard let out, out.count == src.count else { done(nil); return }
+                var res = lines
+                for (k, i) in idx.enumerated() where !out[k].isEmpty { res[i] = out[k] }
+                done(res.joined(separator: "\n"))
+            }
+        }
     }
 
     // MARK: - 翻译（原位叠加：盖住原文 + 写译文）

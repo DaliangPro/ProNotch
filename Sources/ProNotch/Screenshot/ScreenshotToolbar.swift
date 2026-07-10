@@ -52,7 +52,7 @@ struct BoxOptionsBar: View {
             lineBtn(true)
             sep
             if showHighlight {
-                icon("lightbulb", active: highlight, action: onHighlight)
+                icon("rays", active: highlight, action: onHighlight)   // 与一级高亮工具同图标（大梁老师选定 rays）
                 sep
             }
             ForEach(Self.palette, id: \.self) { swatch($0) }
@@ -132,6 +132,39 @@ struct HighlightOptionsBar: View {
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(shape == s ? Color.cyan.opacity(0.18) : .clear))
                 .contentShape(Capsule())
         }.buttonStyle(.plain)
+    }
+}
+
+/// 文字标注子选项：颜色 + 字号三档
+struct TextOptionsBar: View {
+    let colorHex: String
+    let fontSize: CGFloat
+    let onColor: (String) -> Void
+    let onSize: (CGFloat) -> Void
+    static let sizes: [CGFloat] = [14, 18, 24]
+    var body: some View {
+        HStack(spacing: 5) {
+            ForEach(BoxOptionsBar.palette, id: \.self) { hex in
+                Button { onColor(hex) } label: {
+                    Circle().fill(Color(hex: hex)).frame(width: 18, height: 18)
+                        .overlay(Circle().strokeBorder(colorHex == hex ? ToolbarChrome.strong : ToolbarChrome.hairline, lineWidth: colorHex == hex ? 2 : 0.5))
+                        .contentShape(Circle())
+                }.buttonStyle(.plain)
+            }
+            Divider().frame(height: 19).overlay(ToolbarChrome.separator)
+            ForEach(Self.sizes, id: \.self) { s in
+                Button { onSize(s) } label: {
+                    Text("A").font(.system(size: s == 14 ? 11 : s == 18 ? 14 : 17, weight: .semibold))
+                        .foregroundColor(fontSize == s ? ToolbarChrome.accent : ToolbarChrome.fg())
+                        .frame(width: 26, height: 28)
+                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(fontSize == s ? Color.cyan.opacity(0.18) : .clear))
+                        .contentShape(Rectangle())
+                }.buttonStyle(.plain).help("字号 \(Int(s))")
+            }
+        }
+        .padding(.horizontal, 13).padding(.vertical, 7)
+        .background(ToolbarChrome.panelBG, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ToolbarChrome.hairline, lineWidth: 0.5)).fixedSize()
     }
 }
 
@@ -374,6 +407,7 @@ private struct ToolbarIconButton<Content: View>: View {
 struct ScreenshotToolbar: View {
     let boxActive: Bool
     let hlActive: Bool
+    let textActive: Bool
     let penActive: Bool
     let arrowActive: Bool
     let mosaicActive: Bool
@@ -384,6 +418,7 @@ struct ScreenshotToolbar: View {
     let translateActive: Bool
     let onBox: () -> Void
     let onHighlightTool: () -> Void
+    let onTextTool: () -> Void
     let onPen: () -> Void
     let onArrow: () -> Void
     let onMosaic: () -> Void
@@ -409,11 +444,12 @@ struct ScreenshotToolbar: View {
             // 拖拽手柄：按住整条工具栏跟手移动（子选项条随行）
             dragHandle
             Divider().frame(height: 20).overlay(ToolbarChrome.separator).padding(.horizontal, 1)
-            // 标注编辑：框选 / 高亮 / 备注 / 序号 / 画笔 / 箭头 / 马赛克 / 水印 + 撤销收尾
+            // 标注编辑：高亮(第一) / 框选 / 备注 / 序号 / 文字 / 画笔 / 箭头 / 马赛克 / 水印 + 撤销收尾
+            button("高亮标注（聚光灯）", "rays", active: hlActive, action: onHighlightTool)
             button("框选标注", "rectangle", active: boxActive, action: onBox)
-            button("高亮标注（聚光灯）", "lightbulb", active: hlActive, action: onHighlightTool)
             button("文字备注", "bubble.left", active: noteActive, action: onNote)
             button("步骤序号标注", "list.number", active: flowActive, action: onFlow)
+            button("输入文字", "t.square", active: textActive, action: onTextTool)
             button("自由画笔", "pencil.tip", active: penActive, action: onPen)
             button("箭头标注", "arrow.up.right", active: arrowActive, action: onArrow)
             mosaicButton(active: mosaicActive)
@@ -489,11 +525,15 @@ struct ScreenshotToolbar: View {
     }
 }
 
-/// OCR 识别结果面板：可编辑修正后复制（A 方案）
+/// OCR 识别结果面板：可编辑修正后复制；一键翻译（译文替换编辑框，可继续改/复制）
 struct OCRResultPanel: View {
     @State var text: String
     let onCopy: (String) -> Void
     let onClose: () -> Void
+    /// 把当前文字交给宿主翻译，回调返回译文（nil=失败）；引擎与截图翻译同一套配置
+    let onTranslate: (String, @escaping (String?) -> Void) -> Void
+    @State private var translating = false
+    @State private var failed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -512,9 +552,24 @@ struct OCRResultPanel: View {
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(ToolbarChrome.mono(0.08)))
             HStack {
-                Text(text.isEmpty ? "未识别到文字" : "\(text.split(separator: "\n").count) 行")
-                    .font(.system(size: 11)).foregroundColor(ToolbarChrome.mono(0.4))
+                Text(failed ? "翻译失败（检查翻译设置）" : (text.isEmpty ? "未识别到文字" : "\(text.split(separator: "\n").count) 行"))
+                    .font(.system(size: 11)).foregroundColor(failed ? .red : ToolbarChrome.mono(0.4))
                 Spacer()
+                Button(action: {
+                    guard !translating, !text.isEmpty else { return }
+                    translating = true; failed = false
+                    onTranslate(text) { result in
+                        translating = false
+                        if let r = result { text = r } else { failed = true }
+                    }
+                }) {
+                    Text(translating ? "翻译中…" : "翻译")
+                        .font(.system(size: 12, weight: .medium)).foregroundColor(ToolbarChrome.mono(1))
+                        .padding(.horizontal, 18).padding(.vertical, 6)
+                        .background(Capsule().fill(Color.cyan.opacity(translating ? 0.4 : 0.75)))
+                }
+                .buttonStyle(.plain)
+                .disabled(translating)
                 Button(action: { onCopy(text) }) {
                     Text("复制").font(.system(size: 12, weight: .medium)).foregroundColor(ToolbarChrome.mono(1))
                         .padding(.horizontal, 18).padding(.vertical, 6)
