@@ -102,6 +102,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     // 窗口吸附：框选阶段悬停自动高亮光标下的窗口，单击即整窗选中
     private var snapWindows: [NSRect]?      // 吸附候选：截图冻结时刻的普通窗口边框（视图坐标、Z 序前→后）；nil=未加载
     private var hoverWindowRect: NSRect?    // 光标当前所在窗口的吸附框
+    private var snappedWindowRect: NSRect?  // 单击整窗吸附选中的窗口框——导出时据此套系统圆角、去掉圆角外背景
 
     private var boxes: [Box] = []
     private var boxShape: BoxShape = .rect   // 框选样式：矩形 / 椭圆
@@ -1123,6 +1124,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             } else if let hw = hoverWindowRect {
                 // 没拖开 = 单击吸附窗口 → 整窗选中，直接进编辑态
                 selection = hw
+                snappedWindowRect = hw   // 记为整窗吸附：导出时套系统圆角，去掉圆角外背景
                 hoverWindowRect = nil
                 phase = .editing; showToolbar(for: hw)
             } else { selection = nil }
@@ -1818,6 +1820,19 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         drawArrows(dx: dx, dy: dy)       // 箭头：与画笔同层
         drawTexts(dx: dx, dy: dy)        // 文字标注：与画笔同层
         drawWatermark(in: sel, dx: dx, dy: dy)   // 水印：铺在最上
+        // 整窗吸附且导出范围恰为窗口本身（选区未被改动、无标注外扩）：挖掉圆角外四角，
+        // 得到与系统截窗口一致的圆角图，不再把窗口背后的背景带进四角
+        if let wr = snappedWindowRect, sel == wr, out == sel {
+            let radius: CGFloat = 10   // macOS 标准窗口圆角（点）；个别异形窗口可能略有出入
+            let clip = NSBezierPath(rect: NSRect(origin: .zero, size: outSize))
+            clip.append(NSBezierPath(roundedRect: NSRect(origin: .zero, size: outSize),
+                                     xRadius: radius, yRadius: radius))
+            clip.windingRule = .evenOdd
+            NSGraphicsContext.current?.compositingOperation = .destinationOut
+            NSColor.black.setFill()
+            clip.fill()
+            NSGraphicsContext.current?.compositingOperation = .sourceOver
+        }
         result.unlockFocus()
         return result
     }
