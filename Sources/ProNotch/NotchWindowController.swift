@@ -22,7 +22,8 @@ final class NotchWindowController {
          quickActions: QuickActionsStore,
          captureStore: CaptureStore,
          settingsStore: SettingsStore,
-         usageStore: UsageStore) {
+         usageStore: UsageStore,
+         agentSessionsStore: AgentSessionsStore) {
         self.launcherStore = launcherStore
         self.clipboardStore = clipboardStore
         self.snippetStore = snippetStore
@@ -49,7 +50,8 @@ final class NotchWindowController {
                 .environmentObject(quickActions)
                 .environmentObject(captureStore)
                 .environmentObject(settingsStore)
-                .environmentObject(usageStore))
+                .environmentObject(usageStore)
+                .environmentObject(agentSessionsStore))
         panel.contentView = hosting
         panel.orderFrontRegardless()
         // 「全屏时隐藏刘海」：每秒检测一次，全屏时整窗隐藏、退出后恢复

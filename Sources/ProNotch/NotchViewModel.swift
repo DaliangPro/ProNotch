@@ -8,15 +8,16 @@ import SwiftUI
 @MainActor
 final class NotchViewModel: ObservableObject {
     enum Tab: String, CaseIterable {
-        case launcher, clipboard, chat, capture, usage
+        case launcher, clipboard, chat, capture, usage, agent
 
         var title: String {
             switch self {
             case .launcher: return "启动台"
-            case .clipboard: return "剪贴板"
-            case .chat: return "AI 闪问"
+            case .clipboard: return "剪切板"
+            case .chat: return "闪问"
             case .capture: return "妙记"
             case .usage: return "额度"
+            case .agent: return "Agent"
             }
         }
 
@@ -27,6 +28,7 @@ final class NotchViewModel: ObservableObject {
             case .chat: return "bubble"
             case .capture: return "pencil.line"
             case .usage: return "speedometer"
+            case .agent: return "cpu"
             }
         }
 
@@ -84,10 +86,12 @@ final class NotchViewModel: ObservableObject {
 
     init(notchRect: CGRect) {
         self.notchRect = notchRect
-        // 恢复保存的标签顺序；数据不完整（如未来增减标签）则回退默认
+        // 恢复保存的标签顺序:去重去失效,版本新增的标签追加到末尾——老用户拖好的顺序不因升级重置
         let saved = (UserDefaults.standard.stringArray(forKey: "tabOrder") ?? [])
             .compactMap { Tab(rawValue: $0) ?? Tab.legacyNames[$0] }
-        let order = Set(saved) == Set(Tab.allCases) ? saved : Tab.allCases
+        var seen = Set<Tab>()
+        var order = saved.filter { seen.insert($0).inserted }
+        order.append(contentsOf: Tab.allCases.filter { !seen.contains($0) })
         tabOrder = order
         activeTab = order.first ?? .launcher
     }

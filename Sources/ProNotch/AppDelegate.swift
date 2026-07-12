@@ -38,6 +38,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var chatStore: ChatStore!
     private var captureStore: CaptureStore!
     private var usageStore: UsageStore!
+    private var agentSessionsStore: AgentSessionsStore!
     private var quickActions: QuickActionsStore!
     private var settingsStore: SettingsStore!
     private let settingsWindow = SettingsWindowController()
@@ -61,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         chatStore = ChatStore()
         captureStore = CaptureStore()
         usageStore = UsageStore()
+        agentSessionsStore = AgentSessionsStore()
         quickActions = QuickActionsStore()
         settingsStore = SettingsStore()
         launcherStore.refreshIfNeeded()
@@ -477,7 +479,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 quickActions: quickActions,
                 captureStore: captureStore,
                 settingsStore: settingsStore,
-                usageStore: usageStore)
+                usageStore: usageStore,
+                agentSessionsStore: agentSessionsStore)
         }
     }
 
@@ -622,7 +625,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func createUsageStatusItem() {
         guard usageStatusItem == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.toolTip = "AI 编码额度（Claude / Codex 5 小时窗）"
+        item.button?.toolTip = "AI 编码额度（Claude / Codex）"
         let menu = NSMenu()
         menu.delegate = self   // 打开时强制刷新
         let hosting = NSHostingView(rootView: UsageMenuView(store: usageStore))

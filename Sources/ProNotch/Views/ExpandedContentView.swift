@@ -9,6 +9,7 @@ struct ExpandedContentView: View {
     @EnvironmentObject var chatStore: ChatStore
     @EnvironmentObject var quickActions: QuickActionsStore
     @EnvironmentObject var captureStore: CaptureStore
+    @EnvironmentObject var agentSessions: AgentSessionsStore
 
     @State private var draggedTab: NotchViewModel.Tab?
     @State private var draggedAction: QuickActionsStore.ActionKind?
@@ -22,7 +23,15 @@ struct ExpandedContentView: View {
             // 右侧 = 系统外观切换 + Agent 完成提醒总开关
             HStack(spacing: 0) {
                 HStack(spacing: 6) {
-                    // 快捷动作可拖动排序（与标签同款交互）；设置图标已从面板移除
+                    // 顺序（大梁老师定）：设置 → 锁屏 → 截图 → 防休眠 → 净屏
+                    // 设置入口：固定最左
+                    StripButton(icon: "gearshape",
+                                help: "打开 ProNotch 设置") {
+                        quickActions.openAppSettings()
+                        vm.collapseNow()
+                    }
+                    .notchTip("打开设置")
+                    // 锁屏 / 截图：可拖动排序（与标签同款交互）
                     ForEach(quickActions.actionOrder.filter { $0 != .appSettings },
                             id: \.self) { kind in
                         stripButton(for: kind)
@@ -47,13 +56,15 @@ struct ExpandedContentView: View {
                         quickActions.toggleCaffeinate()
                     }
                     .notchTip(quickActions.caffeinateActive ? "防休眠 · 已开启" : "防休眠")
-                    // 设置入口：固定在防休眠右侧
-                    StripButton(icon: "gearshape",
-                                help: "打开 ProNotch 设置") {
-                        quickActions.openAppSettings()
-                        vm.collapseNow()
+                    // 净屏开关：一键隐藏/恢复桌面全部图标
+                    StripToggle(icon: "rectangle.dashed",
+                                active: quickActions.desktopIconsHidden,
+                                help: quickActions.desktopIconsHidden
+                                    ? "桌面图标已隐藏（点击恢复显示）"
+                                    : "净屏：隐藏桌面全部图标，屏幕彻底干净；已打开的访达窗口会关闭") {
+                        quickActions.toggleDesktopIcons()
                     }
-                    .notchTip("打开设置")
+                    .notchTip(quickActions.desktopIconsHidden ? "净屏 · 已开启" : "净屏（隐藏桌面图标）")
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
@@ -106,6 +117,8 @@ struct ExpandedContentView: View {
                     CaptureView()
                 case .usage:
                     UsageView()
+                case .agent:
+                    AgentSessionsView()
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -117,6 +130,7 @@ struct ExpandedContentView: View {
         .onChange(of: vm.isExpanded) { _, expanded in
             if expanded {
                 launcherStore.refreshIfNeeded()
+                agentSessions.refresh()   // Agent 会话列表随面板展开刷新(10 秒节流)
             } else {
                 launcherStore.searchText = ""
             }
@@ -203,6 +217,13 @@ struct ExpandedContentView: View {
             }
         case .usage:
             EmptyView()   // 刷新按钮在页面内部（右上角）
+        case .agent:
+            if !agentSessions.sessions.isEmpty {
+                Text("\(agentSessions.sessions.count) 个会话")
+                    .font(.system(size: 11))
+                    .foregroundColor(.white.opacity(0.4))
+            }
+            AccessoryButton(title: "刷新") { agentSessions.refresh(force: true) }
         }
     }
 }
@@ -570,18 +591,15 @@ private struct TabButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 4) {
-                Image(systemName: tab.icon)
-                    .font(.system(size: 10, weight: .light))
-                Text(tab.title)
-                    .font(.system(size: 11, weight: .light))
-            }
-            .foregroundColor(isActive ? .white : .white.opacity(hovering ? 0.85 : 0.55))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .background(Capsule().fill(
-                Color.white.opacity(isActive ? 0.18 : (hovering ? 0.08 : 0))))
-            .contentShape(Capsule())
+            // 只留中文名不放图标:6 个标签后空间紧,纯文字更清爽、可显示区域更大
+            Text(tab.title)
+                .font(.system(size: 11, weight: .light))
+                .foregroundColor(isActive ? .white : .white.opacity(hovering ? 0.85 : 0.55))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(
+                    Color.white.opacity(isActive ? 0.18 : (hovering ? 0.08 : 0))))
+                .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
