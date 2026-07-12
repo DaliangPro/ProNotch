@@ -10,11 +10,11 @@ final class QuickActionsStore: ObservableObject {
         case light = "浅色"
     }
 
-    /// 左侧快捷动作（可拖动排序）
+    /// 左侧快捷动作（可拖动排序）；声明序即默认序：锁屏在前、截图在后（大梁老师定）
     enum ActionKind: String, CaseIterable {
+        case lockScreen
         case screenshot
         case appSettings
-        case lockScreen
 
         /// 旧 rawValue 兼容映射（系统设置 → 应用设置），保留已存的拖动顺序
         static let legacyNames: [String: ActionKind] = ["systemSettings": .appSettings]
@@ -23,11 +23,13 @@ final class QuickActionsStore: ObservableObject {
     /// 快捷动作顺序（持久化）
     @Published var actionOrder: [ActionKind] {
         didSet {
-            UserDefaults.standard.set(actionOrder.map(\.rawValue), forKey: "quickActionOrder")
+            UserDefaults.standard.set(actionOrder.map(\.rawValue), forKey: "quickActionOrder2")
         }
     }
 
     @Published private(set) var caffeinateActive = false
+    /// 桌面图标是否已隐藏（净屏模式）；跟随 Finder 的 CreateDesktop 偏好
+    @Published private(set) var desktopIconsHidden: Bool
     /// 当前外观模式（跟随系统，外部切换也会同步）
     @Published private(set) var appearanceMode: AppearanceMode
 
@@ -48,9 +50,11 @@ final class QuickActionsStore: ObservableObject {
     private var themeObserver: Any?
 
     init() {
-        let saved = (UserDefaults.standard.stringArray(forKey: "quickActionOrder") ?? [])
+        // key 升位（quickActionOrder → quickActionOrder2）：默认序改为「锁屏、截图」，老持久化一次性重置
+        let saved = (UserDefaults.standard.stringArray(forKey: "quickActionOrder2") ?? [])
             .compactMap { ActionKind(rawValue: $0) ?? ActionKind.legacyNames[$0] }
         actionOrder = Set(saved) == Set(ActionKind.allCases) ? saved : ActionKind.allCases
+        desktopIconsHidden = Self.readDesktopIconsHidden()
         appearanceMode = Self.readAppearanceMode()
         // 系统外观变化（无论谁触发）都同步分段控件状态
         themeObserver = DistributedNotificationCenter.default().addObserver(
@@ -151,6 +155,32 @@ final class QuickActionsStore: ObservableObject {
         } catch {
             print("[ProNotch] 熄屏失败: \(error.localizedDescription)")
         }
+    }
+
+    /// 净屏开关：隐藏/恢复桌面全部图标。走 Finder 的 CreateDesktop 偏好（标准做法，
+    /// 完全可逆），改完重启 Finder 生效——副作用是已打开的访达窗口会关闭
+    func toggleDesktopIcons() {
+        let hide = !desktopIconsHidden
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/bin/sh")
+        task.arguments = ["-c",
+            "defaults write com.apple.finder CreateDesktop -bool \(hide ? "false" : "true") && killall Finder"]
+        do {
+            try task.run()
+            desktopIconsHidden = hide
+            print("[ProNotch] 桌面图标已\(hide ? "隐藏（净屏）" : "恢复显示")")
+        } catch {
+            print("[ProNotch] 净屏切换失败: \(error.localizedDescription)")
+        }
+    }
+
+    /// 读 Finder 的 CreateDesktop 偏好：缺省 / true = 显示图标
+    private static func readDesktopIconsHidden() -> Bool {
+        guard let v = CFPreferencesCopyAppValue("CreateDesktop" as CFString,
+                                                "com.apple.finder" as CFString) else { return false }
+        if let n = v as? NSNumber { return !n.boolValue }
+        if let s = v as? String { return !(s as NSString).boolValue }
+        return false
     }
 
     /// 防休眠开关：通过子进程 caffeinate -di 阻止显示器与系统休眠
