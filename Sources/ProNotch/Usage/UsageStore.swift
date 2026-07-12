@@ -8,6 +8,13 @@ struct QuotaWindow {
     var resetsAt: Date?          // 窗口重置时间
     var windowMinutes: Int       // 窗口长度（300=5小时，10080=7天）
     var isEstimate: Bool         // true=本地估算（非官方数字）
+
+    /// 窗口时长显示名，按真实分钟数生成——服务商改窗口（如 Codex 取消 5 小时窗只留周额度）标签自动跟上
+    var label: String {
+        if windowMinutes >= 1440 { return "\(windowMinutes / 1440) 天" }
+        if windowMinutes >= 60 { return "\(windowMinutes / 60) 小时" }
+        return "\(windowMinutes) 分钟"
+    }
 }
 
 /// 一个服务（Claude Code / Codex）的额度快照

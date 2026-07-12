@@ -38,8 +38,8 @@ private struct MenuServiceRow: View {
             if let err = quota?.error {
                 Text(err).font(.system(size: 10.5)).foregroundColor(.secondary)
             } else if let q = quota {
-                if let p = q.primary { MenuBar(label: "5 小时", w: p) }
-                if let s = q.secondary { MenuBar(label: "7 天", w: s) }
+                if let p = q.primary { MenuBar(label: p.label, w: p) }
+                if let s = q.secondary { MenuBar(label: s.label, w: s) }
             } else {
                 Text("读取中…").font(.system(size: 10.5)).foregroundColor(.secondary)
             }

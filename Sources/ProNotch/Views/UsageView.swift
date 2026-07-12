@@ -63,8 +63,8 @@ private struct QuotaCard: View {
                         .frame(maxWidth: .infinity, alignment: .center)
                     Spacer()
                 } else {
-                    if let p = q.primary { WindowRow(label: "5 小时", window: p, prominent: true) }
-                    if let s = q.secondary { WindowRow(label: "7 天", window: s, prominent: false) }
+                    if let p = q.primary { WindowRow(label: p.label, window: p, prominent: true) }
+                    if let s = q.secondary { WindowRow(label: s.label, window: s, prominent: false) }
                     Spacer(minLength: 0)
                     if let at = q.dataAt {
                         Text("数据 \(Self.ago(at))\(q.primary?.isEstimate == true ? " · ≈本地估算" : " · 官方数据")")
