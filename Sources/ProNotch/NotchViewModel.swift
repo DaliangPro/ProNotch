@@ -68,6 +68,11 @@ final class NotchViewModel: ObservableObject {
     weak var panel: NSPanel?
 
     private var monitors: [Any] = []
+    /// 触控板横滑累积量（攒够阈值切一格）；鼠标滚轮切换的冷却时间戳
+    private var scrollAccumX: CGFloat = 0
+    /// 本次触控板横滑手势内是否已切过一格——防止单次滑动连翻多页
+    private var tabSwitchedThisGesture = false
+    private var lastTabSwitch = Date.distantPast
     private var poller: Timer?
     private var pendingExpand: DispatchWorkItem?
     private var pendingCollapse: DispatchWorkItem?
@@ -139,6 +144,13 @@ final class NotchViewModel: ObservableObject {
             return event
         }) {
             monitors.append(local)
+        }
+        // 面板滚动手势：触控板双指横滑 / Shift+鼠标滚轮 → 左右切模块（需同步决定吞/放，故直接在主线程处理）
+        if let scroll = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel, handler: { [weak self] event in
+            guard let self else { return event }
+            return MainActor.assumeIsolated { self.handleScrollWheel(event) } ? nil : event
+        }) {
+            monitors.append(scroll)
         }
         poller = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.evaluateMouse() }
@@ -293,6 +305,58 @@ final class NotchViewModel: ObservableObject {
     /// 供面板内操作（如启动应用后）主动收起
     func collapseNow() {
         collapse()
+    }
+
+    // MARK: - 模块左右切换（触控板横滑 / Shift+滚轮）
+
+    /// 在 tabOrder 中左右切换当前页，循环。step=+1 下一个（右），-1 上一个（左）
+    func switchTab(by step: Int) {
+        guard !tabOrder.isEmpty, let idx = tabOrder.firstIndex(of: activeTab) else { return }
+        let n = tabOrder.count
+        let target = tabOrder[((idx + step) % n + n) % n]
+        guard target != activeTab else { return }
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+            activeTab = target
+        }
+    }
+
+    /// 面板滚动分流：横向手势（触控板双指横滑 / Shift+鼠标滚轮）左右切模块并吞掉事件；
+    /// 纵向滚动原样放行给内容页。返回 true = 已消费（吞掉），false = 放行给内容。
+    /// 方向若与直觉相反，仅需翻转下方两处 step 的 +1/-1。
+    private func handleScrollWheel(_ event: NSEvent) -> Bool {
+        guard isExpanded, let panel, event.window === panel else { return false }
+        let dx = event.scrollingDeltaX
+        let dy = event.scrollingDeltaY
+        let shift = event.modifierFlags.contains(.shift)
+
+        if event.hasPreciseScrollingDeltas && !shift {
+            // —— 触控板：按手势阶段管控，一次横滑最多切一格 ——
+            // 抬手后的惯性事件全部吞掉不切，否则一次滑动会靠惯性连翻好几页
+            if event.momentumPhase != [] { return true }
+            // 手势开始/结束都复位：保证「一次滑动 = 一格」，且下次还能再切
+            if event.phase.contains(.began) || event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+                scrollAccumX = 0
+                tabSwitchedThisGesture = false
+            }
+            let horizontal = abs(dx) > abs(dy) * 1.4 && abs(dx) > 2
+            guard horizontal || scrollAccumX != 0 else { return false }   // 纵向手势：放行给内容滚动
+            if (scrollAccumX > 0) != (dx > 0), dx != 0 { scrollAccumX = 0 }   // 反向清零，避免来回抖动累加
+            scrollAccumX += dx
+            if !tabSwitchedThisGesture, abs(scrollAccumX) >= 80 {   // 阈值：约需一段明确横滑才切；切完锁死本次手势
+                switchTab(by: scrollAccumX < 0 ? 1 : -1)
+                tabSwitchedThisGesture = true
+            }
+            return true   // 横向手势吞掉，不漏给内容
+        }
+
+        // —— 鼠标滚轮：仅 Shift+滚轮 切模块，一格一切、带冷却防猛滚跳多格 ——
+        guard shift else { scrollAccumX = 0; return false }
+        let primary = abs(dx) >= abs(dy) ? dx : dy
+        if Date().timeIntervalSince(lastTabSwitch) > 0.2 {
+            switchTab(by: primary < 0 ? 1 : -1)
+            lastTabSwitch = Date()
+        }
+        return true
     }
 
     private func expand() {
