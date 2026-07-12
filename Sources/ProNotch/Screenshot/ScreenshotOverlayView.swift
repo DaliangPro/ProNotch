@@ -100,9 +100,12 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var selection: NSRect?
     private var dragOrigin: NSPoint?
     // 窗口吸附：框选阶段悬停自动高亮光标下的窗口，单击即整窗选中
-    private var snapWindows: [NSRect]?      // 吸附候选：截图冻结时刻的普通窗口边框（视图坐标、Z 序前→后）；nil=未加载
+    private var snapWindows: [(rect: NSRect, id: CGWindowID)]?   // 吸附候选：截图冻结时刻的普通窗口（边框 + 窗口 ID，视图坐标、Z 序前→后）；nil=未加载
     private var hoverWindowRect: NSRect?    // 光标当前所在窗口的吸附框
-    private var snappedWindowRect: NSRect?  // 单击整窗吸附选中的窗口框——导出时据此套系统圆角、去掉圆角外背景
+    private var hoverWindowID: CGWindowID?  // 光标当前所在窗口的 ID（供单击吸附时记录）
+    private var snappedWindowRect: NSRect?  // 单击整窗吸附选中的窗口框——导出时据此裁成窗口真实形状
+    private var snappedWindowID: CGWindowID?      // 吸附窗口的 ID
+    private var snappedWindowImage: CGImage?      // 该窗口真实形状图（带真圆角 alpha），异步截得；导出时用它精确裁边，曲率与窗口一致
 
     private var boxes: [Box] = []
     private var boxShape: BoxShape = .rect   // 框选样式：矩形 / 椭圆
@@ -269,8 +272,12 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         // 框选阶段（未开始拖拽）：悬停吸附光标下的窗口，单击即整窗选中；一旦拖拽走自由框选
         if phase == .selecting, dragOrigin == nil, !recordingLong, !longFinished, ocrPanel == nil, hintView == nil {
             let pt = convert(event.locationInWindow, from: nil)
-            let hit = snapWindowRect(under: pt)
-            if hit != hoverWindowRect { hoverWindowRect = hit; needsDisplay = true }
+            let hit = snapWindowHit(under: pt)
+            if hit?.rect != hoverWindowRect {
+                hoverWindowRect = hit?.rect
+                hoverWindowID = hit?.id
+                needsDisplay = true
+            }
             return
         }
         guard tool == .mosaic, mosaicMode == .brush else { if hoverPoint != nil { hoverPoint = nil; needsDisplay = true }; return }
@@ -281,24 +288,24 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     // MARK: - 窗口吸附
 
     /// 光标下最顶层可见窗口的吸附框（视图坐标）；候选列表只取一次——覆盖层显示后画面已冻结，窗口不会再动
-    private func snapWindowRect(under pt: NSPoint) -> NSRect? {
+    private func snapWindowHit(under pt: NSPoint) -> (rect: NSRect, id: CGWindowID)? {
         if snapWindows == nil {
             snapWindows = Self.loadSnapWindows(screen: screen, bounds: bounds,
                                                excludeNumbers: Set([window?.windowNumber].compactMap { $0 }))
         }
-        return snapWindows?.first { $0.contains(pt) }
+        return snapWindows?.first { $0.rect.contains(pt) }
     }
 
     /// 枚举屏上可见窗口 → 视图坐标（Z 序前→后）。不限 layer 0：刘海面板、各 App 浮动面板都能吸附；
     /// 只排除截图覆盖层自身、桌面层（负 layer）、全屏遮罩层（高 layer 且盖满整屏，如光晕层）与过小窗口。
-    private static func loadSnapWindows(screen: NSScreen, bounds: NSRect, excludeNumbers: Set<Int>) -> [NSRect] {
+    private static func loadSnapWindows(screen: NSScreen, bounds: NSRect, excludeNumbers: Set<Int>) -> [(rect: NSRect, id: CGWindowID)] {
         guard let displayID = screen.displayID,
               let infos = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return [] }
         let b = CGDisplayBounds(displayID)   // 本屏 CG 全局框（左上原点）
-        var rects: [NSRect] = []
+        var out: [(rect: NSRect, id: CGWindowID)] = []
         for info in infos {
             guard let layer = info[kCGWindowLayer as String] as? Int, layer >= 0,
-                  (info[kCGWindowNumber as String] as? Int).map({ !excludeNumbers.contains($0) }) ?? true,
+                  let num = info[kCGWindowNumber as String] as? Int, !excludeNumbers.contains(num),
                   ((info[kCGWindowAlpha as String] as? Double) ?? 1) > 0.05,
                   let bd = info[kCGWindowBounds as String] as? NSDictionary,
                   let wf = CGRect(dictionaryRepresentation: bd), wf.width >= 40, wf.height >= 40 else { continue }
@@ -308,9 +315,31 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             guard r.width >= 40, r.height >= 40 else { continue }
             // 高 layer 且盖满整屏 = 遮罩层（光晕/覆盖层同类），不是可截的窗口；layer 0 的全屏 App 窗口保留
             if layer > 0, r.width >= bounds.width * 0.95, r.height >= bounds.height * 0.95 { continue }
-            rects.append(r)
+            out.append((r, CGWindowID(num)))
         }
-        return rects
+        return out
+    }
+
+    /// 异步按窗口 ID 单独截该窗口，得到带真实圆角 alpha 的形状图（不含阴影），供 compose 精确裁边。
+    /// 用窗口自己的真实形状，曲率与该窗口完全一致，避免固定圆角在不同软件上留背景/切边
+    private func captureWindowShape(id: CGWindowID) {
+        let scale = screen.backingScaleFactor
+        Task { [weak self] in
+            let img = await Self.captureWindow(id: id, scale: scale)
+            await MainActor.run { self?.snappedWindowImage = img }
+        }
+    }
+
+    private static func captureWindow(id: CGWindowID, scale: CGFloat) async -> CGImage? {
+        guard let content = try? await SCShareableContent.current,
+              let win = content.windows.first(where: { $0.windowID == id }) else { return nil }
+        let cfg = SCStreamConfiguration()
+        cfg.width = max(1, Int(win.frame.width * scale))
+        cfg.height = max(1, Int(win.frame.height * scale))
+        cfg.showsCursor = false
+        cfg.ignoreShadowsSingleWindow = true    // 只要窗口本体形状，不含系统阴影（背景默认即 clear 透明）
+        let filter = SCContentFilter(desktopIndependentWindow: win)
+        return try? await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
     }
 
     // MARK: - 绘制
@@ -1124,7 +1153,10 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             } else if let hw = hoverWindowRect {
                 // 没拖开 = 单击吸附窗口 → 整窗选中，直接进编辑态
                 selection = hw
-                snappedWindowRect = hw   // 记为整窗吸附：导出时套系统圆角，去掉圆角外背景
+                snappedWindowRect = hw            // 记为整窗吸附：导出时裁成窗口真实形状
+                snappedWindowID = hoverWindowID
+                snappedWindowImage = nil
+                if let id = hoverWindowID { captureWindowShape(id: id) }   // 异步截该窗口真实圆角形状
                 hoverWindowRect = nil
                 phase = .editing; showToolbar(for: hw)
             } else { selection = nil }
@@ -1778,7 +1810,15 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         let outSize = out.size
         let result = NSImage(size: outSize)
         result.lockFocus()
-        NSImage(cgImage: cropped, size: outSize).draw(in: NSRect(origin: .zero, size: outSize))
+        // 纯窗口吸附且真实形状已就绪：直接用窗口本体图（自带真实圆角、干净边缘、透明四角）。
+        // 不走"整屏裁剪 + 遮罩"——整屏图里窗口的投影会在遮罩边缘透出一圈黑边
+        let usedWindowShape = snappedWindowRect != nil && sel == snappedWindowRect
+            && out == sel && snappedWindowImage != nil
+        if usedWindowShape, let shape = snappedWindowImage {
+            NSImage(cgImage: shape, size: outSize).draw(in: NSRect(origin: .zero, size: outSize))
+        } else {
+            NSImage(cgImage: cropped, size: outSize).draw(in: NSRect(origin: .zero, size: outSize))
+        }
         let dx = -out.minX, dy = -out.minY
         // 译图（若有）只盖在选区那块位置
         if let t = translatedOverride, !showingOriginal {
@@ -1822,8 +1862,9 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         drawWatermark(in: sel, dx: dx, dy: dy)   // 水印：铺在最上
         // 整窗吸附且导出范围恰为窗口本身（选区未被改动、无标注外扩）：挖掉圆角外四角，
         // 得到与系统截窗口一致的圆角图，不再把窗口背后的背景带进四角
-        if let wr = snappedWindowRect, sel == wr, out == sel {
-            let radius: CGFloat = 10   // macOS 标准窗口圆角（点）；个别异形窗口可能略有出入
+        // 窗口吸附但真实形状未就绪（极快操作，兜底罕见）→ 固定圆角挖角，仍去掉直角背景
+        if let wr = snappedWindowRect, sel == wr, out == sel, !usedWindowShape {
+            let radius: CGFloat = 10
             let clip = NSBezierPath(rect: NSRect(origin: .zero, size: outSize))
             clip.append(NSBezierPath(roundedRect: NSRect(origin: .zero, size: outSize),
                                      xRadius: radius, yRadius: radius))
@@ -1838,22 +1879,34 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     }
 
     private func copyToClipboard() {
-        guard let img = compose() else { close(); return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.writeObjects([img])
-        close()
+        Task { @MainActor in
+            await ensureWindowShape()
+            guard let img = compose() else { close(); return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.writeObjects([img])
+            close()
+        }
+    }
+
+    /// 导出前确保窗口真实形状已就绪：吸附后立刻导出时，异步截图可能还没返回，这里同步补截一次
+    private func ensureWindowShape() async {
+        guard snappedWindowRect != nil, snappedWindowImage == nil, let id = snappedWindowID else { return }
+        snappedWindowImage = await Self.captureWindow(id: id, scale: screen.backingScaleFactor)
     }
 
     private func saveToDesktop() {
-        guard let img = compose(),
-              let tiff = img.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let png = rep.representation(using: .png, properties: [:]) else { close(); return }
-        let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd HH.mm.ss"
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Desktop/截图 \(fmt.string(from: Date())).png")
-        try? png.write(to: url)
-        close()
+        Task { @MainActor in
+            await ensureWindowShape()
+            guard let img = compose(),
+                  let tiff = img.tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff),
+                  let png = rep.representation(using: .png, properties: [:]) else { close(); return }
+            let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd HH.mm.ss"
+            let url = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Desktop/截图 \(fmt.string(from: Date())).png")
+            try? png.write(to: url)
+            close()
+        }
     }
 
     // MARK: - 长截图（程序自动匀速滚动 + 逐帧拼接）
