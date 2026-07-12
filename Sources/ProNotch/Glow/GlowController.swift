@@ -40,7 +40,9 @@ final class GlowController: ObservableObject {
     private let settings: SettingsStore
     private var activeSource: GlowSource?
     private var activeMode: Mode?
-    private var activeHost: String?   // 当前光晕对应的宿主 App bundle id（切回它即熄灭）
+    /// 光晕点亮期间累计的宿主 App bundle id 集合。多会话并发时各自的完成信号都会进来——
+    /// 单一宿主变量会被后到信号覆盖,导致「切回先完成的那个 App 灭不掉」;集合语义:切回其中任意一个即熄灭
+    private var activeHosts: Set<String> = []
     private var panels: [GlowPanel] = []   // 每块屏幕（主屏 + 扩展屏）一个，同步呼吸
     private var loopTimer: Timer?
     private var loopStart: Date?
@@ -104,7 +106,7 @@ final class GlowController: ObservableObject {
         if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == hostID { return }
         previewingSource = nil
         testingSource = nil
-        activeHost = hostID
+        activeHosts.insert(hostID)   // 并发会话各自累计,不互相覆盖
         // 完成信号发在「这轮任务真正结束」时，所以收到即点亮。
         light(source, mode: .alert)
     }
@@ -115,7 +117,7 @@ final class GlowController: ObservableObject {
         if testingSource == source { dismiss(); return }
         previewingSource = nil
         testingSource = source
-        activeHost = nil
+        activeHosts = [source.appBundleID]
         light(source, mode: .alert)
     }
 
@@ -125,7 +127,7 @@ final class GlowController: ObservableObject {
         if previewingSource == source { dismiss(); return }
         testingSource = nil
         previewingSource = source
-        activeHost = nil
+        activeHosts = []
         light(source, mode: .preview)
     }
 
@@ -141,12 +143,14 @@ final class GlowController: ObservableObject {
         fadeTarget = 0   // 由 tick() 淡出到 0 后统一清理
     }
 
-    /// 「完成提醒」光晕：对应桌面 App 切到最前台 → 熄灭（预览类不受影响）
+    /// 「完成提醒」光晕：切到任一相关宿主 App 的最前台 → 熄灭（预览类不受影响）
     private func handleAppActivation(_ note: Notification) {
         guard activeMode == .alert, let source = activeSource,
-              let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
-        // 切回「Agent 所在的宿主 App」即熄灭；activeHost 为空时回退到桌面版 bundle id。
-        guard app.bundleIdentifier == (activeHost ?? source.appBundleID) else { return }
+              let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+              let bid = app.bundleIdentifier else { return }
+        // 集合空(旧 hook 没报宿主)回退到该来源桌面版 bundle id
+        let targets = activeHosts.isEmpty ? [source.appBundleID] : activeHosts
+        guard targets.contains(bid) else { return }
         dismiss()
     }
 
@@ -176,14 +180,14 @@ final class GlowController: ObservableObject {
             activeColor = nil
             activeSource = nil
             activeMode = nil
-            activeHost = nil
+            activeHosts.removeAll()
             previewingSource = nil
             testingSource = nil
             loopTimer?.invalidate(); loopTimer = nil; loopStart = nil
         }
     }
 
-    /// 设置变更后同步外观；关闭总开关则熄灭，预览中则即时换色
+    /// 设置变更后同步外观；关闭总开关或取消当前来源的接入勾选则熄灭，预览中则即时换色
     private func syncAppearance() {
         period = settings.glowBreathPeriod
         intensity = settings.glowIntensity
@@ -191,7 +195,12 @@ final class GlowController: ObservableObject {
         if !settings.glowEnabled {
             dismiss()
         } else if let source = activeSource {
-            activeColor = color(for: source)
+            // 正亮着的来源被取消勾选:立即熄灭——此前勾选框只拦「下次点亮」,当前光晕关不掉
+            if activeMode == .alert, !GlowHookInstaller.isInstalled(source) {
+                dismiss()
+            } else {
+                activeColor = color(for: source)
+            }
         }
     }
 }
