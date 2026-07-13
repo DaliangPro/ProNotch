@@ -7,9 +7,13 @@ struct AgentSession: Identifiable {
         var label: String { self == .claude ? "Claude" : "Codex" }
     }
     enum State {
+        case waiting       // hook 实锤:一轮刚结束、球已回到你手里(瞬时,不靠文件推断)
         case running       // 文件正被写入,一轮进行中
         case maybeWaiting  // 停在工具调用未收尾——可能在等你确认,也可能是长任务
         case idle          // 一轮已收尾,等你开启下一轮
+
+        /// 需要你关注(橙点呼吸、置顶):确定该你了 或 可能在等你
+        var needsAttention: Bool { self == .waiting || self == .maybeWaiting }
     }
     let id: String
     let source: Source
@@ -17,7 +21,8 @@ struct AgentSession: Identifiable {
     let model: String?
     let lastActivity: Date
     let lastMessage: String?
-    let state: State
+    var state: State       // 文件扫描给初值,hook 事件在 rebuild 时可覆盖为 .waiting
+    var hostBundleID: String? = nil   // hook 带来的宿主 App bundle id,点卡跳转用;nil=还没收到过 hook
     var projectName: String { (projectPath as NSString).lastPathComponent }
 }
 
@@ -32,32 +37,97 @@ final class AgentSessionsStore: ObservableObject {
     @Published private(set) var sessions: [AgentSession] = []
     @Published private(set) var refreshing = false
     private var lastRefresh = Date.distantPast
+    private var rawSessions: [AgentSession] = []       // 文件扫描原始结果(带文件推断态),hook 事件在其上叠加
+    private var turnEndedAt: [String: Date] = [:]       // hook 推送的「轮结束」事件:session_id / thread-id → 时间(30 分钟过期,for「该你了」)
+    private var hostBySession: [String: String] = [:]   // 同键 → 宿主 App bundle id;持久化、跨重启保留,覆盖率随使用累积,点卡跳转用
+    private static let hostStoreKey = "agentHostBySession"
 
     nonisolated static let recentWindow: TimeInterval = 48 * 3600   // 只列 48 小时内活动过的会话
     nonisolated static let maxCount = 12
 
-    /// 刷新(10 秒节流,force 忽略节流);扫描在后台线程,主线程只收结果
+    init() {
+        // 恢复持久化的宿主映射:上次运行采集到的 host 仍可用于跳转,不必等本次再轮结束一次
+        hostBySession = (UserDefaults.standard.dictionary(forKey: Self.hostStoreKey) as? [String: String]) ?? [:]
+    }
+
+    /// 刷新(10 秒节流,force 忽略节流);扫描在后台线程,主线程叠加 hook 事件后收结果
     func refresh(force: Bool = false) {
         guard force || Date().timeIntervalSince(lastRefresh) > 10 else { return }
         guard !refreshing else { return }
         refreshing = true
         lastRefresh = Date()
         Task.detached(priority: .utility) {
-            let all = Self.scanClaude() + Self.scanCodex()
-            // 「可能在等你」置顶,其余按最后活动倒序
-            func rank(_ s: AgentSession.State) -> Int {
-                switch s { case .maybeWaiting: return 0; case .running: return 1; case .idle: return 2 }
-            }
-            let sorted = all.sorted {
-                rank($0.state) != rank($1.state) ? rank($0.state) < rank($1.state)
-                                                 : $0.lastActivity > $1.lastActivity
-            }
-            let top = Array(sorted.prefix(Self.maxCount))
+            let raw = Self.scanClaude() + Self.scanCodex()
             await MainActor.run { [weak self] in
-                self?.sessions = top
+                self?.rawSessions = raw
+                self?.rebuild()
                 self?.refreshing = false
             }
         }
+    }
+
+    /// hook 实时事件:某会话一轮刚结束(Claude Stop / Codex agent-turn-complete)→ 立刻标「该你了」,
+    /// 不等文件扫描那 ~2 分钟。session = Claude 的 session_id 或 Codex 的 thread-id
+    func markTurnEnded(session: String, source: AgentSession.Source, host: String?) {
+        guard !session.isEmpty else { return }
+        turnEndedAt[session] = Date()
+        if let host, !host.isEmpty {
+            hostBySession[session] = host
+            UserDefaults.standard.set(hostBySession, forKey: Self.hostStoreKey)   // 持久化,下次启动仍能跳
+        }
+        rebuild()              // 会话已在列表 → 即时点亮
+        refresh(force: true)   // 顺带重扫,拿最新摘要 / 新会话
+    }
+
+    /// 点卡跳转:切到该会话所在的宿主 App(终端/IDE);没有 hook 报过宿主则回退到该 Agent 桌面版
+    func activate(_ session: AgentSession) {
+        let host = session.hostBundleID
+        let desktop = session.source == .claude ? "com.anthropic.claudefordesktop" : "com.openai.codex"
+        let ws = NSWorkspace.shared
+        // 用 openApplication(activates:true) 前置——macOS Sonoma 起,后台 App(无 Dock 图标)
+        // 直接 NSRunningApplication.activate() 常被系统忽略;openApplication 等价「点 Dock 图标」,系统放行。
+        // 只到 App 级:官方 App 单窗口 + 内部切换对话,外部程序无法定位到具体对话
+        for bid in [host, desktop].compactMap({ $0 }) {
+            if let url = ws.urlForApplication(withBundleIdentifier: bid) {
+                let cfg = NSWorkspace.OpenConfiguration()
+                cfg.activates = true
+                ws.openApplication(at: url, configuration: cfg, completionHandler: nil)
+                return
+            }
+        }
+    }
+
+    /// 用最新的 hook 事件在文件态之上叠加,重排并截断
+    private func rebuild() {
+        let now = Date()
+        turnEndedAt = turnEndedAt.filter { now.timeIntervalSince($0.value) < 30 * 60 }   // 「该你了」事件 30 分钟过期(host 不随之过期,长期保留供跳转)
+        let merged = rawSessions.map { s -> AgentSession in
+            var s = s
+            // hook 事件不比文件最后活动旧(容差 5 秒,Stop 后可能还在写最后一条消息)→ 确定「该你了」;
+            // 用户之后又发消息(mtime 远晚于 hook)则条件不成立,回到文件推断态
+            if let t = hookTime(for: s), t >= s.lastActivity.addingTimeInterval(-5) {
+                s.state = .waiting
+            }
+            s.hostBundleID = hookHost(for: s)   // 收到过 hook 的会话带上宿主,供跳转
+            return s
+        }
+        func rank(_ st: AgentSession.State) -> Int {
+            switch st { case .waiting: return 0; case .maybeWaiting: return 1; case .running: return 2; case .idle: return 3 }
+        }
+        sessions = Array(merged.sorted {
+            rank($0.state) != rank($1.state) ? rank($0.state) < rank($1.state)
+                                             : $0.lastActivity > $1.lastActivity
+        }.prefix(Self.maxCount))
+    }
+
+    /// 匹配 hook 事件:Claude 用 session_id 精确相等;Codex 文件名以 thread-id 结尾
+    private func hookTime(for s: AgentSession) -> Date? {
+        for (key, t) in turnEndedAt where s.id == key || s.id.hasSuffix(key) { return t }
+        return nil
+    }
+    private func hookHost(for s: AgentSession) -> String? {
+        for (key, h) in hostBySession where s.id == key || s.id.hasSuffix(key) { return h }
+        return nil
     }
 
     // MARK: - Claude Code(~/.claude/projects/<项目>/<sessionId>.jsonl)

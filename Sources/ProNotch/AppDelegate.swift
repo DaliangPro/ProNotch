@@ -253,9 +253,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let source = items?.first(where: { $0.name == "source" })?.value
         // host：hook 探测到的「Agent 实际所在 App」bundle id（终端/IDE/桌面版通用）
         let host = items?.first(where: { $0.name == "host" })?.value
+        // session：Claude 的 session_id / Codex 的 thread-id，用于把「轮结束」瞬时点到对应 Agent 卡片
+        let session = items?.first(where: { $0.name == "session" })?.value ?? ""
         switch source {
-        case "claude": glowController?.notifyCompletion(.claude, host: host)
-        case "codex":  glowController?.notifyCompletion(.codex, host: host)
+        case "claude":
+            glowController?.notifyCompletion(.claude, host: host)
+            agentSessionsStore?.markTurnEnded(session: session, source: .claude, host: host)
+        case "codex":
+            glowController?.notifyCompletion(.codex, host: host)
+            agentSessionsStore?.markTurnEnded(session: session, source: .codex, host: host)
         default: break
         }
     }

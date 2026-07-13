@@ -59,7 +59,8 @@ enum GlowHookInstaller {
     }
 
     /// hook 脚本格式版本：升级时 +1，启动迁移据此把旧脚本刷新到新格式
-    private static let scriptFormat = 3
+    /// v4：URL 追加 session（Claude 读 stdin 的 session_id / Codex 读 payload 的 thread-id），供 Agent 页瞬时点亮
+    private static let scriptFormat = 4
 
     /// 沿进程链向上找到「Agent 实际所在的 GUI App」bundle id。只认 /Applications 下的 app
     /// （借此排除 claude-code 的 CLI 包装 app）；终端 / IDE / 桌面 App 通用，找不到回空。
@@ -127,9 +128,12 @@ enum GlowHookInstaller {
         #!/bin/bash
         # ProNotch · Claude 完成提醒（自动生成，勿手改）· PRONOTCH_FMT=\(scriptFormat)
         \(hostDetectSnippet)
+        payload=$(cat)
         host=$(detect_host)
+        sid=$(printf '%s' "$payload" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
         url="pronotch://done?source=claude"
         [ -n "$host" ] && url="$url&host=$host"
+        [ -n "$sid" ] && url="$url&session=$sid"
         open -g "$url"
         """
         guard (try? script.write(toFile: claudeScript, atomically: true, encoding: .utf8)) != nil else { return false }
@@ -314,8 +318,10 @@ enum GlowHookInstaller {
               *"Generate a concise UI title"*) : ;;
               *)
                 host=$(detect_host)
+                tid=$(printf '%s' "$payload" | sed -n 's/.*"thread-id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
                 url="pronotch://done?source=codex"
                 [ -n "$host" ] && url="$url&host=$host"
+                [ -n "$tid" ] && url="$url&session=$tid"
                 open -g "$url" ;;
             esac ;;
         esac

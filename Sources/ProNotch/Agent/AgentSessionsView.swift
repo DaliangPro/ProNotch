@@ -63,6 +63,7 @@ struct AgentSessionsView: View {
 private struct SessionCard: View {
     let session: AgentSession
     @EnvironmentObject var vm: NotchViewModel
+    @EnvironmentObject var store: AgentSessionsStore
     @State private var hovering = false
 
     var body: some View {
@@ -90,14 +91,20 @@ private struct SessionCard: View {
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
             .fill(Color.white.opacity(hovering ? 0.09 : 0.06)))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .strokeBorder(session.state == .maybeWaiting ? Color(hex: "#FF9F0A").opacity(0.35) : Color.white.opacity(0.08),
-                          lineWidth: 0.5))
+            .strokeBorder(session.state.needsAttention ? Color(hex: "#FF9F0A").opacity(session.state == .waiting ? 0.6 : 0.35) : Color.white.opacity(0.08),
+                          lineWidth: session.state == .waiting ? 1 : 0.5))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            store.activate(session)   // 切到该会话所在的终端/IDE
+            vm.collapseNow()
+        }
         .onHover { hovering = $0 }
-        .help("\(session.projectPath)\(session.model.map { "\n模型: \($0)" } ?? "")")
+        .help("点击跳到该会话所在 App\n\(session.projectPath)\(session.model.map { "\n模型: \($0)" } ?? "")")
     }
 
     private var stateText: String {
         switch session.state {
+        case .waiting: return "该你了"
         case .running: return "运行中"
         case .maybeWaiting: return "可能在等你"
         case .idle: return "空闲"
@@ -106,8 +113,8 @@ private struct SessionCard: View {
 
     private var stateColor: Color {
         switch session.state {
+        case .waiting, .maybeWaiting: return Color(hex: "#FF9F0A")
         case .running: return .cyan
-        case .maybeWaiting: return Color(hex: "#FF9F0A")
         case .idle: return .white.opacity(0.35)
         }
     }
@@ -131,18 +138,18 @@ private struct StateDot: View {
         Circle()
             .fill(color)
             .frame(width: 8, height: 8)
-            .opacity(state == .maybeWaiting ? (breathing ? 1 : 0.35) : 1)
-            .animation(state == .maybeWaiting && animate
+            .opacity(state.needsAttention ? (breathing ? 1 : 0.35) : 1)
+            .animation(state.needsAttention && animate
                 ? .easeInOut(duration: 0.9).repeatForever(autoreverses: true)
                 : .default, value: breathing)
-            .onAppear { breathing = animate && state == .maybeWaiting }
-            .onChange(of: animate) { _, on in breathing = on && state == .maybeWaiting }
+            .onAppear { breathing = animate && state.needsAttention }
+            .onChange(of: animate) { _, on in breathing = on && state.needsAttention }
     }
 
     private var color: Color {
         switch state {
+        case .waiting, .maybeWaiting: return Color(hex: "#FF9F0A")
         case .running: return .cyan
-        case .maybeWaiting: return Color(hex: "#FF9F0A")
         case .idle: return .white.opacity(0.3)
         }
     }
