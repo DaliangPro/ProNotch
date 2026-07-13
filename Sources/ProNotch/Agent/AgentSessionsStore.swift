@@ -81,6 +81,9 @@ final class AgentSessionsStore: ObservableObject {
 
     /// 点卡跳转:切到该会话所在的宿主 App(终端/IDE);没有 hook 报过宿主则回退到该 Agent 桌面版
     func activate(_ session: AgentSession) {
+        // 点卡即已读:清掉这张卡的「该你了」事件、橙灯立刻灭（你点它 = 去处理了）
+        turnEndedAt = turnEndedAt.filter { key, _ in !(session.id == key || session.id.hasSuffix(key)) }
+        rebuild()
         let host = session.hostBundleID
         let desktop = session.source == .claude ? "com.anthropic.claudefordesktop" : "com.openai.codex"
         let ws = NSWorkspace.shared
