@@ -106,14 +106,13 @@ private struct SessionCard: View {
         switch session.state {
         case .waiting: return "该你了"
         case .running: return "运行中"
-        case .maybeWaiting: return "可能在等你"
         case .idle: return "空闲"
         }
     }
 
     private var stateColor: Color {
         switch session.state {
-        case .waiting, .maybeWaiting: return Color(hex: "#FF9F0A")
+        case .waiting: return Color(hex: "#FF9F0A")
         case .running: return .cyan
         case .idle: return .white.opacity(0.35)
         }
@@ -148,7 +147,7 @@ private struct StateDot: View {
 
     private var color: Color {
         switch state {
-        case .waiting, .maybeWaiting: return Color(hex: "#FF9F0A")
+        case .waiting: return Color(hex: "#FF9F0A")
         case .running: return .cyan
         case .idle: return .white.opacity(0.3)
         }

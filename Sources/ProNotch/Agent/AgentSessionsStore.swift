@@ -7,13 +7,13 @@ struct AgentSession: Identifiable {
         var label: String { self == .claude ? "Claude" : "Codex" }
     }
     enum State {
-        case waiting       // hook 实锤:一轮刚结束、球已回到你手里(瞬时,不靠文件推断)
-        case running       // 文件正被写入,一轮进行中
-        case maybeWaiting  // 停在工具调用未收尾——可能在等你确认,也可能是长任务
-        case idle          // 一轮已收尾,等你开启下一轮
+        case waiting       // hook 实锤:一轮刚结束、球已回到你手里——唯一的醒目「该你了」来源
+        case running       // 文件 2 分钟内在写:确实活着在跑
+        case idle          // 其余:空闲、已收尾、或被 kill 中断的死会话——都不打扰
 
-        /// 需要你关注(橙点呼吸、置顶):确定该你了 或 可能在等你
-        var needsAttention: Bool { self == .waiting || self == .maybeWaiting }
+        /// 需要你关注(橙点呼吸、置顶):只认 hook 实锤的「该你了」。
+        /// 不再靠文件猜「可能在等你」——它分不清真等待和被 kill 的死会话,会误报关掉的会话
+        var needsAttention: Bool { self == .waiting }
     }
     let id: String
     let source: Source
@@ -115,7 +115,7 @@ final class AgentSessionsStore: ObservableObject {
             return s
         }
         func rank(_ st: AgentSession.State) -> Int {
-            switch st { case .waiting: return 0; case .maybeWaiting: return 1; case .running: return 2; case .idle: return 3 }
+            switch st { case .waiting: return 0; case .running: return 1; case .idle: return 2 }
         }
         sessions = Array(merged.sorted {
             rank($0.state) != rank($1.state) ? rank($0.state) < rank($1.state)
@@ -263,14 +263,12 @@ final class AgentSessionsStore: ObservableObject {
 
     // MARK: - 共用
 
-    /// 回合中 + 2 分钟内有写入 = 运行中(工具执行间隙不落盘,窗口必须宽);
-    /// 回合中 + 2~30 分钟没动静 = 可能在等你;
-    /// 悬空超 30 分钟 = 被中断/弃掉的会话(kill 掉的回合尾部同样悬空),按空闲处理不再打扰
+    /// 只有「回合进行中 且 2 分钟内真的在写」= 运行中;其余一律 idle(不打扰)。
+    /// 「停下等你」的醒目提醒交给 hook 的 .waiting——被 kill 中断的死会话没 hook 事件,自然沉默,
+    /// 不再靠文件猜「可能在等你」(那分不清真等待和被中断,会误报你已经关掉的会话)
     private nonisolated static func state(mtime: Date, inTurn: Bool) -> AgentSession.State {
-        guard inTurn else { return .idle }
-        let age = Date().timeIntervalSince(mtime)
-        if age < 120 { return .running }
-        return age < 30 * 60 ? .maybeWaiting : .idle
+        guard inTurn, Date().timeIntervalSince(mtime) < 120 else { return .idle }
+        return .running
     }
 
     private nonisolated static func summarize(_ text: String?) -> String? {
