@@ -20,6 +20,8 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
     @Published var copiedFlash: Int?            // 正在闪「已复制 ✓」的卡片索引
     @Published var keyboardScrollTick = 0       // 仅键盘移动时滚动居中（鼠标点击不动卡片，避免落点错位）
     private var anchorIndex = 0                 // 连选锚点（最近一次非 ⇧ 点击的位置）
+    private var lastTapIndex: Int?              // 上次单击的卡片索引（手动检测双击用）
+    private var lastTapAt = Date.distantPast    // 上次单击时间
 
     private var store: ClipboardStore?
     private var panel: NSPanel?
@@ -27,7 +29,7 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
     private var clickMonitor: Any?
     private var previousApp: NSRunningApplication?
 
-    private let panelSize = NSSize(width: 920, height: 404)
+    private let panelSize = NSSize(width: 980, height: 368)
 
     /// 注入数据源（AppDelegate 启动时调用）
     func configure(store: ClipboardStore) { self.store = store }
@@ -115,6 +117,36 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
     func confirm() {
         guard let action = makeCopyAction() else { dismiss(copying: nil); return }
         dismiss(copying: action, thenPaste: true)
+    }
+
+    /// 双击卡片：选中该卡并立即粘贴回原 App
+    func activate(at idx: Int) {
+        select(at: idx, command: false, shift: false)
+        confirm()
+    }
+
+    /// 单击/双击分发：单击即时选中（不再用 count:2 手势，消除单击等双击判定的 0.25s 延迟）；
+    /// 0.35s 内二次点击同一卡片（无修饰键）视为双击 → 粘贴回原 App
+    func handleTap(at idx: Int, command: Bool, shift: Bool) {
+        if !command, !shift, idx == lastTapIndex, Date().timeIntervalSince(lastTapAt) < 0.35 {
+            lastTapIndex = nil
+            lastTapAt = .distantPast
+            activate(at: idx)
+            return
+        }
+        lastTapIndex = idx
+        lastTapAt = Date()
+        select(at: idx, command: command, shift: shift)
+    }
+
+    /// 右键删除该卡；删除后修正选中索引，删空则收起面板
+    func delete(at idx: Int) {
+        guard let store, store.items.indices.contains(idx) else { return }
+        store.delete(store.items[idx])
+        if store.items.isEmpty { dismiss(copying: nil); return }
+        selectedIndex = min(selectedIndex, store.items.count - 1)
+        selectedSet = [selectedIndex]
+        anchorIndex = selectedIndex
     }
 
     /// ⌘C：当前选中（单条或多条合并）复制到剪贴板并收起，不自动粘贴
@@ -226,14 +258,12 @@ struct ClipboardSwitcherView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Image(systemName: "clipboard")
-                    .font(.system(size: 13, weight: .semibold)).foregroundColor(.white.opacity(0.9))
-                Text("剪贴板").font(.system(size: 14, weight: .semibold)).foregroundColor(.white)
                 Spacer()
-                Text("单击 选中 · ⌘单击 多选 · ⇧单击 连选 · ↩ 粘贴 · ⌘C 复制 · esc 取消")
+                Text("单击选中 · 双击粘贴 · 右键删除 · ⌘/⇧多选 · ↩粘贴 · ⌘C复制 · esc取消")
                     .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
+                Spacer()
             }
-            .padding(.horizontal, 18).padding(.top, 14).padding(.bottom, 10)
+            .padding(.horizontal, 20).padding(.top, 8).padding(.bottom, 6)
 
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -242,11 +272,19 @@ struct ClipboardSwitcherView: View {
                             VStack(spacing: 6) {
                                 ClipboardCard(item: item, selected: controller.selectedSet.contains(idx))
                                     .onTapGesture {
-                                        // 标准图标选择：单击=单选；⌘单击=逐个多选；⇧单击=连选整段
+                                        // 单击即时选中（不用 count:2 手势，避免单击等双击判定的延迟）；
+                                        // 双击由 handleTap 内部按「快速二次点击同卡」检测 → 粘贴
                                         let mods = NSEvent.modifierFlags
-                                        controller.select(at: idx,
-                                                          command: mods.contains(.command),
-                                                          shift: mods.contains(.shift))
+                                        controller.handleTap(at: idx,
+                                                             command: mods.contains(.command),
+                                                             shift: mods.contains(.shift))
+                                    }
+                                    .contextMenu {
+                                        Button(role: .destructive) {
+                                            controller.delete(at: idx)   // 右键：删除该条历史
+                                        } label: {
+                                            Label("删除", systemImage: "trash")
+                                        }
                                     }
                                 Button {
                                     controller.copyButtonTapped(at: idx)
@@ -265,15 +303,32 @@ struct ClipboardSwitcherView: View {
                             .id(idx)
                         }
                     }
-                    .padding(.horizontal, 18).padding(.bottom, 16)
+                    .padding(.horizontal, 20).padding(.bottom, 12)
                 }
+                .mask(
+                    // 左右两端纯黑渐隐（边缘彻底透明→露纯黑底）。与「面板宽 980 + 卡片首尾 20pt 留白」耦合：
+                    // 渐隐带压在约 2%（≈20pt）内、正好卡在留白边，卡片从 20pt 起紧接着出现，故默认不被遮挡；
+                    // 滚动时卡片进留白才淡出。曲度用 ease（靠外快、靠内缓），过渡自然不生硬。改宽度/留白需同步调这里
+                    LinearGradient(stops: [
+                        .init(color: .clear, location: 0),
+                        .init(color: .black.opacity(0.25), location: 0.006),
+                        .init(color: .black.opacity(0.65), location: 0.012),
+                        .init(color: .black.opacity(0.9), location: 0.016),
+                        .init(color: .black, location: 0.02),
+                        .init(color: .black, location: 0.98),
+                        .init(color: .black.opacity(0.9), location: 0.984),
+                        .init(color: .black.opacity(0.65), location: 0.988),
+                        .init(color: .black.opacity(0.25), location: 0.994),
+                        .init(color: .clear, location: 1),
+                    ], startPoint: .leading, endPoint: .trailing)
+                )
                 .onChange(of: controller.keyboardScrollTick) { _, _ in
                     // 只有键盘 ← → 才滚动居中；鼠标点击不动卡片（点击后卡片位移会导致下一次点击落点错位）
                     withAnimation(.easeOut(duration: 0.18)) { proxy.scrollTo(controller.selectedIndex, anchor: .center) }
                 }
             }
         }
-        .frame(width: 920, height: 404)
+        .frame(width: 980, height: 368)
         .background(
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .fill(Color.black.opacity(0.92)))
