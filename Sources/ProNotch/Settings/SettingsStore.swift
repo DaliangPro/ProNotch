@@ -41,13 +41,6 @@ final class SettingsStore: ObservableObject {
 
     static let clipboardLimitOptions = [50, 100, 200, 500]
 
-    /// 妙记的收件箱文件路径（支持 ~ 缩写）
-    @Published var captureInboxPath: String {
-        didSet {
-            UserDefaults.standard.set(captureInboxPath, forKey: "captureInboxPath")
-        }
-    }
-
     /// 超级截图全局快捷键（nil = 未设置）；变更后通知 AppDelegate 重新注册
     @Published var screenshotShortcut: ScreenshotShortcut? {
         didSet {
@@ -132,7 +125,6 @@ final class SettingsStore: ObservableObject {
         UserDefaults.standard.register(defaults: [
             "hideNotchInFullscreen": true,
             "clipboardLimit": 200,
-            "captureInboxPath": "~/Documents/妙记.md",
             "glowEnabled": true,
             "glowClaudeColorHex": "#FF8A00",
             "glowCodexColorHex": "#0A84FF",
@@ -144,8 +136,6 @@ final class SettingsStore: ObservableObject {
         ])
         hideNotchInFullscreen = UserDefaults.standard.bool(forKey: "hideNotchInFullscreen")
         clipboardLimit = UserDefaults.standard.integer(forKey: "clipboardLimit")
-        captureInboxPath = UserDefaults.standard.string(forKey: "captureInboxPath")
-            ?? "~/Documents/妙记.md"
         glowEnabled = UserDefaults.standard.bool(forKey: "glowEnabled")
         glowClaudeColorHex = UserDefaults.standard.string(forKey: "glowClaudeColorHex") ?? "#FF8A00"
         glowCodexColorHex = UserDefaults.standard.string(forKey: "glowCodexColorHex") ?? "#0A84FF"

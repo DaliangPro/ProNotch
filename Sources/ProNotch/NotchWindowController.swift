@@ -9,7 +9,6 @@ final class NotchWindowController {
     let snippetStore: SnippetStore
     let chatStore: ChatStore
     let quickActions: QuickActionsStore
-    let captureStore: CaptureStore
     private let panel: NotchPanel
 
     /// 数据层由 AppDelegate 持有并传入：换屏重建窗口时对话记录、
@@ -20,7 +19,6 @@ final class NotchWindowController {
          snippetStore: SnippetStore,
          chatStore: ChatStore,
          quickActions: QuickActionsStore,
-         captureStore: CaptureStore,
          settingsStore: SettingsStore,
          usageStore: UsageStore,
          agentSessionsStore: AgentSessionsStore) {
@@ -29,7 +27,6 @@ final class NotchWindowController {
         self.snippetStore = snippetStore
         self.chatStore = chatStore
         self.quickActions = quickActions
-        self.captureStore = captureStore
         let notchRect = NotchGeometry.notchRect(on: screen)
         let hasRealNotch = screen.safeAreaInsets.top > 0
         print("[ProNotch] 屏幕: \(screen.localizedName)，真实刘海: \(hasRealNotch ? "是" : "否（模拟热区）")，刘海区域: \(notchRect)")
@@ -48,7 +45,6 @@ final class NotchWindowController {
                 .environmentObject(snippetStore)
                 .environmentObject(chatStore)
                 .environmentObject(quickActions)
-                .environmentObject(captureStore)
                 .environmentObject(settingsStore)
                 .environmentObject(usageStore)
                 .environmentObject(agentSessionsStore))

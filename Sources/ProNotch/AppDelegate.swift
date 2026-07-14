@@ -17,7 +17,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var statusItem: NSStatusItem?
     private var usageStatusItem: NSStatusItem?                    // 独立可开关的「额度」菜单栏项
     private weak var usageToggleItem: NSMenuItem?                 // 主菜单里的开关项（同步勾选态）
-    private var usageMenuHosting: NSHostingView<UsageMenuView>?   // 额度项下拉里的详情卡
+    private var usagePanel: NSPanel?                              // 额度栏点开的 iOS 风格矩形面板（无箭头/无毛玻璃）
+    private var usagePanelMonitor: Any?                           // 点面板外收起（其他 App）
+    private var usagePanelLocalMonitor: Any?                      // 点面板外收起（本 App 其他窗口）
     private lazy var showUsageInMenuBar = UserDefaults.standard.bool(forKey: "showUsageInMenuBar")
     private var usageTimer: Timer?
     private var usageCancellable: AnyCancellable?
@@ -36,7 +38,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var clipboardStore: ClipboardStore!
     private var snippetStore: SnippetStore!
     private var chatStore: ChatStore!
-    private var captureStore: CaptureStore!
     private var usageStore: UsageStore!
     private var agentSessionsStore: AgentSessionsStore!
     private var quickActions: QuickActionsStore!
@@ -60,7 +61,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         #endif
         snippetStore = SnippetStore()
         chatStore = ChatStore()
-        captureStore = CaptureStore()
         usageStore = UsageStore()
         agentSessionsStore = AgentSessionsStore()
         quickActions = QuickActionsStore()
@@ -201,9 +201,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugToggleSnippets),
             name: NSNotification.Name("com.daliangpro.ProNotch.snippets"), object: nil)
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugTestCapture),
-            name: NSNotification.Name("com.daliangpro.ProNotch.testcapture"), object: nil)
         // 调试入口：驱动 Codex notify 转发器接入 / 卸载，验证软件层接入
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugCodexHookOn),
@@ -264,11 +261,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             agentSessionsStore?.markTurnEnded(session: session, source: .codex, host: host)
         default: break
         }
-    }
-
-    /// 调试用：写入一条测试妙记
-    @objc private func debugTestCapture() {
-        captureStore.capture("测试妙记：验证写入格式与今日列表解析")
     }
 
     /// 调试用：走真实路径接入 / 卸载 Codex 的 notify 转发器，结果写 /tmp 供核对
@@ -483,7 +475,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 snippetStore: snippetStore,
                 chatStore: chatStore,
                 quickActions: quickActions,
-                captureStore: captureStore,
                 settingsStore: settingsStore,
                 usageStore: usageStore,
                 agentSessionsStore: agentSessionsStore)
@@ -631,19 +622,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func createUsageStatusItem() {
         guard usageStatusItem == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.toolTip = "AI 编码额度（Claude / Codex）"
-        let menu = NSMenu()
-        menu.delegate = self   // 打开时强制刷新
-        let hosting = NSHostingView(rootView: UsageMenuView(store: usageStore))
-        hosting.frame = NSRect(x: 0, y: 0, width: 300, height: 150)
-        let header = NSMenuItem(); header.view = hosting
-        menu.addItem(header)
-        usageMenuHosting = hosting
-        let refresh = NSMenuItem(title: "刷新额度", action: #selector(refreshUsageFromMenu), keyEquivalent: "r")
-        refresh.target = self
-        menu.addItem(refresh)
-        item.menu = menu
+        item.button?.toolTip = "AI 编码额度（Claude / Codex / Grok）"
+        item.button?.target = self
+        item.button?.action = #selector(toggleUsagePopover)
+        let content = NSHostingView(rootView: UsageMenuView(
+            store: usageStore,
+            onRefresh: { [weak self] in self?.usageStore.refresh(force: true) },
+            onSettings: { [weak self] in
+                self?.dismissUsagePanel()
+                NotificationCenter.default.post(name: NSNotification.Name("ProNotchOpenSettings"), object: nil)
+            }))
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 380),
+                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear   // 圆角外透明——无系统毛玻璃、无指向箭头
+        panel.hasShadow = true
+        panel.level = .popUpMenu
+        panel.contentView = content
+        usagePanel = panel
         usageStatusItem = item
+    }
+
+    /// 点额度栏：贴着菜单栏弹出/收起矩形面板（iOS 风，无箭头无毛玻璃），打开时刷新一次
+    @objc private func toggleUsagePopover() {
+        guard let panel = usagePanel else { return }
+        if panel.isVisible { dismissUsagePanel(); return }
+        guard let button = usageStatusItem?.button, let bwin = button.window else { return }
+        usageStore.refresh(force: true)
+        panel.setContentSize(panel.contentView?.fittingSize ?? NSSize(width: 320, height: 380))
+        let br = bwin.convertToScreen(button.convert(button.bounds, to: nil))   // 按钮屏幕坐标
+        panel.setFrameTopLeftPoint(NSPoint(x: br.maxX - panel.frame.width, y: br.minY - 4))   // 右对齐、贴按钮下方
+        panel.orderFrontRegardless()
+        usagePanelMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
+            self?.dismissUsagePanel()
+        }
+        usagePanelLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] e in
+            if e.window !== self?.usagePanel { self?.dismissUsagePanel() }
+            return e
+        }
+    }
+
+    private func dismissUsagePanel() {
+        usagePanel?.orderOut(nil)
+        if let m = usagePanelMonitor { NSEvent.removeMonitor(m); usagePanelMonitor = nil }
+        if let m = usagePanelLocalMonitor { NSEvent.removeMonitor(m); usagePanelLocalMonitor = nil }
     }
 
     /// 定时刷新只在额度栏显示时运行——隐藏即停，不再无谓访问 Claude / ChatGPT 接口
@@ -658,7 +680,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// 额度栏标题：C<5h%> · X<5h%>，高占用变色；无数据的服务省略。仅额度栏存在时更新
     private func updateUsageTitle() {
         guard let button = usageStatusItem?.button else { return }
-        let parts: [(String, ServiceQuota?)] = [("C", usageStore.claude), ("X", usageStore.codex)]
+        let parts: [(String, ServiceQuota?)] = [("C", usageStore.claude), ("X", usageStore.codex), ("G", usageStore.grok)]
         let title = NSMutableAttributedString()
         let base: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)]
         for (tag, q) in parts {

@@ -8,14 +8,13 @@ import SwiftUI
 @MainActor
 final class NotchViewModel: ObservableObject {
     enum Tab: String, CaseIterable {
-        case launcher, clipboard, chat, capture, usage, agent
+        case launcher, clipboard, chat, usage, agent
 
         var title: String {
             switch self {
             case .launcher: return "启动台"
             case .clipboard: return "剪切板"
             case .chat: return "闪问"
-            case .capture: return "妙记"
             case .usage: return "额度"
             case .agent: return "Agent"
             }
@@ -26,7 +25,6 @@ final class NotchViewModel: ObservableObject {
             case .launcher: return "square.grid.2x2"
             case .clipboard: return "clipboard"
             case .chat: return "bubble"
-            case .capture: return "pencil.line"
             case .usage: return "speedometer"
             case .agent: return "cpu"
             }
@@ -35,7 +33,7 @@ final class NotchViewModel: ObservableObject {
         /// 历次中文 rawValue 的兼容映射，老用户已保存的拖动顺序不丢
         static let legacyNames: [String: Tab] = [
             "启动台": .launcher, "剪贴板": .clipboard,
-            "AI 对话": .chat, "闪记": .capture, "速记": .capture,
+            "AI 对话": .chat,
         ]
     }
 
