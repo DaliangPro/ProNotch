@@ -21,6 +21,7 @@ struct AgentSession: Identifiable {
     let model: String?
     let lastActivity: Date
     let lastMessage: String?
+    var title: String?     // 对话名:Codex thread_name / Claude 首句 prompt;nil 时卡片用项目名兜底
     var state: State       // 文件扫描给初值,hook 事件在 rebuild 时可覆盖为 .waiting
     var hostBundleID: String? = nil   // hook 带来的宿主 App bundle id,点卡跳转用;nil=还没收到过 hook
     var projectName: String { (projectPath as NSString).lastPathComponent }
@@ -190,6 +191,7 @@ final class AgentSessionsStore: ObservableObject {
                             source: .claude, projectPath: cwd, model: model,
                             lastActivity: mtime,
                             lastMessage: summarize(lastText ?? lastPrompt),
+                            title: titleize(firstUserPrompt(file)),
                             state: state(mtime: mtime, inTurn: inTurn))
     }
 
@@ -200,6 +202,7 @@ final class AgentSessionsStore: ObservableObject {
         let root = fm.homeDirectoryForCurrentUser.appendingPathComponent(".codex/sessions")
         let cutoff = Date().addingTimeInterval(-recentWindow)
         let fmt = DateFormatter(); fmt.dateFormat = "yyyy/MM/dd"
+        let threadNames = loadCodexThreadNames()   // session_index.jsonl 的对话名,一次读入
         var out: [AgentSession] = []
         for back in 0..<3 {   // 48h 窗口至多跨 3 个日期目录
             guard let day = Calendar.current.date(byAdding: .day, value: -back, to: Date()) else { continue }
@@ -208,13 +211,13 @@ final class AgentSessionsStore: ObservableObject {
             for f in files where f.pathExtension == "jsonl" {
                 guard let mtime = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
                       mtime > cutoff else { continue }
-                if let s = parseCodex(file: f, mtime: mtime) { out.append(s) }
+                if let s = parseCodex(file: f, mtime: mtime, threadNames: threadNames) { out.append(s) }
             }
         }
         return out
     }
 
-    private nonisolated static func parseCodex(file: URL, mtime: Date) -> AgentSession? {
+    private nonisolated static func parseCodex(file: URL, mtime: Date, threadNames: [String: String]) -> AgentSession? {
         // 元信息优先从尾部拿:session_meta 首行带完整系统指令、可达几十 KB,
         // 头部小窗口读取必被截断(实测 74MB rollout 因此整个被丢);turn_context 每轮都写、尾部大概率有
         var cwd: String?, model: String?, lastMsg: String?
@@ -258,10 +261,52 @@ final class AgentSessionsStore: ObservableObject {
                             source: .codex, projectPath: cwd, model: model,
                             lastActivity: mtime,
                             lastMessage: summarize(lastMsg),
+                            title: threadNames[String(file.deletingPathExtension().lastPathComponent.suffix(36))],
                             state: state(mtime: mtime, inTurn: started && !completed))
     }
 
     // MARK: - 共用
+
+    /// Claude 会话首句 user prompt（读头部找第一条 user 文本），做对话名
+    private nonisolated static func firstUserPrompt(_ file: URL) -> String? {
+        guard let head = readHead(file, bytes: 16 * 1024) else { return nil }
+        for raw in head.split(separator: "\n") {
+            guard let data = raw.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  obj["type"] as? String == "user",
+                  let msg = obj["message"] as? [String: Any] else { continue }
+            if let s = msg["content"] as? String { return s }
+            if let arr = msg["content"] as? [[String: Any]] {
+                for b in arr where (b["type"] as? String) == "text" {
+                    if let t = b["text"] as? String { return t }
+                }
+            }
+        }
+        return nil
+    }
+
+    /// Codex 对话名映射：~/.codex/session_index.jsonl 的 id → thread_name（一次读入）
+    private nonisolated static func loadCodexThreadNames() -> [String: String] {
+        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/session_index.jsonl")
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [:] }
+        var out: [String: String] = [:]
+        for raw in text.split(separator: "\n") {
+            guard let data = raw.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let id = obj["id"] as? String,
+                  let name = obj["thread_name"] as? String, !name.isEmpty else { continue }
+            out[id] = name
+        }
+        return out
+    }
+
+    /// 对话名清洗：去换行、trim、超 40 字截断
+    private nonisolated static func titleize(_ text: String?) -> String? {
+        guard var t = text?.replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return nil }
+        if t.count > 40 { t = String(t.prefix(40)) + "…" }
+        return t
+    }
 
     /// 只有「回合进行中 且 2 分钟内真的在写」= 运行中;其余一律 idle(不打扰)。
     /// 「停下等你」的醒目提醒交给 hook 的 .waiting——被 kill 中断的死会话没 hook 事件,自然沉默,

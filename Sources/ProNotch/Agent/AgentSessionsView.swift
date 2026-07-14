@@ -70,12 +70,17 @@ private struct SessionCard: View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 6) {
                 StateDot(state: session.state, animate: vm.isExpanded)
-                Text(session.projectName)
+                Text(session.title ?? session.projectName)
                     .font(.system(size: 12, weight: .semibold)).foregroundColor(.white)
                     .lineLimit(1)
                 Spacer(minLength: 0)
             }
             HStack(spacing: 5) {
+                if session.title != nil {   // 有对话名时,项目名(文件夹)作归属显示在副行
+                    Text(session.projectName)
+                        .font(.system(size: 9.5)).foregroundColor(.white.opacity(0.4))
+                        .lineLimit(1)
+                }
                 Text(stateText)
                     .font(.system(size: 9.5, weight: .medium)).foregroundColor(stateColor)
                 Text(Self.ago(session.lastActivity))
