@@ -6,27 +6,12 @@ struct UsageView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            QuotaCard(title: "Claude Code", icon: "asterisk", quota: store.claude)
-            QuotaCard(title: "Codex", icon: "chevron.left.forwardslash.chevron.right", quota: store.codex)
+            QuotaCard(title: "Claude Code", polys: BrandIconPaths.claude, quota: store.claude)
+            QuotaCard(title: "Codex", polys: BrandIconPaths.openai, quota: store.codex)
+            QuotaCard(title: "Grok", polys: BrandIconPaths.grok, quota: store.grok)
         }
         .padding(14)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay(alignment: .top) {   // 居中悬于两卡上方——全局刷新，不偏向任何一张卡
-            Button {
-                store.refresh(force: true)
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.white.opacity(store.refreshing ? 0.25 : 0.55))
-                    .rotationEffect(.degrees(store.refreshing ? 360 : 0))
-                    .animation(store.refreshing ? .linear(duration: 1).repeatForever(autoreverses: false) : .default,
-                               value: store.refreshing)
-            }
-            .buttonStyle(.plain)
-            .disabled(store.refreshing)
-            .help("刷新全部额度")
-            .padding(.top, 4)
-        }
         .onAppear { store.refresh() }
     }
 }
@@ -34,14 +19,15 @@ struct UsageView: View {
 /// 单个服务的额度卡片
 private struct QuotaCard: View {
     let title: String
-    let icon: String
+    let polys: [[CGPoint]]
     let quota: ServiceQuota?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
-                Image(systemName: icon).font(.system(size: 12, weight: .semibold))
+                BrandIcon(polys: polys)
                     .foregroundColor(.white.opacity(0.85))
+                    .frame(width: 13, height: 13)
                 Text(title).font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
                 if let plan = quota?.plan, !plan.isEmpty {
                     Text(planLabel(plan))

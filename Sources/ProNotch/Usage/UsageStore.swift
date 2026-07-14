@@ -34,6 +34,7 @@ struct ServiceQuota {
 final class UsageStore: ObservableObject {
     @Published private(set) var codex: ServiceQuota?
     @Published private(set) var claude: ServiceQuota?
+    @Published private(set) var grok: ServiceQuota?
     @Published private(set) var refreshing = false
     private var lastRefresh: Date = .distantPast
 
@@ -46,12 +47,73 @@ final class UsageStore: ObservableObject {
         Task.detached(priority: .utility) {
             let cx = await CodexQuotaLoader.load()
             let cl = await ClaudeQuotaLoader.load()
+            let gr = await GrokQuotaLoader.load()
             await MainActor.run { [weak self] in
                 self?.codex = cx
                 self?.claude = cl
+                self?.grok = gr
                 self?.refreshing = false
             }
         }
+    }
+}
+
+// MARK: - Grok：读 ~/.grok CLI 日志里的 creditUsagePercent（周额度）
+
+enum GrokQuotaLoader {
+    /// grok CLI 把用量记在 ~/.grok/logs/unified.jsonl：每次刷新写一条含
+    /// creditUsagePercent / billingPeriodEnd / subscriptionTier。读尾部取最新一条即可，不必调 API。
+    static func load() async -> ServiceQuota {
+        let log = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".grok/logs/unified.jsonl")
+        guard let tail = readTail(log, bytes: 1_500_000) else {
+            return ServiceQuota(error: "未找到 Grok 日志（~/.grok/logs）")
+        }
+        var used: Double?, resetAt: Date?, tier: String?
+        for line in tail.split(separator: "\n").reversed() where line.contains("creditUsagePercent") {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) else { continue }
+            if used == nil, let d = firstDouble(key: "creditUsagePercent", in: obj) { used = d }
+            if resetAt == nil, let s = firstString(key: "billingPeriodEnd", in: obj) { resetAt = ISO8601Flex.parse(s) }
+            if tier == nil, let s = firstString(key: "subscriptionTier", in: obj) { tier = s }
+            if used != nil { break }
+        }
+        guard let used else { return ServiceQuota(error: "Grok 暂无额度记录，用一次 grok 即可") }
+        var q = ServiceQuota()
+        q.plan = tier
+        q.dataAt = Date()
+        q.primary = QuotaWindow(usedPercent: used, usedTokens: nil, resetsAt: resetAt,
+                                windowMinutes: 10080, isEstimate: false)   // 周额度窗
+        return q
+    }
+
+    private static func readTail(_ url: URL, bytes: Int) -> String? {
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? fh.close() }
+        guard let size = try? fh.seekToEnd() else { return nil }
+        let offset = size > UInt64(bytes) ? size - UInt64(bytes) : 0
+        try? fh.seek(toOffset: offset)
+        guard let data = try? fh.readToEnd() else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// 递归找某 key 的 Double / String（credit 与 tier 在同一行的不同子对象里）
+    private static func firstDouble(key: String, in obj: Any) -> Double? {
+        if let d = obj as? [String: Any] {
+            if let n = d[key] as? NSNumber { return n.doubleValue }
+            for v in d.values { if let r = firstDouble(key: key, in: v) { return r } }
+        } else if let a = obj as? [Any] {
+            for v in a { if let r = firstDouble(key: key, in: v) { return r } }
+        }
+        return nil
+    }
+    private static func firstString(key: String, in obj: Any) -> String? {
+        if let d = obj as? [String: Any] {
+            if let s = d[key] as? String { return s }
+            for v in d.values { if let r = firstString(key: key, in: v) { return r } }
+        } else if let a = obj as? [Any] {
+            for v in a { if let r = firstString(key: key, in: v) { return r } }
+        }
+        return nil
     }
 }
 
