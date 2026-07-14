@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import CryptoKit
 
 struct ClipboardItem: Identifiable, Codable, Equatable {
     enum Kind: String, Codable {
@@ -11,6 +12,7 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
     let kind: Kind
     var text: String?
     var imageFileName: String?
+    var imageHash: String?      // 图片内容指纹（去重用）；文本/旧数据为 nil
     var date: Date
 }
 
@@ -232,6 +234,15 @@ final class ClipboardStore: ObservableObject {
             print("[ProNotch] 图片超过 5MB，不入历史")
             return
         }
+        // 相同图片已存在则移到顶部，不重复记录——否则某些 App 周期性回写同一张图会堆满历史
+        let hash = Self.imageHash(data)
+        if let index = items.firstIndex(where: { $0.kind == .image && $0.imageHash == hash }) {
+            var item = items.remove(at: index)
+            item.date = Date()
+            items.insert(item, at: 0)
+            trimAndSave()
+            return
+        }
         let name = UUID().uuidString + ".png"
         do {
             try data.write(to: directory.appendingPathComponent(name))
@@ -240,9 +251,14 @@ final class ClipboardStore: ObservableObject {
             return
         }
         items.insert(ClipboardItem(id: UUID(), kind: .image, text: nil,
-                                   imageFileName: name, date: Date()), at: 0)
+                                   imageFileName: name, imageHash: hash, date: Date()), at: 0)
         trimAndSave()
         print("[ProNotch] 捕获图片（\(data.count / 1024) KB）")
+    }
+
+    /// 图片内容指纹（SHA256，去重用）
+    private static func imageHash(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     private func tiffAsPNG(_ tiff: Data?) -> Data? {
@@ -271,10 +287,25 @@ final class ClipboardStore: ObservableObject {
             return
         }
         let fm = FileManager.default
-        items = decoded.filter { item in
-            guard let name = item.imageFileName else { return true }
-            return fm.fileExists(atPath: directory.appendingPathComponent(name).path)
+        var seenImageHashes = Set<String>()
+        var result: [ClipboardItem] = []
+        var changed = false
+        for var item in decoded {
+            guard let name = item.imageFileName else { result.append(item); continue }
+            let url = directory.appendingPathComponent(name)
+            guard fm.fileExists(atPath: url.path) else { changed = true; continue }   // 文件已丢失的图片项剔除
+            // 旧数据补算指纹；按指纹去重——把历史里已堆积的重复图片一次清掉
+            if item.imageHash == nil, let d = try? Data(contentsOf: url) {
+                item.imageHash = Self.imageHash(d); changed = true
+            }
+            if let h = item.imageHash {
+                if seenImageHashes.contains(h) { removeImageFile(of: item); changed = true; continue }
+                seenImageHashes.insert(h)
+            }
+            result.append(item)
         }
+        items = result
+        if changed { saveIndex() }   // 补过指纹 / 清过重复才回写
         print("[ProNotch] 加载剪贴板历史 \(items.count) 条")
     }
 
