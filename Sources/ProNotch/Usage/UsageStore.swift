@@ -82,18 +82,27 @@ enum GrokQuotaLoader {
         guard let tail = readTail(log, bytes: 1_500_000) else {
             return ServiceQuota(error: "未找到 Grok 日志（~/.grok/logs）")
         }
-        var used: Double?, resetAt: Date?, tier: String?
-        for line in tail.split(separator: "\n").reversed() where line.contains("creditUsagePercent") {
+        // 找最新一条「billing: fetched credits config」(含 billingPeriodEnd)。
+        // 关键坑：新计费周期额度充足时，config 里【没有】creditUsagePercent 字段——grok 只在消耗到
+        // 一定量后才写它。若按该字段筛行，就只会翻到上周期用满 100% 的旧记录、永远显示错的。
+        // 改用 billingPeriodEnd 定位最新 config；creditUsagePercent 缺失即视为「已用 0%」
+        var used: Double = 0, resetAt: Date?, tier: String?, dataTs: Date?
+        for line in tail.split(separator: "\n").reversed() where line.contains("billingPeriodEnd") {
             guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) else { continue }
-            if used == nil, let d = firstDouble(key: "creditUsagePercent", in: obj) { used = d }
-            if resetAt == nil, let s = firstString(key: "billingPeriodEnd", in: obj) { resetAt = ISO8601Flex.parse(s) }
-            if tier == nil, let s = firstString(key: "subscriptionTier", in: obj) { tier = s }
-            if used != nil { break }
+            used = firstDouble(key: "creditUsagePercent", in: obj) ?? 0
+            resetAt = firstString(key: "billingPeriodEnd", in: obj).flatMap { ISO8601Flex.parse($0) }
+            tier = firstString(key: "subscriptionTier", in: obj)
+            dataTs = firstString(key: "ts", in: obj).flatMap { ISO8601Flex.parse($0) }
+            break
         }
-        guard let used else { return ServiceQuota(error: "Grok 暂无额度记录，用一次 grok 即可") }
+        guard resetAt != nil else { return ServiceQuota(error: "Grok 暂无额度记录，用一次 grok 即可") }
+        // 万一最新一条仍是上一周期的旧快照(新周期还没拉过 config)→ 明确提示刷新，不展示过期数据
+        if let r = resetAt, r <= Date() {
+            return ServiceQuota(plan: tier, error: "计费周期已重置，用一次 grok 刷新额度")
+        }
         var q = ServiceQuota()
         q.plan = tier
-        q.dataAt = Date()
+        q.dataAt = dataTs ?? Date()   // 数据时间 = 日志真实时刻，不把过期数据伪装成「刚刚」
         q.primary = QuotaWindow(usedPercent: used, usedTokens: nil, resetsAt: resetAt,
                                 windowMinutes: 10080, isEstimate: false)   // 周额度窗
         return q
