@@ -25,6 +25,7 @@ struct ServiceQuota {
     var secondary: QuotaWindow?  // 7 天窗
     var dataAt: Date?            // 数据时间（源文件里最后一条记录的时间）
     var error: String?           // 拿不到数据时的原因
+    var topTasks: [TaskUsage] = []   // 近 7 天最耗额度的前 3 个任务（占总额度%）
 }
 
 /// 额度页数据源：读本机 Claude Code / Codex CLI 的会话文件取实时额度。
@@ -35,6 +36,7 @@ final class UsageStore: ObservableObject {
     @Published private(set) var codex: ServiceQuota?
     @Published private(set) var claude: ServiceQuota?
     @Published private(set) var grok: ServiceQuota?
+    @Published private(set) var sessionTokens: [String: Int] = [:]   // sessionId → 有效 token（Agent 会话页用）
     @Published private(set) var refreshing = false
     private var lastRefresh: Date = .distantPast
 
@@ -48,10 +50,21 @@ final class UsageStore: ObservableObject {
             let cx = await CodexQuotaLoader.load()
             let cl = await ClaudeQuotaLoader.load()
             let gr = await GrokQuotaLoader.load()
+            // 每会话 token 统计（与额度数据源解耦，总是算）；Top 3 占比锚定周额度已用%（无周窗则退 5 小时窗）
+            let claudeSessions = SessionUsage.scanClaude()
+            let codexSessions = SessionUsage.scanCodex()
+            let claudeTop = SessionUsage.top3(claudeSessions,
+                weekUsedPercent: cl.secondary?.usedPercent ?? cl.primary?.usedPercent, source: .claude)
+            let codexTop = SessionUsage.top3(codexSessions,
+                weekUsedPercent: cx.secondary?.usedPercent ?? cx.primary?.usedPercent, source: .codex)
+            let tokens = Dictionary((claudeSessions + codexSessions).map { ($0.id, $0.tokens) }) { a, _ in a }
+            let claudeQuota = { var q = cl; q.topTasks = claudeTop; return q }()
+            let codexQuota = { var q = cx; q.topTasks = codexTop; return q }()
             await MainActor.run { [weak self] in
-                self?.codex = cx
-                self?.claude = cl
+                self?.codex = codexQuota
+                self?.claude = claudeQuota
                 self?.grok = gr
+                self?.sessionTokens = tokens
                 self?.refreshing = false
             }
         }

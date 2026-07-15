@@ -5,6 +5,7 @@ import SwiftUI
 struct AgentSessionsView: View {
     @EnvironmentObject var store: AgentSessionsStore
     @EnvironmentObject var vm: NotchViewModel
+    @EnvironmentObject var usageStore: UsageStore
     /// 看着页面时状态要自己动:8 秒轮询,仅面板展开且当前页可见时才真的刷
     private let ticker = Timer.publish(every: 8, on: .main, in: .common).autoconnect()
 
@@ -26,9 +27,9 @@ struct AgentSessionsView: View {
                 }
             }
         }
-        .onAppear { store.refresh() }
+        .onAppear { store.refresh(); usageStore.refresh() }   // 顺带刷额度：拿每会话 token 消耗
         .onReceive(ticker) { _ in
-            if vm.isExpanded, vm.activeTab == .agent { store.refresh(force: true) }
+            if vm.isExpanded, vm.activeTab == .agent { store.refresh(force: true); usageStore.refresh() }
         }
     }
 
@@ -64,6 +65,7 @@ private struct SessionCard: View {
     let session: AgentSession
     @EnvironmentObject var vm: NotchViewModel
     @EnvironmentObject var store: AgentSessionsStore
+    @EnvironmentObject var usageStore: UsageStore
     @State private var hovering = false
 
     var body: some View {
@@ -86,6 +88,11 @@ private struct SessionCard: View {
                 Text(Self.ago(session.lastActivity))
                     .font(.system(size: 9.5)).foregroundColor(.white.opacity(0.35))
                 Spacer()
+                if let tok = usageStore.sessionTokens[session.id], tok > 0 {
+                    Text(Self.tokenText(tok))
+                        .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                        .foregroundColor(.white.opacity(0.5))
+                }
             }
             Text(session.lastMessage ?? "(没有可显示的消息)")
                 .font(.system(size: 10.5)).foregroundColor(.white.opacity(0.45))
@@ -129,6 +136,13 @@ private struct SessionCard: View {
         if s < 3600 { return "\(s / 60) 分钟前" }
         if s < 86400 { return "\(s / 3600) 小时前" }
         return "\(s / 86400) 天前"
+    }
+
+    /// 会话消耗的有效 token（绝对量）
+    private static func tokenText(_ t: Int) -> String {
+        if t >= 1_000_000 { return String(format: "%.1fM token", Double(t) / 1_000_000) }
+        if t >= 1_000 { return "\(t / 1000)K token" }
+        return "\(t) token"
     }
 }
 

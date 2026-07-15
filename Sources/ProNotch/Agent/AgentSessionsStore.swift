@@ -118,10 +118,13 @@ final class AgentSessionsStore: ObservableObject {
         func rank(_ st: AgentSession.State) -> Int {
             switch st { case .waiting: return 0; case .running: return 1; case .idle: return 2 }
         }
-        sessions = Array(merged.sorted {
+        let sorted = merged.sorted {
             rank($0.state) != rank($1.state) ? rank($0.state) < rank($1.state)
                                              : $0.lastActivity > $1.lastActivity
-        }.prefix(Self.maxCount))
+        }
+        // 名额按来源各算：全局共用名额时，重度使用一家（整天 Claude）会把另一家全部挤出列表
+        sessions = Array(sorted.filter { $0.source == .claude }.prefix(Self.maxCount))
+                 + Array(sorted.filter { $0.source == .codex }.prefix(Self.maxCount))
     }
 
     /// 匹配 hook 事件:Claude 用 session_id 精确相等;Codex 文件名以 thread-id 结尾
@@ -198,26 +201,36 @@ final class AgentSessionsStore: ObservableObject {
     // MARK: - Codex(~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl)
 
     private nonisolated static func scanCodex() -> [AgentSession] {
+        // 按 mtime 全量枚举，不能按日期目录扫最近几天：Codex 把 rollout 文件放在
+        // 「会话开始日」的目录里持续追加数月——实测 05/31 目录里 200MB 的主力会话今天还在写，
+        // 按日期目录扫必漏这类长命会话（2026-07-14 大梁老师报「Agent 页看不到 Codex」）。
+        // 枚举只 stat 不读内容，目录量级为「用过的天数」，开销可忽略
         let fm = FileManager.default
         let root = fm.homeDirectoryForCurrentUser.appendingPathComponent(".codex/sessions")
         let cutoff = Date().addingTimeInterval(-recentWindow)
-        let fmt = DateFormatter(); fmt.dateFormat = "yyyy/MM/dd"
         let threadNames = loadCodexThreadNames()   // session_index.jsonl 的对话名,一次读入
         var out: [AgentSession] = []
-        for back in 0..<3 {   // 48h 窗口至多跨 3 个日期目录
-            guard let day = Calendar.current.date(byAdding: .day, value: -back, to: Date()) else { continue }
-            let dir = root.appendingPathComponent(fmt.string(from: day))
-            guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { continue }
-            for f in files where f.pathExtension == "jsonl" {
-                guard let mtime = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
-                      mtime > cutoff else { continue }
-                if let s = parseCodex(file: f, mtime: mtime, threadNames: threadNames) { out.append(s) }
-            }
+        guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else { return [] }
+        for case let f as URL in en where f.pathExtension == "jsonl" {
+            guard f.lastPathComponent.hasPrefix("rollout-"),
+                  let mtime = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+                  mtime > cutoff else { continue }
+            if let s = parseCodex(file: f, mtime: mtime, threadNames: threadNames) { out.append(s) }
         }
         return out
     }
 
     private nonisolated static func parseCodex(file: URL, mtime: Date, threadNames: [String: String]) -> AgentSession? {
+        // 子代理文件不单独成卡:Codex 多代理把并行子代理拆成独立 rollout(session_meta 带
+        // parent_thread_id),它们是父任务的内部执行体——无对话名、无 hook 事件,列出来全是无名噪音卡
+        if let head = readHead(file, bytes: 1024 * 1024),
+           let first = head.split(separator: "\n", maxSplits: 1).first,
+           let obj = try? JSONSerialization.jsonObject(with: Data(first.utf8)) as? [String: Any],
+           obj["type"] as? String == "session_meta",
+           let payload = obj["payload"] as? [String: Any],
+           let parent = payload["parent_thread_id"] as? String, !parent.isEmpty {
+            return nil
+        }
         // 元信息优先从尾部拿:session_meta 首行带完整系统指令、可达几十 KB,
         // 头部小窗口读取必被截断(实测 74MB rollout 因此整个被丢);turn_context 每轮都写、尾部大概率有
         var cwd: String?, model: String?, lastMsg: String?

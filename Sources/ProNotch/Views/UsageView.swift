@@ -37,11 +37,6 @@ private struct QuotaCard: View {
                 }
                 Spacer()
             }
-            if let acc = quota?.account, !acc.isEmpty {
-                Text(acc).font(.system(size: 9.5)).foregroundColor(.white.opacity(0.4))
-                    .lineLimit(1).truncationMode(.middle)
-                    .padding(.top, -6)
-            }
             if let q = quota {
                 if let err = q.error {
                     Spacer()
@@ -51,10 +46,20 @@ private struct QuotaCard: View {
                 } else {
                     if let p = q.primary { WindowRow(label: p.label, window: p, prominent: true) }
                     if let s = q.secondary { WindowRow(label: s.label, window: s, prominent: false) }
-                    Spacer(minLength: 0)
-                    if let at = q.dataAt {
-                        Text("数据 \(Self.ago(at))\(q.primary?.isEstimate == true ? " · ≈本地估算" : " · 官方数据")")
-                            .font(.system(size: 9.5)).foregroundColor(.white.opacity(0.35))
+                    Spacer(minLength: 12)   // 把 Top 3 压到卡片底部（三卡等高，底部自然对齐）
+                    if !q.topTasks.isEmpty {
+                        VStack(alignment: .leading, spacing: 5) {
+                            ForEach(q.topTasks) { task in
+                                HStack(spacing: 6) {
+                                    Text(task.name).font(.system(size: 10.5))
+                                        .foregroundColor(.white.opacity(0.7)).lineLimit(1)
+                                    Spacer(minLength: 4)
+                                    Text("\(Int(task.percentOfTotal.rounded()))%")
+                                        .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                                        .foregroundColor(.white.opacity(0.85))
+                                }
+                            }
+                        }
                     }
                 }
             } else {
@@ -79,13 +84,6 @@ private struct QuotaCard: View {
         }
     }
 
-    private static func ago(_ d: Date) -> String {
-        let s = Int(Date().timeIntervalSince(d))
-        if s < 90 { return "刚刚" }
-        if s < 3600 { return "\(s / 60) 分钟前" }
-        if s < 86400 { return "\(s / 3600) 小时前" }
-        return "\(s / 86400) 天前"
-    }
 }
 
 /// 一个限额窗口行：进度条 + 百分比 + 重置倒计时
