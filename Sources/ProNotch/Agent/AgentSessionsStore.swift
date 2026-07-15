@@ -21,7 +21,7 @@ struct AgentSession: Identifiable {
     let model: String?
     let lastActivity: Date
     let lastMessage: String?
-    var title: String?     // 对话名:Codex thread_name / Claude 首句 prompt;nil 时卡片用项目名兜底
+    var title: String?     // 对话名:Codex thread_name / Claude 会话标题(custom-title,兜底首句 prompt);nil 时卡片用项目名兜底
     var state: State       // 文件扫描给初值,hook 事件在 rebuild 时可覆盖为 .waiting
     var hostBundleID: String? = nil   // hook 带来的宿主 App bundle id,点卡跳转用;nil=还没收到过 hook
     var projectName: String { (projectPath as NSString).lastPathComponent }
@@ -194,7 +194,7 @@ final class AgentSessionsStore: ObservableObject {
                             source: .claude, projectPath: cwd, model: model,
                             lastActivity: mtime,
                             lastMessage: summarize(lastText ?? lastPrompt),
-                            title: titleize(firstUserPrompt(file)),
+                            title: titleize(claudeCustomTitle(file) ?? claudeHeadTitle(file)),
                             state: state(mtime: mtime, inTurn: inTurn))
     }
 
@@ -280,22 +280,45 @@ final class AgentSessionsStore: ObservableObject {
 
     // MARK: - 共用
 
-    /// Claude 会话首句 user prompt（读头部找第一条 user 文本），做对话名
-    private nonisolated static func firstUserPrompt(_ file: URL) -> String? {
+    /// Claude 会话标题：custom-title 行随改名/自动命名反复写，取最后一条（实测距末尾 0–31KB，
+    /// 512KB 窗口余量充足）。用字节标记从后往前定位、只解析命中的那一行——
+    /// 不能在主解析循环里顺带抓：主循环凑齐 cwd/model 等字段后几行内就 break，走不到标题行
+    private nonisolated static func claudeCustomTitle(_ file: URL) -> String? {
+        guard let tail = readTail(file, bytes: 512 * 1024),
+              let hit = tail.range(of: "\"type\":\"custom-title\"", options: .backwards) else { return nil }
+        let lineStart = tail[..<hit.lowerBound].lastIndex(of: "\n").map(tail.index(after:)) ?? tail.startIndex
+        let lineEnd = tail[hit.upperBound...].firstIndex(of: "\n") ?? tail.endIndex
+        guard let obj = try? JSONSerialization.jsonObject(with: Data(tail[lineStart..<lineEnd].utf8)) as? [String: Any],
+              let t = obj["customTitle"] as? String, !t.isEmpty else { return nil }
+        return t
+    }
+
+    /// 尾部窗口没有 custom-title 时的头部兜底：头 16KB 内优先找早期的 custom-title
+    /// （自动命名多发生在首轮回复后，常落在头部），仍没有才退回首句 user prompt
+    private nonisolated static func claudeHeadTitle(_ file: URL) -> String? {
         guard let head = readHead(file, bytes: 16 * 1024) else { return nil }
+        var prompt: String?
         for raw in head.split(separator: "\n") {
             guard let data = raw.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  obj["type"] as? String == "user",
-                  let msg = obj["message"] as? [String: Any] else { continue }
-            if let s = msg["content"] as? String { return s }
-            if let arr = msg["content"] as? [[String: Any]] {
-                for b in arr where (b["type"] as? String) == "text" {
-                    if let t = b["text"] as? String { return t }
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            switch obj["type"] as? String {
+            case "custom-title":
+                if let t = obj["customTitle"] as? String, !t.isEmpty { return t }
+            case "user" where prompt == nil:
+                guard let msg = obj["message"] as? [String: Any] else { continue }
+                var candidate: String?
+                if let s = msg["content"] as? String { candidate = s }
+                else if let arr = msg["content"] as? [[String: Any]] {
+                    for b in arr where (b["type"] as? String) == "text" {
+                        if let t = b["text"] as? String { candidate = t; break }
+                    }
                 }
+                // 斜杠命令封装抽命令名（/xxx）；抽不出的标签杂讯保持 nil → 继续找下一条真人消息
+                prompt = candidate.flatMap { SessionUsage.cleanUserPrompt($0) }
+            default: break
             }
         }
-        return nil
+        return prompt
     }
 
     /// Codex 对话名映射：~/.codex/session_index.jsonl 的 id → thread_name（一次读入）

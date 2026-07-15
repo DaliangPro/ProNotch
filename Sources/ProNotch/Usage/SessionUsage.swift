@@ -220,14 +220,38 @@ enum SessionUsage {
             guard let obj = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
                   obj["type"] as? String == "user",
                   let msg = obj["message"] as? [String: Any] else { continue }
-            if let s = msg["content"] as? String { return s }
-            if let arr = msg["content"] as? [[String: Any]] {
+            var candidate: String?
+            if let s = msg["content"] as? String { candidate = s }
+            else if let arr = msg["content"] as? [[String: Any]] {
                 for b in arr where (b["type"] as? String) == "text" {
-                    if let t = b["text"] as? String { return t }
+                    if let t = b["text"] as? String { candidate = t; break }
                 }
             }
+            if let c = candidate, let cleaned = cleanUserPrompt(c) { return cleaned }
+            // 命令封装等非真人内容：继续找下一条 user
         }
         return nil
+    }
+
+    /// 首句兜底的清洗：斜杠命令调用在 transcript 里是 XML 封装
+    /// （<command-message>…</command-message><command-name>/dbs-xhs-title</command-name>…），
+    /// 原样当标题就是一坨标签。抽命令名当标题（自带 /，一眼知道是哪个技能）；
+    /// 抽不出的标签内容返回 nil，让调用方继续找下一条真人消息
+    static func cleanUserPrompt(_ raw: String) -> String? {
+        let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return nil }
+        guard t.hasPrefix("<") else { return t }
+        if let name = tagContent("command-name", in: t) ?? tagContent("command-message", in: t) {
+            return name.hasPrefix("/") ? name : "/" + name
+        }
+        return nil
+    }
+
+    private static func tagContent(_ tag: String, in s: String) -> String? {
+        guard let open = s.range(of: "<\(tag)>"),
+              let close = s.range(of: "</\(tag)>", range: open.upperBound..<s.endIndex) else { return nil }
+        let inner = s[open.upperBound..<close.lowerBound].trimmingCharacters(in: .whitespacesAndNewlines)
+        return inner.isEmpty ? nil : inner
     }
 
     /// Codex 会话的项目名（turn_context / session_meta 的 cwd）——没 thread_name 时兜底。
