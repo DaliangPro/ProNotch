@@ -44,6 +44,7 @@ struct AgentSessionsView: View {
                 Text("\(items.count)").font(.system(size: 10))
                     .foregroundColor(.white.opacity(0.3))
             }
+            .frame(maxWidth: .infinity)   // 角标在本列内居中（大梁老师定），不贴左
             if items.isEmpty {
                 Text("暂无会话")
                     .font(.system(size: 11)).foregroundColor(.white.opacity(0.25))
