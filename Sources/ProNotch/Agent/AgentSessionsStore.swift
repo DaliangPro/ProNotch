@@ -137,6 +137,14 @@ final class AgentSessionsStore: ObservableObject {
         return nil
     }
 
+    /// 该会话已知的宿主 App bundle id（hook 曾抓对并持久化过的）——供 host 偶发抓空时复用，
+    /// 不盲目回退桌面版：Claudian/SDK 起的 claude 进程有时没挂在 Obsidian 进程链下、detect_host 抓空
+    func knownHost(for session: String) -> String? {
+        guard !session.isEmpty else { return nil }
+        for (key, h) in hostBySession where session == key || session.hasSuffix(key) { return h }
+        return nil
+    }
+
     // MARK: - Claude Code(~/.claude/projects/<项目>/<sessionId>.jsonl)
 
     private nonisolated static func scanClaude() -> [AgentSession] {

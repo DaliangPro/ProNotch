@@ -252,12 +252,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let host = items?.first(where: { $0.name == "host" })?.value
         // session：Claude 的 session_id / Codex 的 thread-id，用于把「轮结束」瞬时点到对应 Agent 卡片
         let session = items?.first(where: { $0.name == "session" })?.value ?? ""
+        // host 偶发抓空（Claudian 的 claude 有时没挂在 Obsidian 进程链下）→ 复用该会话之前抓对过的宿主，
+        // 不回退桌面版；否则光晕的 activeHosts 记成桌面版，切回 Obsidian 匹配不上、熄不掉
+        let effectiveHost = (host?.isEmpty == false) ? host : agentSessionsStore?.knownHost(for: session)
         switch source {
         case "claude":
-            glowController?.notifyCompletion(.claude, host: host)
+            glowController?.notifyCompletion(.claude, host: effectiveHost)
             agentSessionsStore?.markTurnEnded(session: session, source: .claude, host: host)
         case "codex":
-            glowController?.notifyCompletion(.codex, host: host)
+            glowController?.notifyCompletion(.codex, host: effectiveHost)
             agentSessionsStore?.markTurnEnded(session: session, source: .codex, host: host)
         default: break
         }
