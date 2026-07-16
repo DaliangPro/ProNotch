@@ -3,6 +3,7 @@ import SwiftUI
 import ScreenCaptureKit
 import CoreMedia
 import Vision
+import CoreImage
 
 /// 覆盖整屏的无边框窗口，承载选区视图
 final class ScreenshotOverlayWindow: NSWindow {
@@ -38,6 +39,20 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private enum MosaicMode { case brush, box }
     /// 画笔/马赛克自由笔画
     private struct Stroke { var points: [NSPoint]; var colorHex: String; var lineWidth: CGFloat }
+    /// 吸附出的可编辑规整形状（直线/矩形/椭圆）；p0/p1 = 直线两端 或 矩形/椭圆的外接框对角
+    private struct Shape {
+        enum Kind { case line, rect, ellipse, polyline }
+        // 直线/矩形/椭圆用 p0/p1 两点；折线用 points 顶点序列
+        var kind: Kind; var p0: NSPoint = .zero; var p1: NSPoint = .zero; var points: [NSPoint] = []; var colorHex: String; var lineWidth: CGFloat
+        var rect: NSRect {
+            if kind == .polyline {
+                let xs = points.map { $0.x }, ys = points.map { $0.y }
+                guard let x0 = xs.min(), let x1 = xs.max(), let y0 = ys.min(), let y1 = ys.max() else { return .zero }
+                return NSRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)
+            }
+            return NSRect(x: min(p0.x, p1.x), y: min(p0.y, p1.y), width: abs(p1.x - p0.x), height: abs(p1.y - p0.y))
+        }
+    }
     /// 箭头：起点 → 终点两点拖出 + 颜色 + 粗细
     private struct Arrow { var start: NSPoint; var end: NSPoint; var colorHex: String; var lineWidth: CGFloat }
     private struct MosaicStroke { var points: [NSPoint]; var lineWidth: CGFloat }
@@ -78,9 +93,9 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private enum MarkerGrabMode { case move(NSPoint); case resize(fixed: NSPoint) }
     private struct MarkerGrab { let mode: MarkerGrabMode; var moved: Bool }
     /// 当前选中的标注（单击选中，可 ESC 删除）
-    private enum AnnotationRef: Equatable { case box(Int); case marker(Int); case step(Int); case arrow(Int); case text(Int) }
+    private enum AnnotationRef: Equatable { case box(Int); case marker(Int); case step(Int); case arrow(Int); case text(Int); case shape(Int) }
     /// 撤回快照：所有标注
-    private struct Snapshot { let boxes: [Box]; let markers: [Marker]; let steps: [Step]; let pen: [Stroke]; let arrows: [Arrow]; let texts: [TextAnno]; let mosaicS: [MosaicStroke]; let mosaicR: [NSRect] }
+    private struct Snapshot { let boxes: [Box]; let markers: [Marker]; let steps: [Step]; let pen: [Stroke]; let arrows: [Arrow]; let texts: [TextAnno]; let mosaicS: [MosaicStroke]; let mosaicR: [NSRect]; let shapes: [Shape] }
 
     private let cgImage: CGImage
     private let nsImage: NSImage
@@ -117,6 +132,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     // 画笔
     private var penStrokes: [Stroke] = []
+    private var shapes: [Shape] = []                   // 吸附出的可编辑形状（直线/矩形/椭圆）
+    private var snappedShape: SnappedShape?            // 当前笔画吸附出的形状：mouseUp 据此决定存 Shape 还是自由笔画
     private var penColorHex = "#FFFFFF"   // 画笔颜色（默认白）
     private var penLineWidth: CGFloat = 4
     // 箭头（起点 → 终点拖出）
@@ -143,6 +160,10 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var mosaicLineWidth: CGFloat = 22
     private var currentStroke: [NSPoint]?    // 正在画的画笔/马赛克涂抹笔画
     private var hoverPoint: NSPoint?         // 马赛克涂抹时的笔刷光标位置
+    // 画笔「停住不松手 → 吸附成直线/圆/折线」
+    private var shapeSnapTimer: Timer?
+    private var rawStrokeBeforeSnap: [NSPoint]?   // 吸附前的原始轨迹，继续拖动则恢复
+    private let shapeSnapDelay: TimeInterval = 0.6
     private lazy var mosaicImage: NSImage = makeMosaicImage()
     private var markers: [Marker] = []
     private var steps: [Step] = []
@@ -162,6 +183,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         case boxResize(fixed: NSPoint, center: NSPoint, angle: CGFloat)
         case boxRotate(center: NSPoint)
         case arrowEnd(start: Bool)
+        case polyVertex(Int)   // 折线：拖第 index 个折角顶点
     }
     private var selGrab: (mode: SelGrabMode, moved: Bool)?
     /// 截图选区自身的边缘调整：拖四角（对角固定）或四条边（单边移动），没截准不用重来
@@ -539,6 +561,30 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             let p = NSBezierPath(ovalIn: NSRect(x: c.x - rr, y: c.y - rr, width: rr * 2, height: rr * 2))
             p.lineWidth = 1.5; p.setLineDash([4, 3], count: 2, phase: 0); p.stroke()
         }
+        case .shape(let i):  if shapes.indices.contains(i) { drawShapeSelectionChrome(shapes[i]) }
+        }
+    }
+
+    /// 选中形状的调整手柄：直线=两端圆钮；矩形/椭圆=虚线环 + 四角方块（无旋转）
+    private func drawShapeSelectionChrome(_ s: Shape) {
+        if s.kind == .line || s.kind == .polyline {   // 直线画两端，折线画每个折角
+            for p in (s.kind == .line ? [s.p0, s.p1] : s.points) {
+                let r = NSRect(x: p.x - 4.5, y: p.y - 4.5, width: 9, height: 9)
+                NSColor.white.setFill(); NSBezierPath(ovalIn: r).fill()
+                Self.accent.setStroke(); let bp = NSBezierPath(ovalIn: r); bp.lineWidth = 1.5; bp.stroke()
+            }
+        } else {
+            let rect = s.rect
+            NSColor.white.withAlphaComponent(0.95).setStroke()
+            let ring = NSBezierPath(roundedRect: rect.insetBy(dx: -4, dy: -4), xRadius: 8, yRadius: 8)
+            ring.lineWidth = 1.5; ring.setLineDash([4, 3], count: 2, phase: 0); ring.stroke()
+            let sz: CGFloat = 7
+            for corner in [NSPoint(x: rect.minX, y: rect.minY), NSPoint(x: rect.maxX, y: rect.minY),
+                           NSPoint(x: rect.minX, y: rect.maxY), NSPoint(x: rect.maxX, y: rect.maxY)] {
+                let r = NSRect(x: corner.x - sz / 2, y: corner.y - sz / 2, width: sz, height: sz)
+                NSColor.white.setFill(); NSBezierPath(roundedRect: r, xRadius: 1.5, yRadius: 1.5).fill()
+                Self.accent.setStroke(); let bp = NSBezierPath(roundedRect: r, xRadius: 1.5, yRadius: 1.5); bp.lineWidth = 1.5; bp.stroke()
+            }
         }
     }
 
@@ -587,8 +633,25 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         case .step(let i):   guard steps.indices.contains(i) else { return .zero }; corner = NSPoint(x: steps[i].center.x + badgeRadius, y: steps[i].center.y + badgeRadius)
         case .arrow(let i):  guard arrows.indices.contains(i) else { return .zero }; corner = arrows[i].end   // 删除按钮放箭尖
         case .text(let i):   guard texts.indices.contains(i) else { return .zero }; corner = NSPoint(x: texts[i].rect.maxX, y: texts[i].rect.maxY)
+        case .shape(let i):  guard shapes.indices.contains(i) else { return .zero }
+            let sh = shapes[i]
+            // 删除按钮放"某段中点 + 法向偏移"：随形状平滑移动不跳，又避开两端/顶点手柄
+            switch sh.kind {
+            case .line: corner = Self.midEdgeOffset(sh.p0, sh.p1)
+            case .polyline where sh.points.count >= 2: corner = Self.midEdgeOffset(sh.points[0], sh.points[1])
+            default: corner = NSPoint(x: sh.rect.maxX, y: sh.rect.maxY)
+            }
         }
         return NSRect(x: corner.x - s / 2, y: corner.y - s / 2, width: s, height: s)
+    }
+
+    /// 删除按钮定位：线段中点沿法向偏移一段，避开端点/顶点手柄，又随形状平滑移动不跳
+    private static func midEdgeOffset(_ a: NSPoint, _ b: NSPoint) -> NSPoint {
+        let mid = NSPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+        let dx = b.x - a.x, dy = b.y - a.y
+        let len = max(hypot(dx, dy), 0.001)
+        let off: CGFloat = 22
+        return NSPoint(x: mid.x - dy / len * off, y: mid.y + dx / len * off)
     }
 
     /// 画删除按钮：深灰底 + 细白边 + 白 ×（与气泡/工具栏同调性）
@@ -692,17 +755,16 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         layer.draw(in: sel)   // 叠到主上下文：框外半透明黑(暗)、框内透明(露原图)
     }
 
-    /// 生成整屏的马赛克版（缩小再 nearest 放大 = 像素块）；按需求路径裁剪显示
+    /// 生成整屏的毛玻璃模糊版（高斯模糊）；按需求路径裁剪显示，替代早期的像素块马赛克
     private func makeMosaicImage() -> NSImage {
-        let block: CGFloat = 11
-        let w = max(1, Int(bounds.width / block)), h = max(1, Int(bounds.height / block))
-        let small = NSImage(size: NSSize(width: w, height: h))
-        small.lockFocus(); NSGraphicsContext.current?.imageInterpolation = .none
-        nsImage.draw(in: NSRect(x: 0, y: 0, width: w, height: h)); small.unlockFocus()
-        let big = NSImage(size: bounds.size)
-        big.lockFocus(); NSGraphicsContext.current?.imageInterpolation = .none
-        small.draw(in: bounds); big.unlockFocus()
-        return big
+        guard let tiff = nsImage.tiffRepresentation, let ci = CIImage(data: tiff) else { return nsImage }
+        // clampedToExtent：边缘像素外延，避免模糊后四周出现半透明黑边；模糊完裁回原尺寸
+        let blurred = ci.clampedToExtent()
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 22])
+            .cropped(to: ci.extent)
+        let ctx = CIContext(options: nil)
+        guard let cg = ctx.createCGImage(blurred, from: ci.extent) else { return nsImage }
+        return NSImage(cgImage: cg, size: bounds.size)
     }
 
     /// 把自由笔画转成「描粗后的填充区域」CGPath（单点＝小圆点）
@@ -756,8 +818,60 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     /// 画笔：已有笔画 + 正在画的预览
     private func drawPenStrokes(dx: CGFloat, dy: CGFloat) {
+        for s in shapes { strokeShape(s, dx: dx, dy: dy) }   // 吸附出的可编辑形状
         for ps in penStrokes { strokePen(ps.points, color: ps.colorHex, width: ps.lineWidth, dx: dx, dy: dy) }
         if tool == .pen, let pts = currentStroke { strokePen(pts, color: penColorHex, width: penLineWidth, dx: dx, dy: dy) }
+    }
+
+    private func strokeShape(_ s: Shape, dx: CGFloat, dy: CGFloat) {
+        NSColor(Color(hex: s.colorHex)).setStroke()
+        let path = NSBezierPath()
+        path.lineWidth = s.lineWidth
+        path.lineCapStyle = .round; path.lineJoinStyle = .round
+        switch s.kind {
+        case .line:
+            path.move(to: NSPoint(x: s.p0.x + dx, y: s.p0.y + dy))
+            path.line(to: NSPoint(x: s.p1.x + dx, y: s.p1.y + dy))
+        case .rect: path.appendRect(s.rect.offsetBy(dx: dx, dy: dy))
+        case .ellipse: path.appendOval(in: s.rect.offsetBy(dx: dx, dy: dy))
+        case .polyline:
+            guard let f = s.points.first else { break }
+            path.move(to: NSPoint(x: f.x + dx, y: f.y + dy))
+            for p in s.points.dropFirst() { path.line(to: NSPoint(x: p.x + dx, y: p.y + dy)) }
+        }
+        path.stroke()
+    }
+
+    // MARK: - 画笔停顿吸附成形状
+
+    /// 把点夹在选区内：画笔/吸附形状不画出截图选区范围
+    private func clampToSel(_ pt: NSPoint) -> NSPoint {
+        guard let sel = selection else { return pt }
+        return NSPoint(x: min(max(pt.x, sel.minX), sel.maxX), y: min(max(pt.y, sel.minY), sel.maxY))
+    }
+
+    /// 每次移动重置计时；停住 shapeSnapDelay 秒不动后，识别当前笔画并规整成形状
+    private func scheduleShapeSnap() {
+        shapeSnapTimer?.invalidate()
+        guard tool == .pen else { return }   // 只画笔吸附，马赛克涂抹不参与
+        shapeSnapTimer = Timer.scheduledTimer(withTimeInterval: shapeSnapDelay, repeats: false) { [weak self] _ in
+            self?.applyShapeSnap()
+        }
+    }
+
+    /// 停顿触发：认出直线/圆/折线就用规整点替换，原始轨迹留底供继续拖动时恢复
+    private func applyShapeSnap() {
+        guard tool == .pen, rawStrokeBeforeSnap == nil,
+              let pts = currentStroke, let shape = ShapeSnap.recognize(pts) else { return }
+        rawStrokeBeforeSnap = pts
+        snappedShape = shape
+        currentStroke = shape.points
+        needsDisplay = true
+    }
+
+    private func cancelShapeSnap() {
+        shapeSnapTimer?.invalidate(); shapeSnapTimer = nil
+        rawStrokeBeforeSnap = nil; snappedShape = nil
     }
     private func strokePen(_ points: [NSPoint], color: String, width: CGFloat, dx: CGFloat, dy: CGFloat) {
         let c = NSColor(Color(hex: color))
@@ -911,6 +1025,9 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             record(); deleteSelected(); needsDisplay = true
             return
         }
+        // 点在顶部工具栏 / 样式面板范围内（含按钮之间的透明间隙）：交给面板响应，别当"空白点击"把选中清掉
+        if let th = toolbarHost, th.frame.insetBy(dx: -6, dy: -6).contains(pt) { return }
+        if let oh = optionsHost, oh.frame.insetBy(dx: -6, dy: -6).contains(pt) { return }
         // 已选中框选/箭头：命中手柄=缩放/拖端点，命中身体=整体移动（像系统选中对象，优先于画新）
         if phase == .editing, let g = hitSelectedGrab(at: pt) {
             commitEditing()
@@ -933,7 +1050,12 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         }
         // 画笔 / 马赛克涂抹：自由起笔（优先于标注交互）
         if phase == .editing, tool == .pen || (tool == .mosaic && mosaicMode == .brush) {
-            commitEditing(); selected = nil; record(); currentStroke = [pt]; needsDisplay = true
+            // 画笔工具下先判是否点在已有吸附形状边框上：命中＝选中它（可拖动/改色/缩放/删除），空白＝起笔画新
+            if tool == .pen, let hit = hitAnnotation(at: pt), case .shape = hit {
+                commitEditing(); selected = hit; needsDisplay = true
+                return
+            }
+            commitEditing(); selected = nil; record(); currentStroke = [clampToSel(pt)]; needsDisplay = true
             return
         }
         // 区域马赛克：拖矩形
@@ -1018,7 +1140,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             phase = .selecting
             removeToolbar()
             commitEditing()
-            boxes.removeAll(); markers.removeAll(); steps.removeAll(); penStrokes.removeAll(); arrows.removeAll(); texts.removeAll(); mosaicStrokes.removeAll(); mosaicRects.removeAll()
+            boxes.removeAll(); markers.removeAll(); steps.removeAll(); penStrokes.removeAll(); arrows.removeAll(); texts.removeAll(); mosaicStrokes.removeAll(); mosaicRects.removeAll(); shapes.removeAll()
             activeMarker = nil; selected = nil; undoStack.removeAll()
             dragOrigin = pt
             selection = NSRect(origin: pt, size: .zero)
@@ -1041,7 +1163,12 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             needsDisplay = true
             return
         }
-        if currentStroke != nil { currentStroke?.append(pt); needsDisplay = true; return }   // 自由笔画
+        if currentStroke != nil {   // 自由笔画
+            if let raw = rawStrokeBeforeSnap { currentStroke = raw; rawStrokeBeforeSnap = nil; snappedShape = nil }   // 已吸附又继续动 → 撤销吸附、回自由轨迹
+            currentStroke?.append(clampToSel(pt)); needsDisplay = true
+            scheduleShapeSnap()
+            return
+        }
         if currentArrow != nil { currentArrow?.end = pt; needsDisplay = true; return }       // 箭头拖拽预览
         if var grab = markerGrab, let i = activeMarker, markers.indices.contains(i) {
             if !grab.moved { record() }   // 首次移动前记录撤回点
@@ -1107,9 +1234,24 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         }
         if let pts = currentStroke {   // 画笔 / 马赛克涂抹收尾
             currentStroke = nil
-            if !pts.isEmpty {
-                if tool == .pen { penStrokes.append(Stroke(points: pts, colorHex: penColorHex, lineWidth: penLineWidth)) }
-                else { mosaicStrokes.append(MosaicStroke(points: pts, lineWidth: mosaicLineWidth)) }
+            let snapped = snappedShape
+            cancelShapeSnap()
+            if tool == .pen {
+                // 吸附成规整形状 → 存为可编辑 Shape；折线/自由涂鸦 → 存自由笔画
+                switch snapped {
+                case .line(let a, let b):
+                    shapes.append(Shape(kind: .line, p0: a, p1: b, colorHex: penColorHex, lineWidth: penLineWidth))
+                case .rect(let r):
+                    shapes.append(Shape(kind: .rect, p0: NSPoint(x: r.minX, y: r.minY), p1: NSPoint(x: r.maxX, y: r.maxY), colorHex: penColorHex, lineWidth: penLineWidth))
+                case .ellipse(let r):
+                    shapes.append(Shape(kind: .ellipse, p0: NSPoint(x: r.minX, y: r.minY), p1: NSPoint(x: r.maxX, y: r.maxY), colorHex: penColorHex, lineWidth: penLineWidth))
+                case .polyline(let vertices):   // 折线：存为可编辑形状（多顶点）
+                    shapes.append(Shape(kind: .polyline, points: vertices, colorHex: penColorHex, lineWidth: penLineWidth))
+                case .none:
+                    if !pts.isEmpty { penStrokes.append(Stroke(points: pts, colorHex: penColorHex, lineWidth: penLineWidth)) }
+                }
+            } else if !pts.isEmpty {
+                mosaicStrokes.append(MosaicStroke(points: pts, lineWidth: mosaicLineWidth))
             }
             needsDisplay = true
             return
@@ -1216,7 +1358,25 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         if let i = steps.lastIndex(where: { hypot($0.center.x - pt.x, $0.center.y - pt.y) <= badgeRadius + 2 }) { return .step(i) }
         if let i = arrows.lastIndex(where: { Self.pointSegDistance(pt, $0.start, $0.end) <= max(10, $0.lineWidth + 6) }) { return .arrow(i) }
         if let i = boxes.lastIndex(where: { Self.boxContains($0, pt) }) { return .box(i) }
+        if let i = shapes.lastIndex(where: { Self.shapeContains($0, pt) }) { return .shape(i) }
         return nil
+    }
+
+    /// 形状命中检测：直线=贴线；矩形/椭圆=贴边框（不填充内部，避免挡住下层内容）
+    private static func shapeContains(_ s: Shape, _ pt: NSPoint) -> Bool {
+        switch s.kind {
+        case .line: return pointSegDistance(pt, s.p0, s.p1) <= max(18, s.lineWidth + 12)   // 细线放宽命中带，好点中
+        case .rect:
+            let pad = max(14, s.lineWidth + 6)
+            return s.rect.insetBy(dx: -pad, dy: -pad).contains(pt) && !s.rect.insetBy(dx: pad, dy: pad).contains(pt)   // 矩形框内容，只命中边框环
+        case .ellipse:
+            let pad = max(14, s.lineWidth + 6)
+            return s.rect.insetBy(dx: -pad, dy: -pad).contains(pt)   // 圆整块可选，好点中
+        case .polyline:
+            guard s.points.count >= 2 else { return false }
+            for i in 1..<s.points.count where pointSegDistance(pt, s.points[i - 1], s.points[i]) <= max(18, s.lineWidth + 12) { return true }
+            return false
+        }
     }
 
     /// 点到线段最短距离（箭头命中检测用）
@@ -1238,6 +1398,11 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private func updateSelectedArrow(_ change: (inout Arrow) -> Void) {
         guard case .arrow(let i)? = selected, arrows.indices.contains(i) else { return }
         record(); change(&arrows[i]); refreshToolbars()
+    }
+    /// 改选中吸附形状的颜色/粗细（二次调参）
+    private func updateSelectedShape(_ change: (inout Shape) -> Void) {
+        guard case .shape(let i)? = selected, shapes.indices.contains(i) else { return }
+        record(); change(&shapes[i]); refreshToolbars()
     }
     /// 改选中文字标注的颜色/字号（二次调参）；字号变了按新字体重排文字框（左上角固定）
     private func updateSelectedText(_ change: (inout TextAnno) -> Void) {
@@ -1281,6 +1446,31 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             if r.insetBy(dx: -4, dy: -4).contains(pt) {
                 return (.move(NSPoint(x: pt.x - r.minX, y: pt.y - r.minY)), false)
             }
+        case .shape(let i)? where shapes.indices.contains(i):
+            let s = shapes[i]
+            if s.kind == .polyline {   // 折线：顶点圆钮拖折角，线身整体移动
+                for (idx, v) in s.points.enumerated() where hypot(pt.x - v.x, pt.y - v.y) <= 13 {
+                    return (.polyVertex(idx), false)
+                }
+                if s.points.count >= 2 {
+                    for k in 1..<s.points.count where Self.pointSegDistance(pt, s.points[k - 1], s.points[k]) <= max(18, s.lineWidth + 12) {
+                        return (.move(NSPoint(x: pt.x - s.points[0].x, y: pt.y - s.points[0].y)), false)
+                    }
+                }
+            } else if s.kind == .line {   // 直线：两端圆钮拖端点，线身移动（复用 arrowEnd 语义）
+                if hypot(pt.x - s.p1.x, pt.y - s.p1.y) <= 13 { return (.arrowEnd(start: false), false) }
+                if hypot(pt.x - s.p0.x, pt.y - s.p0.y) <= 13 { return (.arrowEnd(start: true), false) }
+                if Self.pointSegDistance(pt, s.p0, s.p1) <= max(18, s.lineWidth + 12) {
+                    return (.move(NSPoint(x: pt.x - s.p0.x, y: pt.y - s.p0.y)), false)
+                }
+            } else {               // 矩形/椭圆：四角缩放，框内移动（无旋转）
+                if let fixed = resizeAnchor(s.rect, at: pt) {
+                    return (.boxResize(fixed: fixed, center: NSPoint(x: s.rect.midX, y: s.rect.midY), angle: 0), false)
+                }
+                if s.rect.insetBy(dx: -6, dy: -6).contains(pt) {
+                    return (.move(NSPoint(x: pt.x - s.rect.minX, y: pt.y - s.rect.minY)), false)
+                }
+            }
         default: break
         }
         return nil
@@ -1299,7 +1489,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             case .boxRotate(let center):
                 // 拖点相对中心的方位角 − 手柄初始方位（正上方 π/2）＝旋转角
                 boxes[i].rotation = atan2(pt.y - center.y, pt.x - center.x) - .pi / 2
-            case .arrowEnd: break
+            case .arrowEnd, .polyVertex: break
             }
         case .arrow(let i)? where arrows.indices.contains(i):
             switch mode {
@@ -1310,10 +1500,37 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                 arrows[i].end = NSPoint(x: arrows[i].end.x + dx, y: arrows[i].end.y + dy)
             case .arrowEnd(let isStart):
                 if isStart { arrows[i].start = pt } else { arrows[i].end = pt }
-            case .boxResize, .boxRotate: break
+            case .boxResize, .boxRotate, .polyVertex: break
             }
         case .text(let i)? where texts.indices.contains(i):
             if case .move(let o) = mode { texts[i].rect.origin = NSPoint(x: pt.x - o.x, y: pt.y - o.y) }
+        case .shape(let i)? where shapes.indices.contains(i):
+            switch mode {
+            case .move(let o):
+                if shapes[i].kind == .line {   // 整条平移，保持长度和方向
+                    let ns = NSPoint(x: pt.x - o.x, y: pt.y - o.y)
+                    let dx = ns.x - shapes[i].p0.x, dy = ns.y - shapes[i].p0.y
+                    shapes[i].p0 = ns
+                    shapes[i].p1 = NSPoint(x: shapes[i].p1.x + dx, y: shapes[i].p1.y + dy)
+                } else if shapes[i].kind == .polyline {   // 整条折线平移，所有顶点同移
+                    guard let base = shapes[i].points.first else { break }
+                    let ns = NSPoint(x: pt.x - o.x, y: pt.y - o.y)
+                    let dx = ns.x - base.x, dy = ns.y - base.y
+                    for k in shapes[i].points.indices { shapes[i].points[k].x += dx; shapes[i].points[k].y += dy }
+                } else {                       // 整框平移，保持宽高
+                    let r = shapes[i].rect
+                    let no = NSPoint(x: pt.x - o.x, y: pt.y - o.y)
+                    shapes[i].p0 = no
+                    shapes[i].p1 = NSPoint(x: no.x + r.width, y: no.y + r.height)
+                }
+            case .arrowEnd(let isStart):       // 直线端点
+                if isStart { shapes[i].p0 = pt } else { shapes[i].p1 = pt }
+            case .boxResize(let fixed, _, _):  // 矩形/椭圆角缩放（对角固定）
+                shapes[i].p0 = fixed; shapes[i].p1 = pt
+            case .polyVertex(let vi):          // 折线：拖某个折角顶点
+                if shapes[i].points.indices.contains(vi) { shapes[i].points[vi] = pt }
+            case .boxRotate: break
+            }
         default: break
         }
     }
@@ -1326,6 +1543,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         case .step(let i):   if steps.indices.contains(i) { steps.remove(at: i) }
         case .arrow(let i):  if arrows.indices.contains(i) { arrows.remove(at: i) }
         case .text(let i):   if texts.indices.contains(i) { texts.remove(at: i) }
+        case .shape(let i):  if shapes.indices.contains(i) { shapes.remove(at: i) }
         case .none: break
         }
         selected = nil; activeMarker = nil
@@ -1333,7 +1551,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     /// 撤回：记录当前标注快照 / 回退到上一步
     private func record() {
-        undoStack.append(Snapshot(boxes: boxes, markers: markers, steps: steps, pen: penStrokes, arrows: arrows, texts: texts, mosaicS: mosaicStrokes, mosaicR: mosaicRects))
+        undoStack.append(Snapshot(boxes: boxes, markers: markers, steps: steps, pen: penStrokes, arrows: arrows, texts: texts, mosaicS: mosaicStrokes, mosaicR: mosaicRects, shapes: shapes))
         if undoStack.count > 80 { undoStack.removeFirst() }
     }
     private func undo() {
@@ -1341,7 +1559,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         f?.removeFromSuperview()
         guard let s = undoStack.popLast() else { return }
         boxes = s.boxes; markers = s.markers; steps = s.steps
-        penStrokes = s.pen; arrows = s.arrows; texts = s.texts; mosaicStrokes = s.mosaicS; mosaicRects = s.mosaicR
+        penStrokes = s.pen; arrows = s.arrows; texts = s.texts; mosaicStrokes = s.mosaicS; mosaicRects = s.mosaicR; shapes = s.shapes
         selected = nil; activeMarker = nil; markerGrab = nil; pendingBubble = nil; pendingBadge = nil; currentStroke = nil; currentArrow = nil
         window?.makeFirstResponder(self)
         needsDisplay = true
@@ -1625,6 +1843,12 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                     colorHex: t.colorHex, fontSize: t.fontSize,
                     onColor: { [weak self] v in self?.updateSelectedText { $0.colorHex = v } },
                     onSize: { [weak self] v in self?.updateSelectedText { $0.fontSize = v } }))
+            case .shape(let i) where shapes.indices.contains(i):   // 吸附形状：颜色 + 粗细（复用画笔面板）
+                let sh = shapes[i]
+                return AnyView(PenOptionsBar(
+                    colorHex: sh.colorHex, lineWidth: sh.lineWidth,
+                    onColor: { [weak self] v in self?.updateSelectedShape { $0.colorHex = v } },
+                    onWidth: { [weak self] v in self?.updateSelectedShape { $0.lineWidth = v } }))
             case .marker(let i) where markers.indices.contains(i):
                 return AnyView(ColorOptionsBar(colorHex: markers[i].colorHex, onColor: { [weak self] in self?.applyNoteColor($0) }))
             case .step(let i) where steps.indices.contains(i):
@@ -1787,6 +2011,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                        width: abs(a.end.x - a.start.x), height: abs(a.end.y - a.start.y)).insetBy(dx: -a.lineWidth * 2, dy: -a.lineWidth * 2))
         }
         for st in penStrokes { for p in st.points { add(NSRect(x: p.x - st.lineWidth, y: p.y - st.lineWidth, width: st.lineWidth * 2, height: st.lineWidth * 2)) } }
+        for s in shapes { add(s.rect.insetBy(dx: -s.lineWidth, dy: -s.lineWidth)) }
         for t in texts where !t.text.isEmpty { add(t.rect) }
         return r
     }
@@ -2423,7 +2648,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     private func runOCR() {
         commitEditing()
-        guard ocrPanel == nil, hintView == nil, !recordingLong else { return }   // 防重入/与翻译、长截图互斥
+        guard ocrPanel == nil, !translating, !recordingLong else { return }   // 防重入/翻译进行中/长截图互斥
+        removeHint()   // 清掉可能残留的「翻译失败/没内容」提示气泡——否则它把 OCR 锁死到 2.8s 后自动消失
         guard let sel = selection else { return }
         let scale = screen.backingScaleFactor
         let crop = CGRect(x: sel.minX * scale, y: (bounds.height - sel.maxY) * scale,
@@ -2507,7 +2733,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     private func runTranslate() {
         commitEditing()
-        guard ocrPanel == nil, hintView == nil, !recordingLong, let sel = selection else { return }
+        // 只在翻译进行中拦（防重入）；失败/没内容提示气泡还在也允许重试——showHint("翻译中…") 会替换掉旧气泡
+        guard ocrPanel == nil, !translating, !recordingLong, let sel = selection else { return }
         guard let (config, lang, prompt) = translateProvider() else { return }
         let aiReady = !config.baseURL.isEmpty && !config.apiKey.isEmpty && !config.model.isEmpty
         let useSystem = config.useSystemEngine && SystemTranslator.isSupported
