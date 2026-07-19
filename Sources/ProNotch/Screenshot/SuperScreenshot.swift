@@ -46,6 +46,8 @@ final class SuperScreenshotController {
         let win = ScreenshotOverlayWindow(image: image, screen: screen, translateProvider: provider) { [weak self] in
             self?.window?.orderOut(nil)
             self?.window = nil
+            // 整屏原图/长截图位图随窗口释放，把 libmalloc 攒下的空闲大块还给系统
+            MemoryRelief.relieveSoon()
         }
         window = win
         NSApp.activate(ignoringOtherApps: true)

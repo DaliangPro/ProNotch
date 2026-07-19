@@ -2122,14 +2122,17 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private func saveToDesktop() {
         Task { @MainActor in
             await ensureWindowShape()
-            guard let img = compose(),
-                  let tiff = img.tiffRepresentation,
-                  let rep = NSBitmapImageRep(data: tiff),
-                  let png = rep.representation(using: .png, properties: [:]) else { close(); return }
-            let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd HH.mm.ss"
-            let url = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Desktop/截图 \(fmt.string(from: Date())).png")
-            try? png.write(to: url)
+            // tiff→png 编码链的临时大 data 圈进池里，写盘即释放（不等 runloop 收尾）
+            autoreleasepool {
+                guard let img = compose(),
+                      let tiff = img.tiffRepresentation,
+                      let rep = NSBitmapImageRep(data: tiff),
+                      let png = rep.representation(using: .png, properties: [:]) else { return }
+                let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd HH.mm.ss"
+                let url = FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent("Desktop/截图 \(fmt.string(from: Date())).png")
+                try? png.write(to: url)
+            }
             close()
         }
     }
@@ -2521,11 +2524,14 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     }
 
     private func saveLongResult() {
-        if let cg = longResultCG, let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) {
-            let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd HH.mm.ss"
-            let url = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Desktop/长截图 \(fmt.string(from: Date())).png")
-            try? png.write(to: url)
+        // 长截图整图的 png 编码临时 data 可达数百 MB，圈进池里写盘即释放
+        autoreleasepool {
+            if let cg = longResultCG, let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) {
+                let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd HH.mm.ss"
+                let url = FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent("Desktop/长截图 \(fmt.string(from: Date())).png")
+                try? png.write(to: url)
+            }
         }
         cleanupLongShot(); close()
     }

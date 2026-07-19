@@ -1,6 +1,6 @@
 import Foundation
 
-/// 一个任务（会话）的额度消耗快照，供额度页 Top 3 用
+/// 一个任务（会话）的额度消耗快照，供额度页 Top 5 用
 struct TaskUsage: Identifiable {
     let id: String              // sessionId（文件名）
     let name: String            // 对话名（Claude 首句 / Codex thread_name）
@@ -18,46 +18,112 @@ enum SessionUsage {
     struct Scanned { let id: String; let tokens: Int; let url: URL; var claudeTitle: String? = nil }
 
     // MARK: - Claude：~/.claude/projects/*/*.jsonl 按文件累加有效 token
+    //
+    // 文件级缓存（照 Codex 侧 CodexScanCache 的既有模式）：transcript 全库 GB 级，
+    // 但历史文件写完就不再变，每轮真正要重读的只有活跃会话那一两个文件。
+    // 缓存按 mtime+size 失效；Top 5 扫描与额度估算共用同一份解析结果
+    // （此前两者各自把同一批文件整读一遍，是全 App 最大的瞬时内存/CPU 源）。
 
-    static func scanClaude() -> [Scanned] {
-        let fm = FileManager.default
-        let root = fm.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
-        let cutoff = Date().addingTimeInterval(-window)
+    /// transcript 单条 usage 记录。day = 原始 timestamp 前 10 位（日粒度过滤用，缺失为 nil），
+    /// ts = 精确解析（5 小时活动块聚合用，解析失败为 nil）——两个消费方的过滤口径不同，都保留
+    struct UsageEntry {
+        let day: String?
+        let ts: Date?
+        let tokens: Int
+    }
+
+    private struct ClaudeScanCache { let mtime: Date; let size: Int; let entries: [UsageEntry]; let title: String? }
+    nonisolated(unsafe) private static var claudeCache: [String: ClaudeScanCache] = [:]
+    private static let claudeCacheLock = NSLock()
+    /// 整读解析的累计次数（测试断言缓存命中用；refresh 单飞，无并发累加）
+    nonisolated(unsafe) static var claudeParseCount = 0
+
+    static func scanClaude(root: URL = defaultClaudeRoot) -> [Scanned] {
         // 按条目时间过滤（不只按文件 mtime）：断续跑数周的长会话，只算近 7 天的条目，
         // 否则一生累计参与分摊会高估老会话（与 Codex 侧同一失真）
-        let cutoffDay = String(iso8601UTC.string(from: cutoff).prefix(10))
-        guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else { return [] }
-        var out: [Scanned] = []
-        for case let url as URL in en where url.pathExtension == "jsonl" {
-            guard let m = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
-                  m > cutoff, let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
-            var sum = 0
-            var customTitle: String?
-            for line in text.split(separator: "\n") {
-                // Claude Code 的会话标题（custom-title 行，末条最新）——比首句 prompt 更像「名字」
-                if line.contains("custom-title"),
-                   let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
-                   obj["type"] as? String == "custom-title",
-                   let t = obj["customTitle"] as? String, !t.isEmpty {
-                    customTitle = t
-                    continue
-                }
-                guard line.contains("\"usage\""), line.contains("\"assistant\""),
-                      let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
-                      (obj["type"] as? String) == "assistant",
-                      ((obj["timestamp"] as? String)?.prefix(10)).map({ $0 >= cutoffDay }) ?? true,   // 只算近 7 天条目
-                      let msg = obj["message"] as? [String: Any],
-                      (msg["model"] as? String)?.hasPrefix("claude-") == true,   // 只算官方模型，第三方中转不耗订阅
-                      let usage = msg["usage"] as? [String: Any] else { continue }
-                sum += ["input_tokens", "output_tokens", "cache_creation_input_tokens"]
-                    .compactMap { (usage[$0] as? NSNumber)?.intValue }.reduce(0, +)
-            }
-            if sum > 0 {
-                out.append(Scanned(id: url.deletingPathExtension().lastPathComponent, tokens: sum,
-                                   url: url, claudeTitle: titleize(customTitle)))
-            }
+        let cutoffDay = String(iso8601UTC.string(from: Date().addingTimeInterval(-window)).prefix(10))
+        return claudeFileScans(root: root).compactMap { file in
+            let sum = file.entries.lazy
+                .filter { $0.day.map { $0 >= cutoffDay } ?? true }   // timestamp 缺失视为在窗内（沿旧口径）
+                .reduce(0) { $0 + $1.tokens }
+            guard sum > 0 else { return nil }
+            return Scanned(id: file.url.deletingPathExtension().lastPathComponent, tokens: sum,
+                           url: file.url, claudeTitle: titleize(file.title))
         }
+    }
+
+    static var defaultClaudeRoot: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
+    }
+
+    /// 近 7 天有改动的 transcript 逐文件解析结果（命中缓存零 IO）。
+    /// scanClaude 与 UsageStore.estimateFromTranscripts 都走这里——
+    /// 同一轮 refresh 里后调用的一方几乎全命中缓存，天然免掉第二遍整读
+    static func claudeFileScans(root: URL = defaultClaudeRoot) -> [(url: URL, entries: [UsageEntry], title: String?)] {
+        let fm = FileManager.default
+        let cutoff = Date().addingTimeInterval(-window)
+        guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]) else { return [] }
+        var out: [(url: URL, entries: [UsageEntry], title: String?)] = []
+        var seen: Set<String> = []
+        for case let url as URL in en where url.pathExtension == "jsonl" {
+            guard let rv = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+                  let m = rv.contentModificationDate, m > cutoff else { continue }
+            seen.insert(url.path)
+            let size = rv.fileSize ?? 0
+            claudeCacheLock.lock()
+            let cached = claudeCache[url.path]
+            claudeCacheLock.unlock()
+            if let cached, cached.mtime == m, cached.size == size {
+                out.append((url, cached.entries, cached.title))
+                continue
+            }
+            // 变过的文件才整读（每文件一个池：整串文本与逐行 JSON 临时对象逐文件释放）
+            let parsed = autoreleasepool { parseClaudeFile(url, cutoff: cutoff) }
+            claudeCacheLock.lock()
+            claudeCache[url.path] = ClaudeScanCache(mtime: m, size: size, entries: parsed.entries, title: parsed.title)
+            claudeCacheLock.unlock()
+            out.append((url, parsed.entries, parsed.title))
+        }
+        // mtime 滑出 7 天窗的文件不会再被枚举，顺手清缓存防无限增长
+        claudeCacheLock.lock()
+        claudeCache = claudeCache.filter { seen.contains($0.key) }
+        claudeCacheLock.unlock()
         return out
+    }
+
+    /// 整读解析单个 transcript：有效 usage 条目 + 自定义标题（custom-title 末条最新）。
+    /// 条目按解析时刻的 7 天窗做日粒度粗过滤后入缓存——窗口只向前滑，
+    /// 之后任何轮次需要的条目恒为本集子集（日粒度是精确窗口的超集，消费方再精筛），缓存窗口安全
+    private static func parseClaudeFile(_ url: URL, cutoff: Date) -> (entries: [UsageEntry], title: String?) {
+        claudeParseCount += 1
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return ([], nil) }
+        let cutoffDay = String(iso8601UTC.string(from: cutoff).prefix(10))
+        var entries: [UsageEntry] = []
+        var title: String?
+        for line in text.split(separator: "\n") {
+            // Claude Code 的会话标题（custom-title 行，末条最新）——比首句 prompt 更像「名字」
+            if line.contains("custom-title"),
+               let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+               obj["type"] as? String == "custom-title",
+               let t = obj["customTitle"] as? String, !t.isEmpty {
+                title = t
+                continue
+            }
+            guard line.contains("\"usage\""), line.contains("\"assistant\""),
+                  let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  (obj["type"] as? String) == "assistant",
+                  let msg = obj["message"] as? [String: Any],
+                  (msg["model"] as? String)?.hasPrefix("claude-") == true,   // 只算官方模型，第三方中转不耗订阅
+                  let usage = msg["usage"] as? [String: Any] else { continue }
+            let tokens = ["input_tokens", "output_tokens", "cache_creation_input_tokens"]
+                .compactMap { (usage[$0] as? NSNumber)?.intValue }.reduce(0, +)
+            guard tokens > 0 else { continue }
+            let tsStr = obj["timestamp"] as? String
+            let day = tsStr.map { String($0.prefix(10)) }
+            if let day, day < cutoffDay { continue }   // 窗外老条目不入缓存（timestamp 缺失保留，沿旧口径）
+            entries.append(UsageEntry(day: day, ts: tsStr.flatMap { ISO8601Flex.parse($0) }, tokens: tokens))
+        }
+        return (entries, title)
     }
 
     // MARK: - Codex：~/.codex/sessions/近 7 天/*.jsonl 读末条 token
@@ -65,21 +131,24 @@ enum SessionUsage {
     static func scanCodex() -> [Scanned] {
         // 按 mtime 全量枚举，不能按日期目录扫最近几天：Codex 把 rollout 文件放在
         // 「会话开始日」的目录里持续追加数月——主力长会话（实测 05/31 目录 200MB 今天还在写）
-        // 按日期目录扫必漏，Top 3 就只剩边角小会话
+        // 按日期目录扫必漏，Top 5 就只剩边角小会话
         let fm = FileManager.default
         let root = fm.homeDirectoryForCurrentUser.appendingPathComponent(".codex/sessions")
         let cutoff = Date().addingTimeInterval(-window)
         var raw: [(scanned: Scanned, parent: String?)] = []
         guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else { return [] }
+        // 每个文件一个池（return 即跳过该文件）：头尾分块读也有 MB 级临时串，逐文件释放
         for case let f as URL in en where f.pathExtension == "jsonl" {
+            autoreleasepool {
             guard f.lastPathComponent.hasPrefix("rollout-"),
                   let m = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
-                  m > cutoff else { continue }
+                  m > cutoff else { return }
             let info = codexFileInfo(f)
             let cutoffDay = String(iso8601UTC.string(from: Date().addingTimeInterval(-window)).prefix(10))
             let tokens = info.buckets.filter { $0.key >= cutoffDay }.values.reduce(0, +)
-            guard tokens > 0 else { continue }
+            guard tokens > 0 else { return }
             raw.append((Scanned(id: f.deletingPathExtension().lastPathComponent, tokens: tokens, url: f), info.parent))
+            }   // autoreleasepool
         }
         // 子代理归并到根任务：Codex Desktop 多代理把并行子代理拆成独立 rollout 文件
         // （session_meta 带 parent_thread_id）。不归并则一个任务的消耗被拆成 N 行无名子代理——
@@ -191,15 +260,16 @@ enum SessionUsage {
         return nil
     }
 
-    // MARK: - Top 3
+    // MARK: - Top 5
 
-    /// 排序取前 3，占比 = 该任务 token ÷ 该服务近 7 天总 token × 周额度已用%
-    static func top3(_ items: [Scanned], weekUsedPercent: Double?, source: AgentSession.Source) -> [TaskUsage] {
+    /// 排序取前 count（默认 5，大梁老师定：3 条太少），
+    /// 占比 = 该任务 token ÷ 该服务近 7 天总 token × 周额度已用%
+    static func top(_ items: [Scanned], count: Int = 5, weekUsedPercent: Double?, source: AgentSession.Source) -> [TaskUsage] {
         let total = items.reduce(0) { $0 + $1.tokens }
         guard total > 0 else { return [] }
         let used = weekUsedPercent ?? 0
         let threadNames = source == .codex ? loadCodexThreadNames() : [:]
-        return items.sorted { $0.tokens != $1.tokens ? $0.tokens > $1.tokens : $0.id > $1.id }.prefix(3).map { item in
+        return items.sorted { $0.tokens != $1.tokens ? $0.tokens > $1.tokens : $0.id > $1.id }.prefix(count).map { item in
             let name: String
             switch source {
             case .claude:

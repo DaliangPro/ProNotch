@@ -25,7 +25,7 @@ struct ServiceQuota {
     var secondary: QuotaWindow?  // 7 天窗
     var dataAt: Date?            // 数据时间（源文件里最后一条记录的时间）
     var error: String?           // 拿不到数据时的原因
-    var topTasks: [TaskUsage] = []   // 近 7 天最耗额度的前 3 个任务（占总额度%）
+    var topTasks: [TaskUsage] = []   // 近 7 天最耗额度的前 5 个任务（占总额度%）
 }
 
 /// 额度页数据源：读本机 Claude Code / Codex CLI 的会话文件取实时额度。
@@ -50,12 +50,12 @@ final class UsageStore: ObservableObject {
             let cx = await CodexQuotaLoader.load()
             let cl = await ClaudeQuotaLoader.load()
             let gr = await GrokQuotaLoader.load()
-            // 每会话 token 统计（与额度数据源解耦，总是算）；Top 3 占比锚定周额度已用%（无周窗则退 5 小时窗）
+            // 每会话 token 统计（与额度数据源解耦，总是算）；Top 5 占比锚定周额度已用%（无周窗则退 5 小时窗）
             let claudeSessions = SessionUsage.scanClaude()
             let codexSessions = SessionUsage.scanCodex()
-            let claudeTop = SessionUsage.top3(claudeSessions,
+            let claudeTop = SessionUsage.top(claudeSessions,
                 weekUsedPercent: cl.secondary?.usedPercent ?? cl.primary?.usedPercent, source: .claude)
-            let codexTop = SessionUsage.top3(codexSessions,
+            let codexTop = SessionUsage.top(codexSessions,
                 weekUsedPercent: cx.secondary?.usedPercent ?? cx.primary?.usedPercent, source: .codex)
             let tokens = Dictionary((claudeSessions + codexSessions).map { ($0.id, $0.tokens) }) { a, _ in a }
             let claudeQuota = { var q = cl; q.topTasks = claudeTop; return q }()
@@ -66,6 +66,9 @@ final class UsageStore: ObservableObject {
                 self?.grok = gr
                 self?.sessionTokens = tokens
                 self?.refreshing = false
+                // 扫描是全 App 最大的瞬时分配源（transcript 全库 GB 级），
+                // 收尾把 libmalloc 攒下的空闲大块还给系统，压常驻 footprint
+                MemoryRelief.relieveSoon()
             }
         }
     }
@@ -445,32 +448,21 @@ enum ClaudeQuotaLoader {
     /// 5h 窗三级：官方样本 ≤45 分钟直接用 → 陈旧则用校准系数把实时块 tokens 换算成 ≈百分比
     /// → 无采样文件退回纯 token 数。7d 窗：官方样本 ≤3 天直接用（变化慢，标 ≈），否则 token 总量
     private static func estimateFromTranscripts() -> ServiceQuota {
-        let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
+        let root = SessionUsage.defaultClaudeRoot
         let now = Date()
         let weekAgo = now.addingTimeInterval(-7 * 86400)
-        var entries: [(ts: Date, tokens: Int)] = []   // 近 7 天全部用量点
-        let fm = FileManager.default
-        guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else {
+        guard FileManager.default.fileExists(atPath: root.path) else {
             return ServiceQuota(error: "未找到 Claude Code 数据（~/.claude/projects）")
         }
-        for case let url as URL in en where url.pathExtension == "jsonl" {
-            guard let m = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
-                  m > weekAgo else { continue }
-            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
-            for line in text.split(separator: "\n") {
-                // 粗筛降成本：只有带 usage 的 assistant 行才 JSON 解析
-                guard line.contains("\"usage\""), line.contains("\"assistant\"") else { continue }
-                guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
-                      (obj["type"] as? String) == "assistant",
-                      let tsStr = obj["timestamp"] as? String,
-                      let ts = ISO8601Flex.parse(tsStr), ts > weekAgo,
-                      let msg = obj["message"] as? [String: Any],
-                      (msg["model"] as? String)?.hasPrefix("claude-") == true,   // 只算官方模型，第三方中转不耗订阅额度
-                      let usage = msg["usage"] as? [String: Any] else { continue }
-                // 不含 cache_read：缓存读千倍灌水（实测 7 天 3.1G vs 不含 121M），且官方计价权重极低
-                let tokens = ["input_tokens", "output_tokens", "cache_creation_input_tokens"]
-                    .compactMap { (usage[$0] as? NSNumber)?.intValue }.reduce(0, +)
-                if tokens > 0 { entries.append((ts, tokens)) }
+        // 条目来自 SessionUsage 的文件级缓存（mtime+size 失效）：只有变过的文件才重读，
+        // 且与 Top 5 扫描共享同一份解析结果——此前两边各把 GB 级全库整读一遍。
+        // 口径不变：只算官方 claude- 模型；不含 cache_read（缓存读千倍灌水，
+        // 实测 7 天 3.1G vs 不含 121M，且官方计价权重极低）
+        var entries: [(ts: Date, tokens: Int)] = []   // 近 7 天全部用量点
+        for file in SessionUsage.claudeFileScans() {
+            for e in file.entries {
+                guard let ts = e.ts, ts > weekAgo else { continue }   // 精确窗口过滤（缓存是日粒度超集）
+                entries.append((ts, e.tokens))
             }
         }
         guard !entries.isEmpty else {
