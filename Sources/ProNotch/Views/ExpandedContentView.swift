@@ -12,6 +12,7 @@ struct ExpandedContentView: View {
     @EnvironmentObject var weatherStore: WeatherStore
 
     @State private var draggedTab: NotchViewModel.Tab?
+    @State private var tabDragOffset: CGSize = .zero
 
     /// 选中胶囊的共享几何：切标签时从旧按钮滑到新按钮，而非两处各自跳变
     @Namespace private var tabIndicatorNS
@@ -42,8 +43,8 @@ struct ExpandedContentView: View {
             HStack(spacing: 0) {
                 HStack(spacing: 14) {   // 间距与标签行一致，三颗列位对齐下方前三个标签
                     // 顺序：设置 → 防休眠 → 净屏
-                    // 设置入口：固定最左
-                    StripButton(icon: "gearshape",
+                    // 设置入口：固定最左；实心齿轮（大梁老师从候选 A 选定）
+                    StripButton(icon: "gearshape.fill",
                                 help: "打开 ProNotch 设置") {
                         quickActions.openAppSettings()
                         vm.collapseNow()
@@ -89,20 +90,11 @@ struct ExpandedContentView: View {
             .zIndex(1)   // 抬高：让悬停气泡能盖在下方标签行/内容之上，不被遮挡
 
             HStack(spacing: 14) {
-                // 标签可拖动换位：长按拖到目标位置松手，顺序持久化
+                // 标签拖动换位：与启动台置顶图标同款自绘手势重排（大梁老师点名去虚影），
+                // 顺序持久化由 tabOrder didSet 承接
                 ForEach(vm.tabOrder, id: \.self) { tab in
-                    TabButton(tab: tab, isActive: shownTab == tab, ns: tabIndicatorNS) {
-                        vm.activeTab = tab
-                    }
-                    .opacity(draggedTab == tab ? 0.35 : 1)
-                    .onDrag {
-                        draggedTab = tab
-                        return NSItemProvider(object: tab.rawValue as NSString)
-                    }
-                    .onDrop(of: [.text],
-                            delegate: TabDropDelegate(tab: tab,
-                                                      dragged: $draggedTab,
-                                                      vm: vm))
+                    DraggableTabCell(tab: tab, isActive: shownTab == tab, ns: tabIndicatorNS,
+                                     dragging: $draggedTab, dragOffset: $tabDragOffset)
                 }
                 Spacer()
                 accessory
@@ -182,16 +174,16 @@ struct ExpandedContentView: View {
                 ConnectivityLight()
             }
         case .usage:
-            AccessoryButton(title: "刷新") { usageStore.refresh(force: true) }
+            AccessoryButton(icon: "arrow.clockwise", tip: "刷新") { usageStore.refresh(force: true) }
         case .agent:
             if !agentSessions.sessions.isEmpty {
                 Text("\(agentSessions.sessions.count) 个会话")
                     .font(.system(size: 11))
                     .foregroundColor(.white.opacity(0.4))
             }
-            AccessoryButton(title: "刷新") { agentSessions.refresh(force: true) }
+            AccessoryButton(icon: "arrow.clockwise", tip: "刷新") { agentSessions.refresh(force: true) }
         case .widgets:
-            AccessoryButton(title: "刷新") {
+            AccessoryButton(icon: "arrow.clockwise", tip: "刷新") {
                 memoryStore.refresh()
                 weatherStore.refresh(force: true)
             }
@@ -217,26 +209,31 @@ private struct ModelSwitcher: View {
         } label: {
             HStack(spacing: 4) {
                 Text(chatStore.model.isEmpty ? "选择模型" : chatStore.model)
-                    .font(.system(size: 11, weight: .light))
+                    .font(.system(size: 12.5, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .frame(maxWidth: 150)
+                    .frame(maxWidth: 170)
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 7.5, weight: .semibold))
+                    .font(.system(size: 8.5, weight: .semibold))
                     .rotationEffect(.degrees(showList ? 180 : 0))
             }
-            .foregroundColor(.white.opacity(hovering || showList ? 0.8 : 0.45))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(Capsule().fill(Color.white.opacity(hovering || showList ? 0.1 : 0)))
+            .foregroundColor(.white.opacity(hovering || showList ? 0.9 : 0.55))
+            .padding(.horizontal, 10)
+            // 胶囊定高 31：与同排标签胶囊(42×31)上下沿齐平（大梁老师定的统一度量）；
+            // 字号 12.5 随 31 高胶囊相应放大（大梁老师定），宽度上限同步放宽
+            .frame(height: 31)
+            .background(Capsule().fill(Color.white.opacity(hovering || showList ? 0.12 : 0)))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        // 布局占位缩回 25（与标签行/搜索框同款负 padding）：行高与右缘对齐线不动
+        .padding(.vertical, -3)
         .help("切换配置 / 模型")
-        // 下拉悬浮在按钮右下方，盖住内容页不参与布局（标签行 zIndex 已抬高）
+        // 下拉悬浮在按钮右下方，盖住内容页不参与布局（标签行 zIndex 已抬高）；
+        // 34 = 布局高 25 + 胶囊下凸 3 + 气口 6
         .overlay(alignment: .topTrailing) {
-            if showList { dropdown.offset(y: 27) }
+            if showList { dropdown.offset(y: 34) }
         }
         // 内容常驻不销毁：面板收起时手动合上，避免下次展开还挂着下拉
         .onChange(of: vm.isExpanded) { _, expanded in
@@ -449,51 +446,89 @@ private struct ConnectivityLight: View {
     }
 }
 
-/// 顶行功能区文字按钮：与标签按钮同风格，整个胶囊区域可点击、悬停高亮
+/// 顶行功能区图标按钮（大梁老师定：「刷新」不放中文放图标）：
+/// 42×31 胶囊与标签胶囊完全同框、图标 17pt 与标签图标同大，中文说明走悬停气泡
 private struct AccessoryButton: View {
-    let title: String
+    let icon: String
+    let tip: String
     let action: () -> Void
 
     @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
-            Text(title)
-                .font(.system(size: 11, weight: .medium))
+            Image(systemName: icon)
+                .font(.system(size: 17))
                 .foregroundColor(.white.opacity(hovering ? 0.9 : 0.55))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+                .frame(width: 42, height: 31)
                 .background(Capsule().fill(Color.white.opacity(hovering ? 0.12 : 0)))
                 .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        // 布局占位缩回 25（与标签行/搜索框同款负 padding）：行高不动
+        .padding(.vertical, -3)
+        .notchTip(tip)
     }
 }
 
-/// 标签拖动换位：拖入目标标签时实时交换位置（带弹簧动画）
-private struct TabDropDelegate: DropDelegate {
+/// 标签拖动换位：照搬启动台置顶图标的手势自绘重排（DraggablePinnedCell 同款）。
+/// 一个 DragGesture 兼任「点击切页」与「拖动换位」——移动超 6px 才算拖动；
+/// 拖过半格即实时 move + 弹簧让位，松手弹簧归零平滑落位。
+/// 全程不经系统拖放，无半透明预览虚影（大梁老师点名去掉）。
+private struct DraggableTabCell: View {
+    @EnvironmentObject var vm: NotchViewModel
     let tab: NotchViewModel.Tab
-    @Binding var dragged: NotchViewModel.Tab?
-    let vm: NotchViewModel
+    let isActive: Bool
+    let ns: Namespace.ID
+    @Binding var dragging: NotchViewModel.Tab?
+    @Binding var dragOffset: CGSize
 
-    func dropEntered(info: DropInfo) {
-        guard let dragged, dragged != tab,
-              let from = vm.tabOrder.firstIndex(of: dragged),
-              let to = vm.tabOrder.firstIndex(of: tab) else { return }
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-            vm.tabOrder.move(fromOffsets: IndexSet(integer: from),
-                             toOffset: to > from ? to + 1 : to)
+    @State private var startIndex = 0
+
+    /// 相邻标签中心间距：布局占位 36（42 胶囊 + 8 热区 − 14 负 padding）+ HStack 间距 14。
+    /// 标签胶囊等宽，恒定步距成立（与置顶图标的 cellW+14 同理）
+    private let slotStride: CGFloat = 50
+
+    private var isDragging: Bool { dragging == tab }
+
+    var body: some View {
+        TabButton(tab: tab, isActive: isActive, ns: ns) {
+            if dragging == nil { vm.activeTab = tab }   // 拖动松手不算点击
         }
-    }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        DropProposal(operation: .move)
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        dragged = nil
-        return true
+        .offset(isDragging ? dragOffset : .zero)
+        .zIndex(isDragging ? 1 : 0)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 6, coordinateSpace: .global)
+                .onChanged { value in
+                    guard let current = vm.tabOrder.firstIndex(of: tab) else { return }
+                    if dragging == nil {
+                        dragging = tab
+                        startIndex = current
+                    }
+                    // 目标槽位 = 起始槽位 + 累计位移格数（基于起点，不逐帧漂移）
+                    let target = min(max(startIndex + Int((value.translation.width / slotStride).rounded()), 0),
+                                     vm.tabOrder.count - 1)
+                    if target != current {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.72)) {
+                            vm.tabOrder.move(fromOffsets: IndexSet(integer: current),
+                                             toOffset: target > current ? target + 1 : target)
+                        }
+                    }
+                    // 视觉偏移每帧重算 = 跟手位移 − 当前槽位相对起点的布局位移（胶囊贴着鼠标走）
+                    let nowIndex = vm.tabOrder.firstIndex(of: tab) ?? target
+                    dragOffset = CGSize(
+                        width: value.translation.width - CGFloat(nowIndex - startIndex) * slotStride,
+                        height: value.translation.height)
+                }
+                .onEnded { _ in
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) { dragOffset = .zero }
+                    // 延迟清 dragging：让 Button 的 mouse-up 先看到「在拖动」而不触发切页
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        if dragging == tab { dragging = nil }
+                    }
+                }
+        )
     }
 }
 
