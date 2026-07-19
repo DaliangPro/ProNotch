@@ -88,6 +88,45 @@ struct WeatherAlert: Equatable {
     let detail: String   // 「降水概率 85%」/「阵风 65 km/h」，可空
 }
 
+/// 恶劣天气预警类型（设置页多选）：与扫描判定口径一一对应，
+/// 五类 = 四组恶劣 WMO 码 + 大风阵风阈值
+enum WeatherAlertType: String, CaseIterable {
+    case heavyRain, freezingRain, heavySnow, thunderstorm, gale
+
+    var displayName: String {
+        switch self {
+        case .heavyRain: return "大雨"
+        case .freezingRain: return "冻雨"
+        case .heavySnow: return "大雪"
+        case .thunderstorm: return "雷暴"
+        case .gale: return "大风"
+        }
+    }
+
+    /// 恶劣 WMO 码 → 预警类型（大雨 65/82、冻雨 66/67、大雪 75/86、雷暴冰雹 95-99）；
+    /// 非恶劣码返回 nil。大风不走天气码，由阵风阈值单独判定
+    static func from(code: Int) -> WeatherAlertType? {
+        switch code {
+        case 65, 82: return .heavyRain
+        case 66, 67: return .freezingRain
+        case 75, 86: return .heavySnow
+        case 95...99: return .thunderstorm
+        default: return nil
+        }
+    }
+
+    static let masterKey = "weatherAlertsEnabled"
+    static let typesKey = "weatherAlertTypes"
+
+    /// 当前生效的预警类型：总开关关 = 空集。WeatherStore 扫描时直接读，
+    /// 不依赖 SettingsStore 实例（与 AgentKind.enabledSet 同一套口径）
+    static func enabledSet() -> Set<WeatherAlertType> {
+        guard UserDefaults.standard.object(forKey: masterKey) as? Bool ?? true else { return [] }
+        guard let raw = UserDefaults.standard.stringArray(forKey: typesKey) else { return Set(allCases) }
+        return Set(raw.compactMap(WeatherAlertType.init(rawValue:)))
+    }
+}
+
 /// 恶劣天气扫描（纯函数，单测覆盖）：从当前小时的下一小时起扫未来 N 小时，
 /// 返回第一条还没报过的恶劣事件；nil = 无恶劣天气或都报过了
 enum WeatherAlertScan {
@@ -103,15 +142,6 @@ enum WeatherAlertScan {
     /// 大梁老师定的 6 级线，8 级太高等真报警就晚了）
     static let gustThreshold: Double = 39
 
-    /// 恶劣天气码（大梁老师点名的大雨/大雪/大风一类）：
-    /// 大雨 65/82、冻雨 66/67、大雪 75/86、雷暴冰雹 95-99
-    static func isSevereCode(_ code: Int) -> Bool {
-        switch code {
-        case 65, 82, 66, 67, 75, 86, 95...99: return true
-        default: return false
-        }
-    }
-
     /// 阵风 km/h → 蒲福风级（各级下限：8 级 = 62-74 km/h）
     static func beaufort(_ kmh: Double) -> Int {
         let bounds: [Double] = [1, 6, 12, 20, 29, 39, 50, 62, 75, 89, 103, 118]
@@ -119,14 +149,16 @@ enum WeatherAlertScan {
     }
 
     /// 只扫「未来」(fromIndex+1 起)：当前小时正在发生的自己看得见，预警没意义。
-    /// 一小时最多算一条事件，恶劣天气码优先于大风
+    /// 一小时最多算一条事件，恶劣天气码优先于大风。
+    /// types = 设置页勾选的预警类型：类型没勾的事件当不存在（同小时让位给勾了的大风）
     static func firstHit(times: [String], codes: [Int], gusts: [Double]?, probs: [Int]?,
-                         fromIndex: Int, withinHours: Int, alerted: Set<String>) -> Hit? {
-        guard withinHours > 0 else { return nil }
+                         fromIndex: Int, withinHours: Int, alerted: Set<String>,
+                         types: Set<WeatherAlertType> = Set(WeatherAlertType.allCases)) -> Hit? {
+        guard withinHours > 0, !types.isEmpty else { return nil }
         for offset in 1...withinHours {
             let i = fromIndex + offset
             guard i >= 0, i < times.count, i < codes.count else { break }
-            if isSevereCode(codes[i]) {
+            if let type = WeatherAlertType.from(code: codes[i]), types.contains(type) {
                 let kind = WeatherNow.text(for: codes[i])
                 guard !alerted.contains("\(times[i])|\(kind)") else { continue }
                 let prob = probs?[safe: i] ?? 0
@@ -134,7 +166,7 @@ enum WeatherAlertScan {
                            symbol: WeatherNow.symbol(for: codes[i]),
                            detail: prob > 0 ? "降水概率 \(prob)%" : "")
             }
-            if let g = gusts?[safe: i], g >= gustThreshold {
+            if types.contains(.gale), let g = gusts?[safe: i], g >= gustThreshold {
                 guard !alerted.contains("\(times[i])|大风") else { continue }
                 return Hit(fingerprint: "\(times[i])|大风", hoursAhead: offset,
                            kind: "\(beaufort(g)) 级大风", symbol: "wind",
@@ -215,6 +247,27 @@ final class WeatherStore: NSObject, ObservableObject {
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyKilometer   // 城市级精度足够，省电
+        // 设置页改动预警开关/类型 → 立即按新口径清态或重扫
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ProNotchWeatherAlertSettingsChanged"),
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.applyAlertSettingsChange() }
+        }
+    }
+
+    /// 预警设置变化：全关（总开关或类型清空）→ 清掉在展示的预警；
+    /// 开着 → 强刷一次按新类型口径重扫（改类型立即生效，不等 15 分钟节流）
+    private func applyAlertSettingsChange() {
+        guard !demoMode else { return }
+        if WeatherAlertType.enabledSet().isEmpty {
+            alertDismissToken = UUID()   // 在途的 8 秒自动收卡一并作废
+            isPreviewing = false
+            alert = nil
+            upcomingSevere = nil
+            scannedSevere = nil
+        } else {
+            refresh(force: true)
+        }
     }
 
     /// 刷新（15 分钟节流，force 忽略）。位置 1 小时内复用，超时重新定位
@@ -240,10 +293,17 @@ final class WeatherStore: NSObject, ObservableObject {
     /// 数据落地后扫未来 3 小时：命中未报过的恶劣事件 → 弹大卡并记入已报名单
     private func checkSevereWeather(times: [String], codes: [Int],
                                     gusts: [Double]?, probs: [Int]?, fromIndex: Int) {
+        // 预警设置口径：总开关关 = 空集 → 清态跳扫（天气数据照常落地，大卡/槽位不受影响）
+        let types = WeatherAlertType.enabledSet()
+        guard !types.isEmpty else {
+            scannedSevere = nil
+            if !isPreviewing { upcomingSevere = nil }
+            return
+        }
         // 右上角天气标联动：忽略「弹没弹过卡」的去重，窗口内有事件就亮预警态
         scannedSevere = WeatherAlertScan.firstHit(
             times: times, codes: codes, gusts: gusts, probs: probs,
-            fromIndex: fromIndex, withinHours: Self.alertLookaheadHours, alerted: [])
+            fromIndex: fromIndex, withinHours: Self.alertLookaheadHours, alerted: [], types: types)
             .map { WeatherAlert(symbol: $0.symbol, title: "\($0.hoursAhead) 小时后\($0.kind)",
                                 detail: $0.detail) }
         if !isPreviewing { upcomingSevere = scannedSevere }
@@ -254,7 +314,8 @@ final class WeatherStore: NSObject, ObservableObject {
             .filter { String($0.split(separator: "|").first ?? "") >= nowHour })
         let hit = WeatherAlertScan.firstHit(
             times: times, codes: codes, gusts: gusts, probs: probs,
-            fromIndex: fromIndex, withinHours: Self.alertLookaheadHours, alerted: alerted)
+            fromIndex: fromIndex, withinHours: Self.alertLookaheadHours, alerted: alerted,
+            types: types)
         if let hit {
             alerted.insert(hit.fingerprint)
             presentAlert(WeatherAlert(symbol: hit.symbol,

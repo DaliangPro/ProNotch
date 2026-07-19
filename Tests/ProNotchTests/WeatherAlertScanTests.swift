@@ -70,4 +70,70 @@ final class WeatherAlertScanTests: XCTestCase {
         let hit = scan(codes: [2, 65, 2, 2, 2])
         XCTAssertEqual(hit?.detail, "")
     }
+
+    // MARK: - 预警类型多选过滤（2.0 设置）
+
+    func test类型没勾的事件当不存在_让位给勾了的大风() {
+        // 雷暴取消勾选：同小时 80 km/h 阵风（勾着大风）顶上——没勾的不该挡住勾了的
+        let hit = WeatherAlertScan.firstHit(
+            times: times, codes: [2, 95, 2, 2, 2], gusts: [10, 80, 12, 11, 10], probs: nil,
+            fromIndex: 0, withinHours: 3, alerted: [], types: [.gale])
+        XCTAssertEqual(hit?.kind, "9 级大风")
+    }
+
+    func test只勾大雨时大雪不报() {
+        let hit = WeatherAlertScan.firstHit(
+            times: times, codes: [2, 75, 65, 2, 2], gusts: nil, probs: nil,
+            fromIndex: 0, withinHours: 3, alerted: [], types: [.heavyRain])
+        XCTAssertEqual(hit?.kind, "大雨", "18 时大雪没勾要跳过，19 时大雨照报")
+        XCTAssertEqual(hit?.hoursAhead, 2)
+    }
+
+    func test空类型集不扫() {
+        let hit = WeatherAlertScan.firstHit(
+            times: times, codes: [2, 95, 2, 2, 2], gusts: [10, 80, 12, 11, 10], probs: nil,
+            fromIndex: 0, withinHours: 3, alerted: [], types: [])
+        XCTAssertNil(hit, "总开关关闭（空集）时什么都不报")
+    }
+
+    func test恶劣码到类型映射口径() {
+        XCTAssertEqual(WeatherAlertType.from(code: 65), .heavyRain)
+        XCTAssertEqual(WeatherAlertType.from(code: 82), .heavyRain)
+        XCTAssertEqual(WeatherAlertType.from(code: 66), .freezingRain)
+        XCTAssertEqual(WeatherAlertType.from(code: 75), .heavySnow)
+        XCTAssertEqual(WeatherAlertType.from(code: 86), .heavySnow)
+        XCTAssertEqual(WeatherAlertType.from(code: 99), .thunderstorm)
+        XCTAssertNil(WeatherAlertType.from(code: 61), "小雨不算恶劣")
+        XCTAssertNil(WeatherAlertType.from(code: 0))
+    }
+}
+
+/// 预警设置的 UserDefaults 口径（总开关折叠进生效集：关 = 空集）
+final class WeatherAlertTypeSettingsTests: XCTestCase {
+    override func tearDown() {
+        UserDefaults.standard.removeObject(forKey: WeatherAlertType.masterKey)
+        UserDefaults.standard.removeObject(forKey: WeatherAlertType.typesKey)
+        super.tearDown()
+    }
+
+    func test无存值默认五类全开() {
+        XCTAssertEqual(WeatherAlertType.enabledSet(), Set(WeatherAlertType.allCases))
+    }
+
+    func test总开关关闭时生效集为空() {
+        UserDefaults.standard.set(false, forKey: WeatherAlertType.masterKey)
+        UserDefaults.standard.set(["heavyRain"], forKey: WeatherAlertType.typesKey)
+        XCTAssertEqual(WeatherAlertType.enabledSet(), [], "类型勾选保留但总开关优先")
+    }
+
+    func test类型存值读回_未知值忽略() {
+        UserDefaults.standard.set(["heavyRain", "gale", "tornado-future"],
+                                  forKey: WeatherAlertType.typesKey)
+        XCTAssertEqual(WeatherAlertType.enabledSet(), [.heavyRain, .gale])
+    }
+
+    func test空数组表示全清而非兜底全开() {
+        UserDefaults.standard.set([String](), forKey: WeatherAlertType.typesKey)
+        XCTAssertEqual(WeatherAlertType.enabledSet(), [])
+    }
 }
