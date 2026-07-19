@@ -24,6 +24,13 @@ struct CollapsedSlotsView: View {
     private let ticker = Timer.publish(every: 10, on: .main, in: .common).autoconnect()
 
     var body: some View {
+        // 两侧都关时整个视图不上树：10 秒心跳的订阅一并拆除，不再空转（真停机）
+        if settings.sideSlotsActive {
+            slotsBody
+        }
+    }
+
+    private var slotsBody: some View {
         HStack(spacing: 0) {
             slotContent(settings.leftSlot)
                 .frame(width: vm.sideSlotWidth)

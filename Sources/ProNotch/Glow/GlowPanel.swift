@@ -19,6 +19,8 @@ final class GlowPanel: NSPanel {
         hasShadow = false
         isMovable = false
         ignoresMouseEvents = true
+        // 面板随光晕熄灭被销毁重建（ARC 管理）；防有人误调 close() 触发额外 release
+        isReleasedWhenClosed = false
     }
 
     override var canBecomeKey: Bool { false }

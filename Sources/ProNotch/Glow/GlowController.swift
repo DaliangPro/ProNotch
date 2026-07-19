@@ -40,7 +40,7 @@ final class GlowController: ObservableObject {
         period = settings.glowBreathPeriod
         intensity = settings.glowIntensity
         thickness = settings.glowThickness
-        setupPanels()
+        // 面板不在启动时创建：点亮才建、熄灭即拆（真停机——没在发光时零常驻窗口）
 
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name("ProNotchGlowSettingsChanged"),
@@ -55,7 +55,11 @@ final class GlowController: ObservableObject {
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
             object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.setupPanels() }   // 屏幕增减 / 分辨率变化 → 重建各屏面板
+            // 屏幕增减 / 分辨率变化：正在发光才需要重建各屏面板；没发光时下次点亮自然按新屏建
+            Task { @MainActor in
+                guard let self, !self.panels.isEmpty else { return }
+                self.setupPanels()
+            }
         }
     }
 
@@ -69,6 +73,12 @@ final class GlowController: ObservableObject {
             p.orderFrontRegardless()
             return p
         }
+    }
+
+    /// 熄灭后拆掉全部面板：NSPanel + NSHostingView 一起释放，不留常驻窗口
+    private func teardownPanels() {
+        panels.forEach { $0.orderOut(nil) }
+        panels = []
     }
 
     func color(for source: AgentKind) -> Color {
@@ -115,6 +125,7 @@ final class GlowController: ObservableObject {
     }
 
     private func light(_ source: AgentKind, mode: Mode) {
+        if panels.isEmpty { setupPanels() }   // 惰性建：首次点亮（或上次熄灭拆除后）才创建覆盖窗
         activeSource = source
         activeMode = mode
         activeColor = color(for: source)
@@ -168,6 +179,7 @@ final class GlowController: ObservableObject {
             previewingSource = nil
             testingSource = nil
             loopTimer?.invalidate(); loopTimer = nil; loopStart = nil
+            teardownPanels()   // 淡出走完立即拆窗：不发光时零常驻
         }
     }
 
