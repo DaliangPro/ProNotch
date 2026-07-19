@@ -49,7 +49,8 @@ struct WeatherNow {
         case 3: return "cloud.fill"
         case 45, 48: return "cloud.fog.fill"
         case 51...57: return "cloud.drizzle.fill"
-        case 61...67: return "cloud.rain.fill"
+        case 66, 67: return "cloud.sleet.fill"   // 冻雨与普通雨区分（预警卡一眼可辨）
+        case 61...65: return "cloud.rain.fill"
         case 71...77: return "cloud.snow.fill"
         case 80...82: return "cloud.heavyrain.fill"
         case 85, 86: return "cloud.snow.fill"
@@ -80,6 +81,70 @@ struct WeatherNow {
     }
 }
 
+/// 恶劣天气预警事件（刘海横幅显示用，大梁老师定的核心功能）
+struct WeatherAlert: Equatable {
+    let symbol: String   // SF Symbol
+    let title: String    // 「2 小时后大雨」
+    let detail: String   // 「降水概率 85%」/「阵风 65 km/h」，可空
+}
+
+/// 恶劣天气扫描（纯函数，单测覆盖）：从当前小时的下一小时起扫未来 N 小时，
+/// 返回第一条还没报过的恶劣事件；nil = 无恶劣天气或都报过了
+enum WeatherAlertScan {
+    struct Hit: Equatable {
+        let fingerprint: String   // 「2026-07-18T20:00|大雨」——同小时同类型只报一次
+        let hoursAhead: Int
+        let kind: String          // 大雨 / 大雪 / 雷阵雨 / 8 级大风…
+        let symbol: String
+        let detail: String
+    }
+
+    /// 大风预警阈值：阵风 ≥ 39 km/h（蒲福 6 级下限，撑伞困难、迎风吃力——
+    /// 大梁老师定的 6 级线，8 级太高等真报警就晚了）
+    static let gustThreshold: Double = 39
+
+    /// 恶劣天气码（大梁老师点名的大雨/大雪/大风一类）：
+    /// 大雨 65/82、冻雨 66/67、大雪 75/86、雷暴冰雹 95-99
+    static func isSevereCode(_ code: Int) -> Bool {
+        switch code {
+        case 65, 82, 66, 67, 75, 86, 95...99: return true
+        default: return false
+        }
+    }
+
+    /// 阵风 km/h → 蒲福风级（各级下限：8 级 = 62-74 km/h）
+    static func beaufort(_ kmh: Double) -> Int {
+        let bounds: [Double] = [1, 6, 12, 20, 29, 39, 50, 62, 75, 89, 103, 118]
+        return bounds.filter { kmh >= $0 }.count
+    }
+
+    /// 只扫「未来」(fromIndex+1 起)：当前小时正在发生的自己看得见，预警没意义。
+    /// 一小时最多算一条事件，恶劣天气码优先于大风
+    static func firstHit(times: [String], codes: [Int], gusts: [Double]?, probs: [Int]?,
+                         fromIndex: Int, withinHours: Int, alerted: Set<String>) -> Hit? {
+        guard withinHours > 0 else { return nil }
+        for offset in 1...withinHours {
+            let i = fromIndex + offset
+            guard i >= 0, i < times.count, i < codes.count else { break }
+            if isSevereCode(codes[i]) {
+                let kind = WeatherNow.text(for: codes[i])
+                guard !alerted.contains("\(times[i])|\(kind)") else { continue }
+                let prob = probs?[safe: i] ?? 0
+                return Hit(fingerprint: "\(times[i])|\(kind)", hoursAhead: offset, kind: kind,
+                           symbol: WeatherNow.symbol(for: codes[i]),
+                           detail: prob > 0 ? "降水概率 \(prob)%" : "")
+            }
+            if let g = gusts?[safe: i], g >= gustThreshold {
+                guard !alerted.contains("\(times[i])|大风") else { continue }
+                return Hit(fingerprint: "\(times[i])|大风", hoursAhead: offset,
+                           kind: "\(beaufort(g)) 级大风", symbol: "wind",
+                           detail: "阵风 \(Int(g.rounded())) km/h")
+            }
+        }
+        return nil
+    }
+}
+
 /// 天气数据源：CoreLocation 系统定位（大梁老师选定）+ Open-Meteo。
 /// 定位成功后位置缓存 1 小时；天气 15 分钟节流；权限被拒给设置引导文案
 @MainActor
@@ -87,6 +152,21 @@ final class WeatherStore: NSObject, ObservableObject {
     @Published private(set) var now: WeatherNow?
     @Published private(set) var error: String?
     @Published private(set) var refreshing = false
+    /// 当前待展示的恶劣天气预警；非 nil 时刘海弹出大卡，8 秒后自动清空
+    @Published private(set) var alert: WeatherAlert?
+    /// 右上角天气标联动（大梁老师定）：窗口内只要有恶劣事件就非 nil（与弹卡去重无关），
+    /// 收起态天气 slot 据此换脸；事件出窗后随扫描自动还原
+    @Published private(set) var upcomingSevere: WeatherAlert?
+    /// 最近一次真实扫描的联动结果；预览结束后据此还原天气标
+    private var scannedSevere: WeatherAlert?
+    /// 预览进行中（设置页触发）：结束时天气标要还原成真实扫描结果
+    private var isPreviewing = false
+
+    /// 预警提前量：扫未来 3 小时（大梁老师定）
+    static let alertLookaheadHours = 3
+    private let alertedKey = "weatherAlertedEvents"
+    /// 自动缩回令牌：新预警会重置计时，旧的定时清空不再生效
+    private var alertDismissToken = UUID()
 
     private let manager = CLLocationManager()
     private var cachedLocation: CLLocation?
@@ -120,6 +200,15 @@ final class WeatherStore: NSObject, ObservableObject {
                 DayForecast(dayLabel: "周二", code: 95, tMax: 31, tMin: 25, precipProb: 80),
             ],
             sunrise: "05:14", sunset: "18:52", fetchedAt: Date())
+        // 预警卡形态核查：-demoWeatherAlert [大雨|冻雨|大雪|雷暴|大风]
+        // 附带对应演示预警（collapsed.png 可见），不带类型默认雷暴
+        let args = CommandLine.arguments
+        if let i = args.firstIndex(of: "-demoWeatherAlert") {
+            let label = args[safe: i + 1] ?? ""
+            let a = (Self.previewAlerts.first { $0.label == label } ?? Self.previewAlerts[3]).alert
+            alert = a
+            upcomingSevere = a   // 右上角天气标联动一并核查
+        }
     }
 
     override init() {
@@ -137,6 +226,80 @@ final class WeatherStore: NSObject, ObservableObject {
         } else {
             requestLocation()
         }
+    }
+
+    /// 预警兜底刷新（AppDelegate 定时器调）：两侧功能区都没配天气时也保证数据定期落地。
+    /// 只在已授权定位时静默刷——绝不在后台弹授权框，授权由用户首次打开天气功能触发
+    func refreshIfAuthorized() {
+        guard manager.authorizationStatus == .authorizedAlways else { return }
+        refresh()
+    }
+
+    // MARK: - 恶劣天气预警
+
+    /// 数据落地后扫未来 3 小时：命中未报过的恶劣事件 → 弹大卡并记入已报名单
+    private func checkSevereWeather(times: [String], codes: [Int],
+                                    gusts: [Double]?, probs: [Int]?, fromIndex: Int) {
+        // 右上角天气标联动：忽略「弹没弹过卡」的去重，窗口内有事件就亮预警态
+        scannedSevere = WeatherAlertScan.firstHit(
+            times: times, codes: codes, gusts: gusts, probs: probs,
+            fromIndex: fromIndex, withinHours: Self.alertLookaheadHours, alerted: [])
+            .map { WeatherAlert(symbol: $0.symbol, title: "\($0.hoursAhead) 小时后\($0.kind)",
+                                detail: $0.detail) }
+        if !isPreviewing { upcomingSevere = scannedSevere }
+
+        // 已报名单剪枝：过点的事件清掉，名单不随时间无限膨胀
+        let nowHour = times[safe: fromIndex] ?? ""
+        var alerted = Set((UserDefaults.standard.stringArray(forKey: alertedKey) ?? [])
+            .filter { String($0.split(separator: "|").first ?? "") >= nowHour })
+        let hit = WeatherAlertScan.firstHit(
+            times: times, codes: codes, gusts: gusts, probs: probs,
+            fromIndex: fromIndex, withinHours: Self.alertLookaheadHours, alerted: alerted)
+        if let hit {
+            alerted.insert(hit.fingerprint)
+            presentAlert(WeatherAlert(symbol: hit.symbol,
+                                      title: "\(hit.hoursAhead) 小时后\(hit.kind)",
+                                      detail: hit.detail))
+        }
+        UserDefaults.standard.set(Array(alerted), forKey: alertedKey)
+    }
+
+    /// 弹出大卡并排定 8 秒自动缩回；新预警重置计时
+    private func presentAlert(_ a: WeatherAlert) {
+        alert = a
+        let token = UUID()
+        alertDismissToken = token
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8) { [weak self] in
+            guard let self, self.alertDismissToken == token else { return }
+            self.dismissAlert()
+        }
+    }
+
+    /// 收卡：卡被点击（跳组件页）、8 秒超时或设置页「停止」都走这里；
+    /// 预览态顺带把右上角天气标还原成真实扫描结果
+    func dismissAlert() {
+        alert = nil
+        if isPreviewing {
+            isPreviewing = false
+            upcomingSevere = scannedSevere
+        }
+    }
+
+    /// 设置页「预览提醒效果」的五种样例（大梁老师要求逐个可预览），
+    /// 图标与文案和真实预警同一套生成口径
+    static let previewAlerts: [(label: String, alert: WeatherAlert)] = [
+        ("大雨", WeatherAlert(symbol: WeatherNow.symbol(for: 82), title: "2 小时后大雨", detail: "降水概率 85%")),
+        ("冻雨", WeatherAlert(symbol: WeatherNow.symbol(for: 66), title: "1 小时后冻雨", detail: "降水概率 70%")),
+        ("大雪", WeatherAlert(symbol: WeatherNow.symbol(for: 86), title: "3 小时后大雪", detail: "降水概率 90%")),
+        ("雷暴", WeatherAlert(symbol: WeatherNow.symbol(for: 95), title: "2 小时后雷阵雨", detail: "降水概率 85%")),
+        ("大风", WeatherAlert(symbol: "wind", title: "2 小时后 7 级大风", detail: "阵风 55 km/h")),
+    ]
+
+    /// 设置页预览：走真实弹出链路看视觉与动画（含右上角天气标联动），不写入已报名单
+    func preview(_ a: WeatherAlert) {
+        isPreviewing = true
+        upcomingSevere = a
+        presentAlert(a)
     }
 
     private func requestLocation() {
@@ -204,7 +367,7 @@ final class WeatherStore: NSObject, ObservableObject {
                     URLQueryItem(name: "current",
                                  value: "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m"),
                     URLQueryItem(name: "hourly",
-                                 value: "temperature_2m,weather_code,precipitation_probability"),
+                                 value: "temperature_2m,weather_code,precipitation_probability,wind_gusts_10m"),
                     URLQueryItem(name: "daily",
                                  value: "temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max,sunrise,sunset"),
                     URLQueryItem(name: "timezone", value: "auto"),
@@ -244,6 +407,11 @@ final class WeatherStore: NSObject, ObservableObject {
                 code: resp.hourly.weather_code[i]))
         }
         let precipNow = resp.hourly.precipitation_probability?[safe: startIdx] ?? 0
+
+        // 恶劣天气预警（大梁老师定的核心功能）：每次数据落地扫一遍未来 3 小时
+        checkSevereWeather(times: resp.hourly.time, codes: resp.hourly.weather_code,
+                           gusts: resp.hourly.wind_gusts_10m,
+                           probs: resp.hourly.precipitation_probability, fromIndex: startIdx)
 
         // 逐天：今天/明天 + 之后按周几；日期串转 zh_CN 周几
         let dayFmt = DateFormatter()
@@ -320,6 +488,7 @@ private struct OpenMeteoResponse: Decodable {
         let temperature_2m: [Double]
         let weather_code: [Int]
         let precipitation_probability: [Int]?
+        let wind_gusts_10m: [Double]?   // 恶劣天气预警的大风判据
     }
     struct Daily: Decodable {
         let time: [String]

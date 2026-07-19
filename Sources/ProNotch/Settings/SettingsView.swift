@@ -19,6 +19,7 @@ struct SettingsView: View {
     @EnvironmentObject var chatStore: ChatStore
     @EnvironmentObject var glow: GlowController
     @EnvironmentObject var updates: UpdateChecker
+    @EnvironmentObject var weather: WeatherStore
 
     enum Section: String, CaseIterable, Identifiable {
         case general = "通用"
@@ -143,6 +144,53 @@ struct SettingsView: View {
                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 2)
+
+            Text("恶劣天气预警").font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.white.opacity(0.85)).padding(.top, 4)
+            SettingsCard {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("未来 3 小时预警").font(.system(size: 13))
+                        .foregroundColor(.white.opacity(0.9))
+                    Text("出现大雨、大雪、冻雨、雷暴或 6 级以上大风时，刘海弹出预警大卡，点击可看详情")
+                        .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                CardDivider()
+                HStack {
+                    Text("预览提醒效果").font(.system(size: 13))
+                        .foregroundColor(.white.opacity(0.9))
+                    Spacer()
+                    // 五种恶劣天气逐个可预览（大梁老师要求），走真实弹出链路；
+                    // 「停止」立即收卡并还原天气标，方便反复触发看动画
+                    HStack(spacing: 6) {
+                        ForEach(WeatherStore.previewAlerts, id: \.label) { item in
+                            Button {
+                                weather.preview(item.alert)
+                            } label: {
+                                Text(item.label).font(.system(size: 12))
+                                    .foregroundColor(.white.opacity(0.85))
+                                    .padding(.horizontal, 9).padding(.vertical, 4)
+                                    .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                        .fill(Color.white.opacity(0.12)))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        Button {
+                            weather.dismissAlert()
+                        } label: {
+                            Text("停止").font(.system(size: 12))
+                                .foregroundColor(.white.opacity(0.55))
+                                .padding(.horizontal, 9).padding(.vertical, 4)
+                                .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+            }
         }
     }
 

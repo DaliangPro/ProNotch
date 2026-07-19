@@ -28,7 +28,7 @@ final class NotchViewModel: ObservableObject {
             case .chat: return "bolt"
             case .usage: return "gauge.with.needle"
             case .agent: return "apple.terminal"
-            case .widgets: return "widget.small"
+            case .widgets: return "square.grid.2x2"   // 四宫格（大梁老师从候选 A 选定）
             }
         }
 
@@ -75,6 +75,15 @@ final class NotchViewModel: ObservableObject {
 
     /// 搜索框聚焦期间为 true，暂停鼠标离开触发的自动收起
     var keyboardHold = false
+
+    /// 天气预警横幅显示中（收起态）：横幅要接收点击，临时解除窗口的鼠标穿透。
+    /// 只有不透明像素会截获点击（透明区按像素透传），假刘海黑条被点到无副作用
+    var alertBannerVisible = false {
+        didSet {
+            guard !isExpanded else { return }
+            panel?.ignoresMouseEvents = !alertBannerVisible
+        }
+    }
 
     /// 全屏隐藏钩子：返回 true 时整个刘海窗口隐藏（外接屏假刘海会遮挡全屏内容）
     var shouldHideForFullscreen: (() -> Bool)?
@@ -417,7 +426,8 @@ final class NotchViewModel: ObservableObject {
             }
         }
         // 收起后窗口对鼠标完全隐形，假刘海区域的点击会穿透到下层
-        panel?.ignoresMouseEvents = true
+        // （预警横幅还挂着时除外——它需要接收点击，缩回后由 alertBannerVisible 恢复穿透）
+        panel?.ignoresMouseEvents = !alertBannerVisible
         withAnimation(.spring(response: animationDuration, dampingFraction: 0.9)) {
             isExpanded = false
         }

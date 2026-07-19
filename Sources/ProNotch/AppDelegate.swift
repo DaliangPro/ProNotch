@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var usagePanelLocalMonitor: Any?                      // 点面板外收起（本 App 其他窗口）
     private lazy var showUsageInMenuBar = UserDefaults.standard.bool(forKey: "showUsageInMenuBar")
     private var usageTimer: Timer?
+    /// 恶劣天气预警兜底刷新：两侧功能区都没配天气时也保证数据定期落地供扫描
+    private var weatherTimer: Timer?
     private var usageCancellable: AnyCancellable?
     private var glowController: GlowController?
     private let updateChecker = UpdateChecker()
@@ -103,6 +105,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         // 光晕提醒：常驻一个覆盖整屏的光晕层（默认不显示，等 pronotch:// 信号点亮）
         glowController = GlowController(settings: settingsStore)
+
+        // 恶劣天气预警兜底：即使两侧功能区都没配天气（没了 10 秒心跳），也每 15 分钟
+        // 刷一次数据供扫描。已授权定位才刷，绝不在后台弹授权框；store 内置节流，
+        // 与 slot 心跳撞车也只会实际请求一次
+        weatherTimer = Timer.scheduledTimer(withTimeInterval: 900, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.weatherStore.refreshIfAuthorized() }
+        }
+        weatherStore.refreshIfAuthorized()
 
         // 升级迁移：把已接入的旧 hook 刷新到带「宿主 App 探测」的新格式（终端/IDE 通用）。
         // 仅刷新已接入的，不改变接入与否，避免误开用户已取消的 Agent。
@@ -267,6 +277,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 }
             }
         }
+
     }
 
     // MARK: - 光晕提醒 pronotch:// 入口
@@ -555,7 +566,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc private func openSettings() {
         guard let glowController else { return }
-        settingsWindow.show(settings: settingsStore, chatStore: chatStore, glow: glowController, updates: updateChecker)
+        settingsWindow.show(settings: settingsStore, chatStore: chatStore, glow: glowController,
+                            updates: updateChecker, weather: weatherStore)
     }
 
     /// AI 闪问快捷键：未展开→展开到闪问并聚焦输入框；已展开在别的页→切到闪问；已在闪问→收起

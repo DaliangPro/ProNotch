@@ -80,10 +80,19 @@ struct CollapsedSlotsView: View {
         .frame(width: 21, height: 21)
     }
 
-    /// 天气图标 + 当前气温；未定位/未授权时安静显示占位
+    /// 天气图标 + 当前气温；未定位/未授权时安静显示占位。
+    /// 有恶劣天气预警时联动换脸（大梁老师定）：图标换成来袭的恶劣天气、气温描橙——
+    /// 大卡缩回后刘海仍持续报警，直到事件出窗随扫描自动还原
     private var weatherSlot: some View {
         HStack(spacing: 4) {
-            if let w = weather.now {
+            if let s = weather.upcomingSevere {
+                Image(systemName: s.symbol)
+                    .symbolRenderingMode(.multicolor)
+                    .font(.system(size: 11))
+                Text(weather.now.map { "\(Int($0.temperature.rounded()))°" } ?? "--")
+                    .font(.system(size: 12.5, weight: .semibold, design: .rounded))
+                    .foregroundColor(Color(hex: "#FF9F0A"))
+            } else if let w = weather.now {
                 Image(systemName: w.symbol)
                     .symbolRenderingMode(.multicolor)
                     .font(.system(size: 11))
