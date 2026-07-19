@@ -1,7 +1,7 @@
 import SwiftUI
 
 private extension View {
-    /// 闪问出场：从下方 offset 处升起淡入，输入框比消息区晚半拍（像键盘弹出）
+    /// 闪问出场元素的通用动效：从下方 offset 处升起淡入，靠 delay 错峰（发牌节奏）
     func chatRise(_ played: Bool, offset: CGFloat, delay: Double) -> some View {
         self.offset(y: played ? 0 : offset)
             .opacity(played ? 1 : 0)
@@ -30,7 +30,7 @@ struct ChatView: View {
 
     @FocusState private var inputFocused: Bool
     @State private var pasteMonitor: Any?
-    /// 出场动画开关：对话区和输入框先后从底部升起（对话的重心在底部）
+    /// 出场动画开关：侧栏先起，消息气泡逐条发牌浮入，输入框最后弹（大梁老师选定的方案）
     @State private var entrancePlayed = false
     /// 侧栏宽度可拖调节（大梁老师定），持久化；拖中间分隔线改
     @AppStorage("chatSidebarWidth") private var sidebarWidth = 190.0
@@ -55,12 +55,13 @@ struct ChatView: View {
                         .modifier(ChatPanelFrame())
                         .chatRise(entrancePlayed, offset: 16, delay: 0)
                     sidebarDivider
-                    // 右框：对话窗（消息区 + 输入框）
+                    // 右框：对话窗（消息区 + 输入框）。气泡在 messageList 内逐条发牌，
+                    // 输入框等最后一张牌落定后再弹（像键盘弹出收尾）
                     VStack(alignment: .leading, spacing: 8) {
                         messageList
-                            .chatRise(entrancePlayed, offset: 16, delay: 0)
                         inputBar
-                            .chatRise(entrancePlayed, offset: 24, delay: 0.07)
+                            .chatRise(entrancePlayed, offset: 24,
+                                      delay: dealDelay(store.messages.count) + 0.08)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.horizontal, 10)
@@ -186,17 +187,31 @@ struct ChatView: View {
         }
     }
 
+    /// 只错峰视口附近的最后几条：滚动停在底部，更早的消息在视口外，
+    /// 与侧栏同批直接就位；错峰太多条只会拖长收尾
+    private static let dealWindow = 4
+
+    /// 发牌延迟：chronoIndex 为时序序号（0 = 开场白），窗口内每条隔 0.06s 依次浮入
+    private func dealDelay(_ chronoIndex: Int) -> Double {
+        let total = store.messages.count + 1   // 含开场白
+        let windowStart = max(0, total - Self.dealWindow)
+        return 0.05 + 0.06 * Double(max(0, chronoIndex - windowStart))
+    }
+
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
                 LazyVStack(spacing: 6) {
                     // 每段对话的开场白由系统发出：固定在最顶，先于历史消息
                     MessageBubble(message: Self.greeting, streaming: false, searching: false)
-                    ForEach(store.messages) { message in
+                        .chatRise(entrancePlayed, offset: 14, delay: dealDelay(0))
+                    // enumerated 只为算发牌延迟；id 仍取 message.id，流式更新不重建气泡
+                    ForEach(Array(store.messages.enumerated()), id: \.element.id) { i, message in
                         MessageBubble(message: message,
                                       streaming: store.isStreaming
                                           && message.id == store.messages.last?.id,
                                       searching: store.isSearching)
+                            .chatRise(entrancePlayed, offset: 14, delay: dealDelay(i + 1))
                     }
                     if let error = store.errorText {
                         Text(error)
