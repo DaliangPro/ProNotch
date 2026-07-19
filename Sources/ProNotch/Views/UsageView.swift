@@ -8,11 +8,12 @@ struct UsageView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            let cards = [("Claude Code", BrandIconPaths.claude, store.claude),
-                         ("Codex", BrandIconPaths.openai, store.codex),
-                         ("Grok", BrandIconPaths.grok, store.grok)]
+            // 品牌色图标（大梁老师定）：与收起态额度光晕同一套配色语言
+            let cards = [("Claude Code", BrandIconPaths.claude, Color(hex: "#D97757"), store.claude),
+                         ("Codex", BrandIconPaths.openai, Color.cyan, store.codex),
+                         ("Grok", BrandIconPaths.grok, Color(white: 0.8), store.grok)]
             ForEach(Array(cards.enumerated()), id: \.offset) { i, card in
-                QuotaCard(title: card.0, polys: card.1, quota: card.2,
+                QuotaCard(title: card.0, polys: card.1, iconColor: card.2, quota: card.3,
                           entrancePlayed: entrancePlayed)
                     .offset(y: entrancePlayed ? 0 : 12)
                     .opacity(entrancePlayed ? 1 : 0)
@@ -32,6 +33,7 @@ struct UsageView: View {
 private struct QuotaCard: View {
     let title: String
     let polys: [[CGPoint]]
+    let iconColor: Color
     let quota: ServiceQuota?
     var entrancePlayed = true
 
@@ -39,7 +41,7 @@ private struct QuotaCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 6) {
                 BrandIcon(polys: polys)
-                    .foregroundColor(.white.opacity(0.85))
+                    .foregroundColor(iconColor)
                     .frame(width: 13, height: 13)
                 Text(title).font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
                 if let plan = quota?.plan, !plan.isEmpty {
@@ -65,16 +67,17 @@ private struct QuotaCard: View {
                         WindowRow(label: s.label, window: s, prominent: false,
                                   entrancePlayed: entrancePlayed)
                     }
-                    Spacer(minLength: 12)   // 把 Top 3 压到卡片底部（三卡等高，底部自然对齐）
+                    Spacer(minLength: 12)   // 把 Top 5 压到卡片底部（三卡等高，底部自然对齐）
+                    // 5 条 + 12 号字（大梁老师定：3 条太少、字太小）
                     if !q.topTasks.isEmpty {
-                        VStack(alignment: .leading, spacing: 5) {
+                        VStack(alignment: .leading, spacing: 6) {
                             ForEach(q.topTasks) { task in
                                 HStack(spacing: 6) {
-                                    Text(task.name).font(.system(size: 10.5))
+                                    Text(task.name).font(.system(size: 12))
                                         .foregroundColor(.white.opacity(0.7)).lineLimit(1)
                                     Spacer(minLength: 4)
                                     Text("\(Int(task.percentOfTotal.rounded()))%")
-                                        .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                                        .font(.system(size: 12, weight: .semibold, design: .rounded))
                                         .foregroundColor(.white.opacity(0.85))
                                 }
                             }
