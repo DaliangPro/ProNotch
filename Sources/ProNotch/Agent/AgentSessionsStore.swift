@@ -1,11 +1,8 @@
 import AppKit
 
-/// 一个本机 Agent 会话(Claude Code / Codex)的快照,供刘海「Agent」页做卡片
+/// 一个本机 Agent 会话(Claude Code / Codex / Kimi Code)的快照,供刘海「Agent」页做卡片。
+/// 来源直接用 `AgentKind`(supportsSessions 的家),标签/品牌色都从那份定义取
 struct AgentSession: Identifiable {
-    enum Source {
-        case claude, codex
-        var label: String { self == .claude ? "Claude" : "Codex" }
-    }
     enum State {
         case waiting       // hook 实锤:一轮刚结束、球已回到你手里——唯一的醒目「该你了」来源
         case running       // 文件 2 分钟内在写:确实活着在跑
@@ -16,7 +13,7 @@ struct AgentSession: Identifiable {
         var needsAttention: Bool { self == .waiting }
     }
     let id: String
-    let source: Source
+    let source: AgentKind
     let projectPath: String
     let model: String?
     let lastActivity: Date
@@ -68,6 +65,7 @@ final class AgentSessionsStore: ObservableObject {
         Task.detached(priority: .utility) {
             let raw = (enabled.contains(.claude) ? Self.scanClaude() : [])
                     + (enabled.contains(.codex) ? Self.scanCodex() : [])
+                    + (enabled.contains(.kimi) ? Self.scanKimi() : [])
             await MainActor.run { [weak self] in
                 self?.rawSessions = raw
                 self?.rebuild()
@@ -78,7 +76,7 @@ final class AgentSessionsStore: ObservableObject {
 
     /// hook 实时事件:某会话一轮刚结束(Claude Stop / Codex agent-turn-complete)→ 立刻标「该你了」,
     /// 不等文件扫描那 ~2 分钟。session = Claude 的 session_id 或 Codex 的 thread-id
-    func markTurnEnded(session: String, source: AgentSession.Source, host: String?) {
+    func markTurnEnded(session: String, source: AgentKind, host: String?) {
         guard !session.isEmpty else { return }
         turnEndedAt[session] = Date()
         if let host, !host.isEmpty {
@@ -95,7 +93,7 @@ final class AgentSessionsStore: ObservableObject {
         turnEndedAt = turnEndedAt.filter { key, _ in !(session.id == key || session.id.hasSuffix(key)) }
         rebuild()
         let host = session.hostBundleID
-        let desktop = session.source == .claude ? "com.anthropic.claudefordesktop" : "com.openai.codex"
+        let desktop = session.source.appBundleID   // 无桌面版的家（Kimi）为 nil，只靠 hook 报的宿主
         let ws = NSWorkspace.shared
         // 用 openApplication(activates:true) 前置——macOS Sonoma 起,后台 App(无 Dock 图标)
         // 直接 NSRunningApplication.activate() 常被系统忽略;openApplication 等价「点 Dock 图标」,系统放行。
@@ -132,8 +130,9 @@ final class AgentSessionsStore: ObservableObject {
                                              : $0.lastActivity > $1.lastActivity
         }
         // 名额按来源各算：全局共用名额时，重度使用一家（整天 Claude）会把另一家全部挤出列表
-        sessions = Array(sorted.filter { $0.source == .claude }.prefix(Self.maxCount))
-                 + Array(sorted.filter { $0.source == .codex }.prefix(Self.maxCount))
+        sessions = AgentKind.allCases.flatMap { kind in
+            Array(sorted.filter { $0.source == kind }.prefix(Self.maxCount))
+        }
     }
 
     /// 匹配 hook 事件:Claude 用 session_id 精确相等;Codex 文件名以 thread-id 结尾
@@ -293,6 +292,72 @@ final class AgentSessionsStore: ObservableObject {
                             lastMessage: summarize(lastMsg),
                             title: threadNames[String(file.deletingPathExtension().lastPathComponent.suffix(36))],
                             state: state(mtime: mtime, inTurn: started && !completed))
+    }
+
+    // MARK: - Kimi Code(~/.kimi-code/sessions/<workspace>/session_<id>/)
+
+    /// 每个会话一个目录:state.json(标题/更新时间) + agents/main/wire.jsonl(事件流)。
+    /// 全局索引 session_index.jsonl 给出 sessionId → sessionDir → workDir,不必递归枚举。
+    /// 轮边界(实测 2026-07):turn.prompt=轮开始;usageScope=="turn" 的 usage.record
+    /// 或 turn.cancel=轮收尾——尾部倒扫先遇到谁定 inTurn
+    private nonisolated static func scanKimi() -> [AgentSession] {
+        let fm = FileManager.default
+        let home = fm.homeDirectoryForCurrentUser
+        let index = home.appendingPathComponent(".kimi-code/session_index.jsonl")
+        guard let text = try? String(contentsOf: index, encoding: .utf8) else { return [] }
+        let cutoff = Date().addingTimeInterval(-recentWindow)
+        var out: [AgentSession] = []
+        for raw in text.split(separator: "\n") {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+                  let sid = obj["sessionId"] as? String,
+                  let dir = obj["sessionDir"] as? String,
+                  let workDir = obj["workDir"] as? String else { continue }
+            let wire = URL(fileURLWithPath: dir).appendingPathComponent("agents/main/wire.jsonl")
+            guard let mtime = (try? wire.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+                  mtime > cutoff else { continue }
+            if let s = parseKimi(sessionId: sid, dir: dir, workDir: workDir, wire: wire, mtime: mtime) {
+                out.append(s)
+            }
+        }
+        return out
+    }
+
+    private nonisolated static func parseKimi(sessionId: String, dir: String, workDir: String,
+                                              wire: URL, mtime: Date) -> AgentSession? {
+        // 标题从 state.json 拿(Kimi 自动命名,含中文标题);文件仅几百字节
+        var title: String?
+        let stateURL = URL(fileURLWithPath: dir).appendingPathComponent("state.json")
+        if let data = try? Data(contentsOf: stateURL),
+           let st = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            title = st["title"] as? String
+        }
+        // 尾部倒扫定轮态与模型;wire.jsonl 事件行普遍较短,64KB 覆盖充足
+        var inTurn = false, model: String?, lastPrompt: String?
+        if let tail = readTail(wire, bytes: 64 * 1024) {
+            var settled = false
+            for raw in tail.split(separator: "\n").reversed() {
+                guard let obj = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+                      let type = obj["type"] as? String else { continue }
+                if !settled {
+                    if type == "turn.prompt" { inTurn = true; settled = true }
+                    else if type == "turn.cancel" { settled = true }
+                    else if type == "usage.record", obj["usageScope"] as? String == "turn" { settled = true }
+                }
+                if model == nil, type == "usage.record" { model = obj["model"] as? String }
+                if lastPrompt == nil, type == "turn.prompt",
+                   let input = obj["input"] as? [[String: Any]] {
+                    // 用户最近的提问作卡片摘要(Kimi 的 assistant 文本嵌在 loop 事件深处,不值得深挖)
+                    lastPrompt = input.first(where: { $0["type"] as? String == "text" })?["text"] as? String
+                }
+                if settled, model != nil, lastPrompt != nil { break }
+            }
+        }
+        return AgentSession(id: sessionId,
+                            source: .kimi, projectPath: workDir, model: model,
+                            lastActivity: mtime,
+                            lastMessage: summarize(lastPrompt),
+                            title: titleize(title),
+                            state: state(mtime: mtime, inTurn: inTurn))
     }
 
     // MARK: - 共用

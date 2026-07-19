@@ -31,9 +31,11 @@ struct SettingsView: View {
     }
 
     @State private var selected: Section = .general
-    @State private var claudeConnected = false
-    @State private var codexConnected = false
+    @State private var glowConnected: [AgentKind: Bool] = [:]   // 各家完成钩子接入态（supportsGlow 的家）
     @State private var probeResults: [AgentProbeResult] = []   // 本地 Agent 检测结果（打开 Agent 页 / 点扫描时刷新）
+    @State private var discoveredTools: [DiscoveredTool] = []  // 认识但暂无监控能力的工具（仅展示）
+    @State private var zhipuKeyDraft = ""                      // 智谱 API Key 草稿（展开输入时用）
+    @State private var zhipuKeyEditing = false                 // 智谱 Key 输入区展开中
     @State private var justSaved = false
     @State private var translateKey = ""   // 翻译独立接口的 API key 草稿（惰性从钥匙串载入）
     @State private var packRequest: [String]?          // [源语言码, 目标语言码]：置值触发系统语言包下载确认
@@ -64,8 +66,7 @@ struct SettingsView: View {
         .frame(width: 660, height: 540)
         .preferredColorScheme(.dark)
         .onAppear {
-            claudeConnected = GlowHookInstaller.isInstalled(.claude)
-            codexConnected = GlowHookInstaller.isInstalled(.codex)
+            refreshGlowConnected()
             applyPendingSection()
         }
         .onChange(of: settings.pendingSection) { _, _ in applyPendingSection() }
@@ -406,6 +407,7 @@ struct SettingsView: View {
                 Spacer()
                 Button {
                     probeResults = AgentProbe.detect()
+                    discoveredTools = AgentProbe.detectTools()
                 } label: {
                     Text("重新扫描")
                         .font(.system(size: 12)).foregroundColor(.white.opacity(0.9))
@@ -419,9 +421,22 @@ struct SettingsView: View {
                 ForEach(Array(probeResults.enumerated()), id: \.element.id) { i, r in
                     if i > 0 { CardDivider() }
                     agentRow(r)
+                    if r.kind == .zhipu, zhipuKeyEditing { zhipuKeyEditor }
                 }
             }
-            noteText("每家一个总开关：关闭即不再读取它的额度、会话与任何本地文件，额度页 / 菜单栏 / 监控台同步隐藏。", color: .white.opacity(0.4))
+            noteText("每家一个总开关：关闭即不再读取它的额度、会话与任何本地文件，额度页 / 菜单栏 / 监控台同步隐藏。各家能力不同——Grok 仅额度，智谱是纯额度服务（GLM Coding Plan 挂在其他工具上用，配 API Key 即可看用量），其余三家额度 / 监控台 / 完成提醒齐全。", color: .white.opacity(0.4))
+
+            // 认识但暂无监控能力的工具：只报告「已发现」，不给开关、不假装能监控
+            if !discoveredTools.isEmpty {
+                sectionLabel("其他已发现")
+                SettingsCard {
+                    ForEach(Array(discoveredTools.enumerated()), id: \.element.id) { i, t in
+                        if i > 0 { CardDivider() }
+                        toolRow(t)
+                    }
+                }
+                noteText("这些 AI 工具已检测到，但暂无可接入的额度或会话数据，后续版本按需支持。", color: .white.opacity(0.4))
+            }
 
             sectionLabel("光晕提醒")
             // 总开关：与刘海面板的「Agent 提醒」按钮联动（同一个 glowEnabled）
@@ -439,12 +454,13 @@ struct SettingsView: View {
                 .padding(.horizontal, 14).padding(.vertical, 11)
             }
 
-            // 完成时提醒：勾选哪些 Agent（并排）；总开关关闭时整块禁用、灰显
+            // 完成时提醒：勾选哪些 Agent（并排，随检测到的支持钩子的家动态出现）；总开关关闭时整块禁用、灰显
             sectionLabel("完成时提醒")
             SettingsCard {
                 HStack(spacing: 0) {
-                    sourceRow("Claude Code", isOn: $claudeConnected, source: .claude)
-                    sourceRow("Codex", isOn: $codexConnected, source: .codex)
+                    ForEach(glowKinds) { kind in
+                        sourceRow(kind.displayName, source: kind)
+                    }
                 }
             }
             .disabled(!settings.glowEnabled)
@@ -452,10 +468,10 @@ struct SettingsView: View {
 
             sectionLabel("外观")
             SettingsCard {
-                colorRow("Claude Code 颜色", binding: claudeColorBinding, source: .claude)
-                CardDivider()
-                colorRow("Codex 颜色", binding: codexColorBinding, source: .codex)
-                CardDivider()
+                ForEach(glowKinds) { kind in
+                    colorRow("\(kind.displayName) 颜色", binding: glowColorBinding(kind), source: kind)
+                    CardDivider()
+                }
                 glowSliderRow("呼吸周期", value: $settings.glowBreathPeriod, range: 1.5...6,
                               display: String(format: "%.1f 秒", settings.glowBreathPeriod))
                 CardDivider()
@@ -467,16 +483,24 @@ struct SettingsView: View {
             }
         }
         // 总开关变化后（含面板联动触发）刷新勾选，反映 didSet 里的接入/移除结果
-        .onChange(of: settings.glowEnabled) { _, _ in
-            claudeConnected = GlowHookInstaller.isInstalled(.claude)
-            codexConnected = GlowHookInstaller.isInstalled(.codex)
-        }
+        .onChange(of: settings.glowEnabled) { _, _ in refreshGlowConnected() }
         // 每次进本页都重新检测（stat 级零成本），列表始终反映本机现状
-        .onAppear { probeResults = AgentProbe.detect() }
+        .onAppear {
+            probeResults = AgentProbe.detect()
+            discoveredTools = AgentProbe.detectTools()
+        }
+    }
+
+    /// 支持完成钩子的家（光晕勾选行 / 颜色行按这个动态渲染）
+    private var glowKinds: [AgentKind] { AgentKind.allCases.filter(\.supportsGlow) }
+
+    private func refreshGlowConnected() {
+        for kind in glowKinds { glowConnected[kind] = GlowHookInstaller.isInstalled(kind) }
     }
 
     /// 本地 Agent 一行：品牌图标 + 名称 + 检测状态 + 总开关。
-    /// 未发现的家灰显但开关仍可用（检测只认特征目录，留手动兜底的余地）
+    /// 未发现的家灰显但开关仍可用（检测只认特征目录，留手动兜底的余地）；
+    /// 智谱是服务型：未配置时开关换成「添加 Key」按钮
     private func agentRow(_ r: AgentProbeResult) -> some View {
         HStack(spacing: 10) {
             BrandIcon(polys: r.kind.polys)
@@ -487,10 +511,83 @@ struct SettingsView: View {
                 Text(agentStatus(r)).font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
             }
             Spacer()
-            ThemedSwitch(isOn: agentEnabledBinding(r.kind))
+            if r.kind == .zhipu {
+                Button {
+                    zhipuKeyDraft = settings.zhipuAPIKey()
+                    zhipuKeyEditing.toggle()
+                } label: {
+                    Text(r.installed ? "更换 Key" : "添加 Key")
+                        .font(.system(size: 12)).foregroundColor(.white.opacity(0.9))
+                        .padding(.horizontal, 12).padding(.vertical, 4)
+                        .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(Color.white.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+                if r.installed { ThemedSwitch(isOn: agentEnabledBinding(r.kind)) }
+            } else {
+                ThemedSwitch(isOn: agentEnabledBinding(r.kind))
+            }
         }
         .padding(.horizontal, 14).padding(.vertical, 9)
         .opacity(r.installed ? 1 : 0.55)
+        .help(capabilityHelp(r.kind))
+    }
+
+    /// 智谱 API Key 输入区（智谱行下展开）：保存进钥匙串并默认勾选；清空即退出监控
+    private var zhipuKeyEditor: some View {
+        HStack(spacing: 8) {
+            SecureField("粘贴 bigmodel.cn 的 API Key", text: $zhipuKeyDraft)
+                .textFieldStyle(.plain).font(.system(size: 12)).foregroundColor(.white)
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Color.white.opacity(0.08)))
+            Button {
+                settings.setZhipuAPIKey(zhipuKeyDraft)
+                zhipuKeyEditing = false
+                zhipuKeyDraft = ""
+                probeResults = AgentProbe.detect()   // 「已连接」状态即时反映
+            } label: {
+                Text("保存")
+                    .font(.system(size: 12, weight: .semibold)).foregroundColor(.cyan)
+                    .padding(.horizontal, 12).padding(.vertical, 5)
+                    .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Color.cyan.opacity(0.15)))
+            }
+            .buttonStyle(.plain)
+            Button {
+                zhipuKeyEditing = false
+                zhipuKeyDraft = ""
+            } label: {
+                Text("取消").font(.system(size: 12)).foregroundColor(.white.opacity(0.6))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 14).padding(.bottom, 10)
+    }
+
+    /// 零能力工具一行：字母徽记 + 名称 + 目录，无开关
+    private func toolRow(_ t: DiscoveredTool) -> some View {
+        HStack(spacing: 10) {
+            Text(t.letter)
+                .font(.system(size: 10, weight: .bold, design: .rounded))
+                .foregroundColor(.white.opacity(0.7))
+                .frame(width: 15, height: 15)
+                .background(Circle().fill(Color.white.opacity(0.12)))
+            Text(t.name).font(.system(size: 13)).foregroundColor(.white.opacity(0.75))
+            Text(t.dirLabel).font(.system(size: 11)).foregroundColor(.white.opacity(0.3))
+            Spacer()
+            Text("已发现 · 暂不支持监控")
+                .font(.system(size: 11)).foregroundColor(.white.opacity(0.35))
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
+    }
+
+    private func capabilityHelp(_ kind: AgentKind) -> String {
+        var caps: [String] = []
+        if kind.supportsQuota { caps.append("额度") }
+        if kind.supportsSessions { caps.append("监控台") }
+        if kind.supportsGlow { caps.append("完成提醒") }
+        return "勾选后提供：" + caps.joined(separator: " · ")
     }
 
     private func agentEnabledBinding(_ kind: AgentKind) -> Binding<Bool> {
@@ -502,7 +599,14 @@ struct SettingsView: View {
     }
 
     private func agentStatus(_ r: AgentProbeResult) -> String {
-        guard r.installed else { return "未发现（~/.\(r.kind.rawValue) 不存在）" }
+        // 智谱是服务型（无本地 CLI）：状态说的是 Key 配置，不是目录检测
+        if r.kind == .zhipu {
+            return r.installed ? "已连接 bigmodel.cn" : "未配置 API Key（GLM Coding Plan 用量）"
+        }
+        guard r.installed else {
+            let dir = r.kind.homeDir?.lastPathComponent ?? ".\(r.kind.rawValue)"
+            return "未发现（~/\(dir) 不存在）"
+        }
         guard let d = r.lastActive else { return "已安装" }
         let s = Int(Date().timeIntervalSince(d))
         if s < 3600 { return "已安装 · 刚刚活跃" }
@@ -511,19 +615,21 @@ struct SettingsView: View {
     }
 
     /// 提醒来源勾选（并排、无副文字）：勾上 = 接入完成钩子，取消 = 移出；
-    /// 取消后两个都没勾，总开关自动关。
-    private func sourceRow(_ title: String, isOn: Binding<Bool>, source: GlowSource) -> some View {
-        Button {
-            let target = !isOn.wrappedValue
-            // 接入/卸载失败（如未安装该 App）则回滚，不误导成「已接入」
-            isOn.wrappedValue = GlowHookInstaller.setInstalled(source, target) ? target : !target
-            // 勾选变化后总开关跟随「还有没有勾选」：两个都没勾就自动关
-            settings.glowEnabled = claudeConnected || codexConnected
+    /// 全部取消后总开关自动关。
+    private func sourceRow(_ title: String, source: AgentKind) -> some View {
+        let isOn = glowConnected[source] ?? false
+        return Button {
+            let target = !isOn
+            // 接入/卸载失败（如配置文件不可写）则保持原状，不误导成「已接入」
+            glowConnected[source] = GlowHookInstaller.setInstalled(source, target) ? target : isOn
+            // 勾选变化后总开关跟随「还有没有勾选」：全没勾就自动关
+            let any = glowConnected.values.contains(true)
+            if settings.glowEnabled != any { settings.glowEnabled = any }
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: isOn.wrappedValue ? "checkmark.square.fill" : "square")
+                Image(systemName: isOn ? "checkmark.square.fill" : "square")
                     .font(.system(size: 15))
-                    .foregroundColor(.white.opacity(isOn.wrappedValue ? 0.9 : 0.35))
+                    .foregroundColor(.white.opacity(isOn ? 0.9 : 0.35))
                 Text(title).font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -534,7 +640,7 @@ struct SettingsView: View {
     }
 
     /// 颜色行：取色器 + 文字「预览」按钮（点亮该色边调边看，再点熄灭）
-    private func colorRow(_ title: String, binding: Binding<Color>, source: GlowSource) -> some View {
+    private func colorRow(_ title: String, binding: Binding<Color>, source: AgentKind) -> some View {
         HStack(spacing: 10) {
             Text(title).font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
             Spacer()
@@ -544,7 +650,7 @@ struct SettingsView: View {
         .padding(.horizontal, 14).padding(.vertical, 9)
     }
 
-    private func previewButton(_ source: GlowSource) -> some View {
+    private func previewButton(_ source: AgentKind) -> some View {
         let on = glow.previewingSource == source
         return Button { glow.togglePreview(source) } label: {
             Text(on ? "停止" : "预览")
@@ -1001,13 +1107,9 @@ struct SettingsView: View {
         .padding(.horizontal, 14).padding(.vertical, 8)
     }
 
-    private var claudeColorBinding: Binding<Color> {
-        Binding(get: { Color(hex: settings.glowClaudeColorHex) },
-                set: { settings.glowClaudeColorHex = $0.toHex() })
-    }
-    private var codexColorBinding: Binding<Color> {
-        Binding(get: { Color(hex: settings.glowCodexColorHex) },
-                set: { settings.glowCodexColorHex = $0.toHex() })
+    private func glowColorBinding(_ kind: AgentKind) -> Binding<Color> {
+        Binding(get: { Color(hex: settings.glowColorHex(for: kind)) },
+                set: { settings.setGlowColorHex($0.toHex(), for: kind) })
     }
 
     private var connectivityColor: Color {

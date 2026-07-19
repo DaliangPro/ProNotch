@@ -299,15 +299,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // host 偶发抓空（Claudian 的 claude 有时没挂在 Obsidian 进程链下）→ 复用该会话之前抓对过的宿主，
         // 不回退桌面版；否则光晕的 activeHosts 记成桌面版，切回 Obsidian 匹配不上、熄不掉
         let effectiveHost = (host?.isEmpty == false) ? host : agentSessionsStore?.knownHost(for: session)
-        switch source {
-        case "claude":
-            glowController?.notifyCompletion(.claude, host: effectiveHost)
-            agentSessionsStore?.markTurnEnded(session: session, source: .claude, host: host)
-        case "codex":
-            glowController?.notifyCompletion(.codex, host: effectiveHost)
-            agentSessionsStore?.markTurnEnded(session: session, source: .codex, host: host)
-        default: break
-        }
+        // source 参数即 AgentKind 的 rawValue（claude/codex/kimi），支持光晕的家统一走这一条路
+        guard let kind = source.flatMap(AgentKind.init(rawValue:)), kind.supportsGlow else { return }
+        glowController?.notifyCompletion(kind, host: effectiveHost)
+        agentSessionsStore?.markTurnEnded(session: session, source: kind, host: host)
     }
 
     /// 调试用：走真实路径接入 / 卸载 Codex 的 notify 转发器，结果写 /tmp 供核对
@@ -849,8 +844,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .claude: NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1),   // Claude 橙
             .codex: .systemCyan,
             .grok: .systemGray,
+            .kimi: NSColor(srgbRed: 0.929, green: 0.929, blue: 0.929, alpha: 1),     // 月之暗面白
+            .zhipu: NSColor(srgbRed: 0.22, green: 0.35, blue: 1.0, alpha: 1),        // 智谱蓝
         ]
-        let items = AgentKind.allCases.filter { settingsStore.enabledAgents.contains($0) }
+        let items = AgentKind.allCases.filter { $0.supportsQuota && settingsStore.enabledAgents.contains($0) }
         let title = NSMutableAttributedString()
         let base: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)]
         for kind in items {

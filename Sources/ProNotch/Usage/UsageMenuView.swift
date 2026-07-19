@@ -14,7 +14,7 @@ struct UsageMenuView: View {
     private struct Svc { let name: String; let short: String; let polys: [[CGPoint]]; let tint: Color; let quota: ServiceQuota? }
     /// 只列勾选的家（设置 → Agent 每家总开关），与额度页/菜单栏标题同一套过滤
     private var services: [Svc] {
-        AgentKind.allCases.filter { settings.enabledAgents.contains($0) }.map {
+        AgentKind.allCases.filter { $0.supportsQuota && settings.enabledAgents.contains($0) }.map {
             Svc(name: $0.displayName, short: $0.shortName, polys: $0.polys,
                 tint: $0.tint, quota: store.quota(for: $0))
         }
@@ -100,8 +100,10 @@ struct UsageMenuView: View {
                 HStack(spacing: 8) {
                     Text(s.name.replacingOccurrences(of: " Code", with: ""))
                         .font(.system(size: 18, weight: .semibold))
+                        .lineLimit(1)
                     if let plan = s.quota?.plan, !plan.isEmpty {
                         Text(plan).font(.system(size: 10, weight: .semibold)).foregroundColor(s.tint)
+                            .lineLimit(1).fixedSize()
                             .padding(.horizontal, 6).padding(.vertical, 2)
                             .background(Capsule().fill(s.tint.opacity(0.15)))
                     }

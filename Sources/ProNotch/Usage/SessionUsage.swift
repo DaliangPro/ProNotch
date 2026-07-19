@@ -277,7 +277,7 @@ enum SessionUsage {
 
     /// 排序取前 count（默认 5，大梁老师定：3 条太少），
     /// 占比 = 该任务 token ÷ 该服务近 7 天总 token × 周额度已用%
-    static func top(_ items: [Scanned], count: Int = 5, weekUsedPercent: Double?, source: AgentSession.Source) -> [TaskUsage] {
+    static func top(_ items: [Scanned], count: Int = 5, weekUsedPercent: Double?, source: AgentKind) -> [TaskUsage] {
         let total = items.reduce(0) { $0 + $1.tokens }
         guard total > 0 else { return [] }
         let used = weekUsedPercent ?? 0
@@ -289,6 +289,8 @@ enum SessionUsage {
                 name = item.claudeTitle ?? titleize(firstUserPrompt(item.url)) ?? "Claude 会话"
             case .codex:
                 name = threadNames[String(item.id.suffix(36))] ?? codexProjectName(item.url) ?? "Codex 会话"
+            default:
+                name = "\(source.shortName) 会话"   // 目前只有 Claude/Codex 参与耗额榜
             }
             return TaskUsage(id: item.id, name: name, tokens: item.tokens,
                              percentOfTotal: Double(item.tokens) / Double(total) * used)

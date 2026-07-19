@@ -36,6 +36,8 @@ final class UsageStore: ObservableObject {
     @Published private(set) var codex: ServiceQuota?
     @Published private(set) var claude: ServiceQuota?
     @Published private(set) var grok: ServiceQuota?
+    @Published private(set) var zhipu: ServiceQuota?
+    @Published private(set) var kimi: ServiceQuota?
     @Published private(set) var sessionTokens: [String: Int] = [:]   // sessionId → 有效 token（Agent 会话页用）
     @Published private(set) var refreshing = false
     private var lastRefresh: Date = .distantPast
@@ -49,12 +51,14 @@ final class UsageStore: ObservableObject {
         }
     }
 
-    /// 按 AgentKind 取额度快照（UI 层按勾选遍历渲染用）
+    /// 按 AgentKind 取额度快照（UI 层按勾选遍历渲染用）；无额度能力的家恒 nil
     func quota(for kind: AgentKind) -> ServiceQuota? {
         switch kind {
         case .claude: return claude
         case .codex: return codex
         case .grok: return grok
+        case .zhipu: return zhipu
+        case .kimi: return kimi
         }
     }
 
@@ -64,6 +68,8 @@ final class UsageStore: ObservableObject {
         if !enabled.contains(.claude) { claude = nil }
         if !enabled.contains(.codex) { codex = nil }
         if !enabled.contains(.grok) { grok = nil }
+        if !enabled.contains(.zhipu) { zhipu = nil }
+        if !enabled.contains(.kimi) { kimi = nil }
         SessionUsage.clearCaches(keeping: enabled)
         MemoryRelief.relieveSoon()
         refresh(force: true)
@@ -81,6 +87,8 @@ final class UsageStore: ObservableObject {
             let cx = enabled.contains(.codex) ? await CodexQuotaLoader.load() : nil
             let cl = enabled.contains(.claude) ? await ClaudeQuotaLoader.load() : nil
             let gr = enabled.contains(.grok) ? await GrokQuotaLoader.load() : nil
+            let zp = enabled.contains(.zhipu) ? await ZhipuQuotaLoader.load() : nil
+            let km = enabled.contains(.kimi) ? await KimiQuotaLoader.load() : nil
             // 每会话 token 统计（与额度数据源解耦）；Top 5 占比锚定周额度已用%（无周窗则退 5 小时窗）
             let claudeSessions = enabled.contains(.claude) ? SessionUsage.scanClaude() : []
             let codexSessions = enabled.contains(.codex) ? SessionUsage.scanCodex() : []
@@ -95,6 +103,8 @@ final class UsageStore: ObservableObject {
                 self?.codex = codexQuota
                 self?.claude = claudeQuota
                 self?.grok = gr
+                self?.zhipu = zp
+                self?.kimi = km
                 self?.sessionTokens = tokens
                 self?.refreshing = false
                 // 扫描是全 App 最大的瞬时分配源（transcript 全库 GB 级），
@@ -169,6 +179,198 @@ enum GrokQuotaLoader {
         } else if let a = obj as? [Any] {
             for v in a { if let r = firstString(key: key, in: v) { return r } }
         }
+        return nil
+    }
+}
+
+// MARK: - 智谱 GLM Coding Plan：官方额度接口（服务型，API Key 用户在设置里配置）
+
+enum ZhipuQuotaLoader {
+    /// GLM Coding Plan 的用量接口（国内版；社区实证 cc-switch #1588）：
+    /// `GET open.bigmodel.cn/api/monitor/usage/quota/limit`，Authorization 直接带 Key。
+    /// 返回 data.limits[]（5 小时窗 + 周窗的 percentage/remaining）+ data.level（套餐档位）。
+    /// 将来接国际版只需换 host 为 api.z.ai。
+    static let endpoint = "https://open.bigmodel.cn/api/monitor/usage/quota/limit"
+
+    static func load() async -> ServiceQuota {
+        let key = KeychainStore.read("zhipuAPIKey") ?? ""
+        guard !key.isEmpty else {
+            return ServiceQuota(error: "未配置智谱 API Key，在设置 → Agent 里添加")
+        }
+        guard let url = URL(string: endpoint) else { return ServiceQuota(error: "接口地址异常") }
+        // 认证头两种写法都试：裸 Key（社区实证）优先，401/403 再试 Bearer
+        for auth in [key, "Bearer \(key)"] {
+            var req = URLRequest(url: url)
+            req.timeoutInterval = 10
+            req.setValue(auth, forHTTPHeaderField: "Authorization")
+            req.setValue("application/json", forHTTPHeaderField: "Accept")
+            guard let (data, resp) = try? await URLSession.shared.data(for: req),
+                  let code = (resp as? HTTPURLResponse)?.statusCode else { continue }
+            if code == 401 || code == 403 { continue }
+            guard code == 200,
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return ServiceQuota(error: "智谱接口返回异常（HTTP \(code)）")
+            }
+            return parse(obj) ?? ServiceQuota(error: "智谱返回了无法识别的数据结构")
+        }
+        return ServiceQuota(error: "智谱 API Key 无效或无权限，请在设置里更新")
+    }
+
+    /// 解析响应（纯函数，可测）：limits[] 里 TOKENS_LIMIT 型按窗口时长归到 5 小时/周
+    static func parse(_ obj: [String: Any]) -> ServiceQuota? {
+        guard let data = obj["data"] as? [String: Any],
+              let limits = data["limits"] as? [[String: Any]] else { return nil }
+        var q = ServiceQuota()
+        if let level = data["level"] as? String, !level.isEmpty {
+            q.plan = level.prefix(1).uppercased() + level.dropFirst()   // "pro" → "Pro"
+        }
+        q.dataAt = Date()
+        var windows: [QuotaWindow] = []
+        for lim in limits where (lim["type"] as? String)?.contains("TOKENS") == true {
+            let pct = (lim["percentage"] as? NSNumber)?.doubleValue
+            // 窗口时长字段名未完全实证：常见候选逐个试，都没有则按出现顺序 5 小时 → 周
+            let seconds = ["duration", "windowSeconds", "window_seconds", "refreshInterval"]
+                .compactMap { (lim[$0] as? NSNumber)?.intValue }.first
+            let resets = ["nextResetTime", "resetTime", "next_reset_time"]
+                .compactMap { lim[$0] as? NSNumber }.first
+                .map { Date(timeIntervalSince1970: $0.doubleValue / ($0.doubleValue > 1e12 ? 1000 : 1)) }
+            let minutes = seconds.map { $0 / 60 } ?? (windows.isEmpty ? 300 : 10080)
+            windows.append(QuotaWindow(usedPercent: pct, usedTokens: nil, resetsAt: resets,
+                                       windowMinutes: minutes, isEstimate: false))
+        }
+        guard !windows.isEmpty else { return nil }
+        windows.sort { $0.windowMinutes < $1.windowMinutes }
+        q.primary = windows.first
+        q.secondary = windows.count > 1 ? windows.last : nil
+        return q
+    }
+}
+
+// MARK: - Kimi Code：CLI 内置 managed-usage 同款接口（零配置，凭据就在本地）
+
+enum KimiQuotaLoader {
+    /// 从 CLI 二进制逆向出的官方链路（packages/oauth/src/managed-usage.ts，未暴露成命令）：
+    /// 1. `~/.kimi-code/credentials/kimi-code.json` 的 refresh_token 换临时 access_token
+    ///    （POST auth.kimi.com/api/oauth/token）。服务端轮换发新但不废旧——CLI 自己 18 天不写回
+    ///    照样能刷（实证）；我们拿到的新 token 只在内存用完即弃，绝不写盘，不影响 CLI 登录。
+    /// 2. GET api.kimi.com/coding/v1/usages 带 Bearer → usage（周窗）+ limits[]（5 小时窗）。
+    static let tokenEndpoint = "https://auth.kimi.com/api/oauth/token"
+    static let usageEndpoint = "https://api.kimi.com/coding/v1/usages"
+    static let clientID = "17e5f671-d194-4dfb-9706-5516cb48c098"   // CLI 官方 device-code flow client
+
+    static func load() async -> ServiceQuota {
+        let cred = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".kimi-code/credentials/kimi-code.json")
+        guard let data = try? Data(contentsOf: cred),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let refreshToken = obj["refresh_token"] as? String, !refreshToken.isEmpty else {
+            return ServiceQuota(error: "未登录 Kimi CLI，在终端运行 kimi login")
+        }
+        var comps = URLComponents()
+        comps.queryItems = [
+            .init(name: "client_id", value: clientID),
+            .init(name: "grant_type", value: "refresh_token"),
+            .init(name: "refresh_token", value: refreshToken),
+        ]
+        guard let url = URL(string: tokenEndpoint), let body = comps.percentEncodedQuery else {
+            return ServiceQuota(error: "接口地址异常")
+        }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 10
+        req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        req.httpBody = Data(body.utf8)
+        guard let (tokData, tokResp) = try? await URLSession.shared.data(for: req),
+              let tokCode = (tokResp as? HTTPURLResponse)?.statusCode else {
+            return ServiceQuota(error: "无法连接 Kimi 认证服务")
+        }
+        guard tokCode == 200,
+              let tokObj = try? JSONSerialization.jsonObject(with: tokData) as? [String: Any],
+              let access = tokObj["access_token"] as? String, !access.isEmpty else {
+            return ServiceQuota(error: "Kimi 登录已过期，在终端重新 kimi login")
+        }
+        guard let uurl = URL(string: usageEndpoint) else { return ServiceQuota(error: "接口地址异常") }
+        var ureq = URLRequest(url: uurl)
+        ureq.timeoutInterval = 10
+        ureq.setValue("Bearer \(access)", forHTTPHeaderField: "Authorization")
+        ureq.setValue("application/json", forHTTPHeaderField: "Accept")
+        guard let (udata, uresp) = try? await URLSession.shared.data(for: ureq),
+              let ucode = (uresp as? HTTPURLResponse)?.statusCode else {
+            return ServiceQuota(error: "无法连接 Kimi 用量服务")
+        }
+        guard ucode == 200,
+              let uobj = try? JSONSerialization.jsonObject(with: udata) as? [String: Any] else {
+            return ServiceQuota(error: "Kimi 接口返回异常（HTTP \(ucode)）")
+        }
+        return parse(uobj) ?? ServiceQuota(error: "Kimi 返回了无法识别的数据结构")
+    }
+
+    /// 解析响应（纯函数，可测）。实测结构（2026-07）：
+    /// `usage{limit,used,remaining,resetTime}` 是周窗总量，`limits[].window{duration,timeUnit}+detail`
+    /// 是滚动窗（现为 300 分钟）；数值全是字符串（"100"），resetTime 带 6 位微秒
+    static func parse(_ obj: [String: Any]) -> ServiceQuota? {
+        var windows: [QuotaWindow] = []
+        if let w = window(from: obj["usage"] as? [String: Any], minutes: 10080) { windows.append(w) }
+        for lim in obj["limits"] as? [[String: Any]] ?? [] {
+            let minutes = windowMinutes(lim["window"] as? [String: Any]) ?? 300
+            if let w = window(from: (lim["detail"] as? [String: Any]) ?? lim, minutes: minutes) {
+                windows.append(w)
+            }
+        }
+        guard !windows.isEmpty else { return nil }
+        var q = ServiceQuota()
+        q.dataAt = Date()
+        if let user = obj["user"] as? [String: Any],
+           let member = user["membership"] as? [String: Any],
+           let level = member["level"] as? String, !level.isEmpty {
+            q.plan = planName(level)
+        }
+        windows.sort { $0.windowMinutes < $1.windowMinutes }
+        q.primary = windows.first
+        q.secondary = windows.count > 1 ? windows.last : nil
+        return q
+    }
+
+    /// 档位枚举 → 官方套餐名（kimi.com 四档 Explorer / Moderato / Allegretto / Allegro）。
+    /// 官方没给对照表，实证一条记一条：INTERMEDIATE = Allegretto（大梁老师账号核实，2026-07）；
+    /// 没见过的枚举值按首字母大写原样露出，不猜
+    private static func planName(_ level: String) -> String {
+        let raw = level.replacingOccurrences(of: "LEVEL_", with: "")
+        if raw == "INTERMEDIATE" { return "Allegretto" }
+        return raw.prefix(1).uppercased() + raw.dropFirst().lowercased()
+    }
+
+    /// 一个窗口：limit + used（缺则 limit−remaining 补出）；limit 非正视为无效
+    private static func window(from d: [String: Any]?, minutes: Int) -> QuotaWindow? {
+        guard let d, let limit = intValue(d["limit"]), limit > 0 else { return nil }
+        let used = intValue(d["used"]) ?? intValue(d["remaining"]).map { limit - $0 }
+        guard let u = used else { return nil }
+        let resets = (d["resetTime"] as? String).flatMap { parseResetTime($0) }
+        return QuotaWindow(usedPercent: Double(u) / Double(limit) * 100, usedTokens: nil,
+                           resetsAt: resets, windowMinutes: minutes, isEstimate: false)
+    }
+
+    private static func windowMinutes(_ w: [String: Any]?) -> Int? {
+        guard let w, let dur = intValue(w["duration"]) else { return nil }
+        let unit = w["timeUnit"] as? String ?? ""
+        if unit.contains("MINUTE") { return dur }
+        if unit.contains("HOUR") { return dur * 60 }
+        if unit.contains("DAY") { return dur * 1440 }
+        return max(1, dur / 60)   // 无单位按秒兜底
+    }
+
+    /// "2026-07-23T15:30:47.920838Z"：ISO8601DateFormatter 只认 3 位小数，微秒截断（CLI 同款处理）
+    static func parseResetTime(_ s: String) -> Date? {
+        if let d = ISO8601Flex.parse(s) { return d }
+        guard s.hasSuffix("Z"), let dot = s.firstIndex(of: ".") else { return nil }
+        let frac = s[s.index(after: dot)..<s.index(before: s.endIndex)]
+        return ISO8601Flex.parse("\(s[..<dot]).\(frac.prefix(3))Z")
+    }
+
+    /// 接口的数值字段既出现过字符串 "100" 也可能是数字，两种都收
+    private static func intValue(_ v: Any?) -> Int? {
+        if let n = v as? NSNumber { return n.intValue }
+        if let s = v as? String { return Int(s) }
         return nil
     }
 }

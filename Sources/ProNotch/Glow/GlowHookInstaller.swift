@@ -1,34 +1,39 @@
 import Foundation
 
-/// 把「完成提醒」接入 / 移出 Claude / Codex。两者机制不同：
-/// - Claude Code：原生 Stop 钩子（`~/.claude/settings.json`），追加一条 `open pronotch://`。
+/// 把「完成提醒」接入 / 移出各家 Agent。机制各不相同：
+/// - Claude Code：原生 Stop 钩子（`~/.claude/settings.json`），追加一条转发脚本。
 /// - Codex：完成事件只走 `config.toml` 的 `notify`（单程序）。我们装一个转发脚本——
 ///   先 `open pronotch://` 点亮光晕，再把通知原样透传给原有的 `notify`（保留 computer-use
 ///   等下游不被打断）。原 `notify` 以 base64 存进脚本头部，卸载时据此还原。
+/// - Kimi Code：`~/.kimi-code/config.toml` 的 `[[hooks]]` 数组表（官方 Stop 事件，
+///   stdin JSON 带 session_id，与 Claude 同构）——追加我们自己的一段，卸载时整段删除。
 ///
-/// 安全策略：写前备份 `.pronotch.bak`；Claude 只动我们自己追加的那条、Codex 只动 `notify`
-/// 一行；全部可还原。
+/// 安全策略：写前备份 `.pronotch.bak`；每家只动我们自己写入的内容；全部可还原。
 enum GlowHookInstaller {
 
     // MARK: - 对外接口（按来源分流）
 
-    static func isInstalled(_ source: GlowSource) -> Bool {
+    static func isInstalled(_ source: AgentKind) -> Bool {
         switch source {
         case .claude: return isClaudeInstalled()
         case .codex:  return isCodexInstalled()
+        case .kimi:   return isKimiInstalled()
+        default:      return false   // 无完成钩子机制的家（Grok / 智谱）
         }
     }
 
     @discardableResult
-    static func setInstalled(_ source: GlowSource, _ on: Bool) -> Bool {
+    static func setInstalled(_ source: AgentKind, _ on: Bool) -> Bool {
         switch source {
         case .claude: return setClaudeInstalled(on)
         case .codex:  return setCodexInstalled(on)
+        case .kimi:   return setKimiInstalled(on)
+        default:      return false
         }
     }
 
     /// 升级迁移：仅把「已接入」的来源刷新到当前脚本格式，不改变接入与否
-    static func migrateIfInstalled(_ source: GlowSource) {
+    static func migrateIfInstalled(_ source: AgentKind) {
         guard isInstalled(source) else { return }
         setInstalled(source, true)
     }
@@ -186,6 +191,103 @@ enum GlowHookInstaller {
                 withJSONObject: root, options: [.prettyPrinted, .sortedKeys]),
               (try? out.write(to: URL(fileURLWithPath: p))) != nil else { return false }
         return true
+    }
+
+    // MARK: - Kimi Code（~/.kimi-code/config.toml 的 [[hooks]] Stop 事件）
+
+    private static let kimiConfig = ("~/.kimi-code/config.toml" as NSString).expandingTildeInPath
+
+    private static var kimiScript: String {
+        NSHomeDirectory() + "/Library/Application Support/ProNotch/kimi-notify.sh"
+    }
+    private static var kimiScriptMarker: String { (kimiScript as NSString).lastPathComponent }
+
+    /// Kimi 转发脚本：与 Claude 同构（Stop 事件 stdin JSON 带 session_id）
+    @discardableResult
+    private static func writeKimiScript() -> Bool {
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: (kimiScript as NSString).deletingLastPathComponent,
+                                withIntermediateDirectories: true)
+        let script = """
+        #!/bin/bash
+        # ProNotch · Kimi 完成提醒（自动生成，勿手改）· PRONOTCH_FMT=\(scriptFormat)
+        \(hostDetectSnippet)
+        payload=$(cat)
+        host=$(detect_host)
+        sid=$(printf '%s' "$payload" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
+        url="pronotch://done?source=kimi"
+        [ -n "$host" ] && url="$url&host=$host"
+        [ -n "$sid" ] && url="$url&session=$sid"
+        open -g "$url"
+        """
+        guard (try? script.write(toFile: kimiScript, atomically: true, encoding: .utf8)) != nil else { return false }
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: kimiScript)
+        return true
+    }
+
+    private static func isKimiInstalled() -> Bool {
+        guard let toml = try? String(contentsOfFile: kimiConfig, encoding: .utf8) else { return false }
+        return toml.contains(kimiScriptMarker) && FileManager.default.fileExists(atPath: kimiScript)
+    }
+
+    @discardableResult
+    private static func setKimiInstalled(_ on: Bool) -> Bool {
+        let fm = FileManager.default
+        // 没装 Kimi Code（config.toml 不存在）就无法接入
+        guard fm.fileExists(atPath: kimiConfig),
+              let toml = try? String(contentsOfFile: kimiConfig, encoding: .utf8) else { return false }
+        let installed = toml.contains(kimiScriptMarker)
+
+        if on {
+            // 幂等：已接入且脚本最新 → 不动文件
+            if installed, fm.fileExists(atPath: kimiScript), scriptIsCurrent(kimiScript) { return true }
+            guard writeKimiScript() else { return false }
+            if installed { return true }   // 配置已有引用，只需刷新脚本
+            backup(kimiConfig)
+            // [[hooks]] 数组表追加到文件尾：不影响既有段落，TOML 语义安全
+            let block = """
+
+
+            # ProNotch 完成提醒（自动生成，卸载请在 ProNotch 设置里取消勾选）
+            [[hooks]]
+            event = "Stop"
+            command = "\(kimiScript)"
+            timeout = 15
+            """
+            let newToml = toml.hasSuffix("\n") ? toml + block.dropFirst() : toml + block
+            return (try? newToml.write(toFile: kimiConfig, atomically: true, encoding: .utf8)) != nil
+        } else {
+            if !installed {
+                try? fm.removeItem(atPath: kimiScript)   // 残留脚本顺手清掉
+                return true
+            }
+            backup(kimiConfig)
+            let newToml = removeKimiHookBlock(toml)
+            guard (try? newToml.write(toFile: kimiConfig, atomically: true, encoding: .utf8)) != nil else { return false }
+            try? fm.removeItem(atPath: kimiScript)
+            return true
+        }
+    }
+
+    /// 删除我们写入的 [[hooks]] 段：从「command 引用我们脚本」所在段的 `[[hooks]]` 行起，
+    /// 到下一个段头（`[` 开头行）或文件尾；段前紧邻的 ProNotch 注释行一并清掉
+    private static func removeKimiHookBlock(_ toml: String) -> String {
+        var lines = toml.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        guard let cmdIdx = lines.firstIndex(where: { $0.contains(kimiScriptMarker) }) else { return toml }
+        // 向上找本段的 [[hooks]] 段头
+        var start = cmdIdx
+        while start > 0, lines[start].trimmingCharacters(in: .whitespaces) != "[[hooks]]" { start -= 1 }
+        // 向下找段尾（下一个段头前）
+        var end = cmdIdx + 1
+        while end < lines.count, !lines[end].trimmingCharacters(in: .whitespaces).hasPrefix("[") { end += 1 }
+        // 段前的 ProNotch 注释与空行一并回收
+        var head = start
+        while head > 0 {
+            let prev = lines[head - 1].trimmingCharacters(in: .whitespaces)
+            if prev.isEmpty || prev.hasPrefix("# ProNotch") { head -= 1 } else { break }
+        }
+        lines.removeSubrange(head..<end)
+        return lines.joined(separator: "\n")
     }
 
     // MARK: - Codex（config.toml 的 notify 转发器）

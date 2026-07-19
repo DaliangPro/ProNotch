@@ -6,6 +6,7 @@ struct AgentSessionsView: View {
     @EnvironmentObject var store: AgentSessionsStore
     @EnvironmentObject var vm: NotchViewModel
     @EnvironmentObject var usageStore: UsageStore
+    @EnvironmentObject var settings: SettingsStore
     /// 看着页面时状态要自己动:8 秒轮询,仅面板展开且当前页可见时才真的刷
     private let ticker = Timer.publish(every: 8, on: .main, in: .common).autoconnect()
     /// 出场动画开关：两栏会话卡逐张发牌式上浮，切页/展开时重播
@@ -25,10 +26,11 @@ struct AgentSessionsView: View {
                 .opacity(entrancePlayed ? 1 : 0)
                 .animation(.spring(response: 0.4, dampingFraction: 0.8), value: entrancePlayed)
             } else {
-                // 左右分栏:Claude 左 / Codex 右,各自独立滚动,不混排
+                // 按家分栏(勾选且支持监控台的),各自独立滚动,不混排
                 HStack(alignment: .top, spacing: 10) {
-                    sourceColumn(.claude, title: "Claude Code", tint: Color(hex: "#ED8445"))
-                    sourceColumn(.codex, title: "Codex", tint: .cyan)
+                    ForEach(sessionKinds) { kind in
+                        sourceColumn(kind, title: kind.displayName, tint: columnTint(kind))
+                    }
                 }
             }
         }
@@ -40,8 +42,22 @@ struct AgentSessionsView: View {
         }
     }
 
+    /// 勾选且支持监控台的家(至少留 Claude/Codex 的空列对称感:全取消时上面早走了空态分支)
+    private var sessionKinds: [AgentKind] {
+        AgentKind.allCases.filter { $0.supportsSessions && settings.enabledAgents.contains($0) }
+    }
+
+    /// 列头点色:比卡片 tint 略提亮的品牌色
+    private func columnTint(_ kind: AgentKind) -> Color {
+        switch kind {
+        case .claude: return Color(hex: "#ED8445")
+        case .codex: return .cyan
+        default: return kind.tint
+        }
+    }
+
     /// 一个来源的分栏:着色标题 + 竖排方块卡,栏内独立滚动;无会话显示轻空态保持左右对称
-    private func sourceColumn(_ source: AgentSession.Source, title: String, tint: Color) -> some View {
+    private func sourceColumn(_ source: AgentKind, title: String, tint: Color) -> some View {
         let items = store.sessions.filter { $0.source == source }
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 5) {

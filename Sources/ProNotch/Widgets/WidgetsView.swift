@@ -21,17 +21,15 @@ struct WidgetsView: View {
 
     var body: some View {
         HStack(spacing: 12) {
+            // 只淡入、不上浮：进度条出场只保留从左往右充能，去掉跟随卡片的竖直位移
             MemoryCard(snapshot: memory.snapshot, top: memory.topProcesses,
                        entrancePlayed: entrancePlayed)
-                .offset(y: entrancePlayed ? 0 : 12)
                 .opacity(entrancePlayed ? 1 : 0)
-                .animation(.spring(response: 0.38, dampingFraction: 0.66), value: entrancePlayed)
+                .animation(.easeOut(duration: 0.3), value: entrancePlayed)
             WeatherCard(now: weather.now, error: weather.error,
                         entrancePlayed: entrancePlayed)
-                .offset(y: entrancePlayed ? 0 : 12)
                 .opacity(entrancePlayed ? 1 : 0)
-                .animation(.spring(response: 0.38, dampingFraction: 0.66).delay(0.07),
-                           value: entrancePlayed)
+                .animation(.easeOut(duration: 0.3).delay(0.07), value: entrancePlayed)
         }
         .padding(.vertical, 14)
         .padding(.horizontal, ExpandedContentView.pageHInset)   // 左右留白对齐全局基准线

@@ -10,8 +10,8 @@ struct UsageView: View {
     @State private var entrancePlayed = false
 
     var body: some View {
-        // 只渲染勾选的家（每家总开关，设置 → Agent）；勾选顺序固定按枚举序，卡片不跳位
-        let enabled = AgentKind.allCases.filter { settings.enabledAgents.contains($0) }
+        // 只渲染勾选且有额度可查的家；顺序固定按枚举序，卡片不跳位
+        let enabled = AgentKind.allCases.filter { $0.supportsQuota && settings.enabledAgents.contains($0) }
         Group {
             if enabled.isEmpty {
                 emptyState
@@ -22,9 +22,9 @@ struct UsageView: View {
                         QuotaCard(title: kind.displayName, polys: kind.polys,
                                   iconColor: kind.tint, quota: store.quota(for: kind),
                                   entrancePlayed: entrancePlayed)
-                            .offset(y: entrancePlayed ? 0 : 12)
+                            // 只淡入、不上浮：进度条出场只保留从左往右充能，去掉跟随卡片的竖直位移
                             .opacity(entrancePlayed ? 1 : 0)
-                            .animation(.spring(response: 0.38, dampingFraction: 0.66)
+                            .animation(.easeOut(duration: 0.3)
                                 .delay(Double(i) * 0.07), value: entrancePlayed)
                     }
                 }
@@ -42,7 +42,7 @@ struct UsageView: View {
         VStack(spacing: 10) {
             Image(systemName: "gauge.with.needle")
                 .font(.system(size: 26)).foregroundColor(.white.opacity(0.3))
-            Text("尚未勾选要监控的 Agent")
+            Text("尚未勾选可查额度的 Agent")
                 .font(.system(size: 13, weight: .medium)).foregroundColor(.white.opacity(0.7))
             Button {
                 settings.pendingSection = SettingsView.Section.glow.rawValue
@@ -72,10 +72,14 @@ private struct QuotaCard: View {
                 BrandIcon(polys: polys)
                     .foregroundColor(iconColor)
                     .frame(width: 13, height: 13)
+                // 标题可截断（"Kimi Code" → "Kimi C…"），徽章锁单行整体保留——
+                // 卡多变窄时绝不允许胶囊里的文字折行（掉字母）
                 Text(title).font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                    .lineLimit(1)
                 if let plan = quota?.plan, !plan.isEmpty {
                     Text(planLabel(plan))
                         .font(.system(size: 9.5, weight: .semibold)).foregroundColor(.cyan)
+                        .lineLimit(1).fixedSize()
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(Capsule().fill(Color.cyan.opacity(0.14)))
                 }

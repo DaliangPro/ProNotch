@@ -134,6 +134,28 @@ final class SettingsStore: ObservableObject {
 
     static let translateLangs = ["中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский"]
 
+    // MARK: - 智谱 API Key（服务型接入：Key 本体走钥匙串惰性读写，
+    // 「已配置」布尔标记走 UserDefaults 供检测/启动路径零钥匙串访问）
+    func zhipuAPIKey() -> String { KeychainStore.read("zhipuAPIKey") ?? "" }
+    func setZhipuAPIKey(_ v: String) {
+        let trimmed = v.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            _ = KeychainStore.delete("zhipuAPIKey")
+            UserDefaults.standard.set(false, forKey: AgentKind.zhipuConfiguredKey)
+            enabledAgents.remove(.zhipu)   // 清 Key 即退出监控，额度页卡片同步消失
+        } else {
+            _ = KeychainStore.save(trimmed, account: "zhipuAPIKey")
+            UserDefaults.standard.set(true, forKey: AgentKind.zhipuConfiguredKey)
+            if enabledAgents.contains(.zhipu) {
+                // 已勾选时换 Key：勾选集没变不会触发广播，手动通知各 Store 用新 Key 重拉
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("ProNotchAgentSelectionChanged"), object: nil)
+            } else {
+                enabledAgents.insert(.zhipu)   // 配好 Key 默认即开（didSet 自会广播）
+            }
+        }
+    }
+
     // MARK: - Agent 数据源勾选
     /// 监控哪些本机 Agent（每家一个总开关：额度 + 监控台 + 会话榜一体联动）。
     /// 变更即持久化并广播：UsageStore / AgentSessionsStore 立刻按新勾选重扫，
@@ -151,14 +173,37 @@ final class SettingsStore: ObservableObject {
     @Published var glowEnabled: Bool {
         didSet {
             persistGlow(glowEnabled, "glowEnabled")
-            // 总开关：打开默认接入两个 Agent、关闭移除两个（具体勾选谁再由勾选框微调）。
+            // 总开关：打开默认接入全部支持完成钩子的家、关闭全部移除（具体勾选谁再由勾选框微调）。
             // 放 didSet 而非 binding set，避开「set 里改被绑值」的 re-entrancy。
-            GlowHookInstaller.setInstalled(.claude, glowEnabled)
-            GlowHookInstaller.setInstalled(.codex, glowEnabled)
+            // 同值赋值不动钩子：否则「取消勾选一家但还剩别家」时会把刚移除的钩子装回去
+            guard oldValue != glowEnabled else { return }
+            for kind in AgentKind.allCases where kind.supportsGlow {
+                GlowHookInstaller.setInstalled(kind, glowEnabled)
+            }
         }
     }
     @Published var glowClaudeColorHex: String { didSet { persistGlow(glowClaudeColorHex, "glowClaudeColorHex") } }
     @Published var glowCodexColorHex: String { didSet { persistGlow(glowCodexColorHex, "glowCodexColorHex") } }
+    @Published var glowKimiColorHex: String { didSet { persistGlow(glowKimiColorHex, "glowKimiColorHex") } }
+
+    /// 光晕色按家取（GlowController 点亮时用）
+    func glowColorHex(for kind: AgentKind) -> String {
+        switch kind {
+        case .claude: return glowClaudeColorHex
+        case .codex: return glowCodexColorHex
+        case .kimi: return glowKimiColorHex
+        default: return "#FFFFFF"
+        }
+    }
+    /// 设置页取色器写回（与上面的读一一对应）
+    func setGlowColorHex(_ hex: String, for kind: AgentKind) {
+        switch kind {
+        case .claude: glowClaudeColorHex = hex
+        case .codex: glowCodexColorHex = hex
+        case .kimi: glowKimiColorHex = hex
+        default: break
+        }
+    }
     @Published var glowBreathPeriod: Double { didSet { persistGlow(glowBreathPeriod, "glowBreathPeriod") } }
     @Published var glowIntensity: Double { didSet { persistGlow(glowIntensity, "glowIntensity") } }
     @Published var glowThickness: Double { didSet { persistGlow(glowThickness, "glowThickness") } }
@@ -178,6 +223,7 @@ final class SettingsStore: ObservableObject {
             "glowEnabled": true,
             "glowClaudeColorHex": "#FF8A00",
             "glowCodexColorHex": "#0A84FF",
+            "glowKimiColorHex": "#2ED3B7",
             "glowBreathPeriod": 3.2,
             "glowIntensity": 0.9,
             "glowThickness": 90.0,
@@ -191,6 +237,7 @@ final class SettingsStore: ObservableObject {
         glowEnabled = UserDefaults.standard.bool(forKey: "glowEnabled")
         glowClaudeColorHex = UserDefaults.standard.string(forKey: "glowClaudeColorHex") ?? "#FF8A00"
         glowCodexColorHex = UserDefaults.standard.string(forKey: "glowCodexColorHex") ?? "#0A84FF"
+        glowKimiColorHex = UserDefaults.standard.string(forKey: "glowKimiColorHex") ?? "#2ED3B7"
         glowBreathPeriod = UserDefaults.standard.double(forKey: "glowBreathPeriod")
         glowIntensity = UserDefaults.standard.double(forKey: "glowIntensity")
         glowThickness = UserDefaults.standard.double(forKey: "glowThickness")
@@ -203,14 +250,27 @@ final class SettingsStore: ObservableObject {
             ?? (SystemTranslator.isSupported ? "system" : "ai")
         translatePrompt = UserDefaults.standard.string(forKey: "translatePrompt") ?? Self.defaultTranslatePrompt
         // Agent 勾选：有存值用存值；首启/升级则本机检测一次，检测到的默认全勾
-        // （升级无感，大梁老师定）——三个目录的 stat 检查毫秒级，不会拖慢启动
+        // （升级无感，大梁老师定）——目录 stat 检查毫秒级，不会拖慢启动
+        let detected = Set(AgentProbe.detect().filter(\.installed).map(\.kind))
         if let raw = UserDefaults.standard.stringArray(forKey: AgentKind.selectionKey) {
-            enabledAgents = Set(raw.compactMap(AgentKind.init(rawValue:)))
+            // 升级新增的家（如 kimi）不在历史 known 集里：检测到即补勾一次，老家的勾选原样保留。
+            // known 无存值 = M1 老版本（当时只有 claude/codex/grok 三家）
+            let known = UserDefaults.standard.stringArray(forKey: AgentKind.knownKey)
+                .map { Set($0.compactMap(AgentKind.init(rawValue:))) } ?? [.claude, .codex, .grok]
+            let merged = AgentKind.mergeNewlyDetected(
+                current: Set(raw.compactMap(AgentKind.init(rawValue:))),
+                known: known, detectedInstalled: detected)
+            enabledAgents = merged.enabled
+            UserDefaults.standard.set(merged.enabled.map(\.rawValue).sorted(),
+                                      forKey: AgentKind.selectionKey)
+            UserDefaults.standard.set(merged.known.map(\.rawValue).sorted(),
+                                      forKey: AgentKind.knownKey)
         } else {
-            let detected = Set(AgentProbe.detect().filter(\.installed).map(\.kind))
             enabledAgents = detected
             UserDefaults.standard.set(detected.map(\.rawValue).sorted(),
                                       forKey: AgentKind.selectionKey)
+            UserDefaults.standard.set(AgentKind.allCases.map(\.rawValue).sorted(),
+                                      forKey: AgentKind.knownKey)
         }
         if let data = UserDefaults.standard.data(forKey: "screenshotShortcut") {
             screenshotShortcut = try? JSONDecoder().decode(ScreenshotShortcut.self, from: data)
