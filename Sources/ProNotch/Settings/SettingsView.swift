@@ -23,8 +23,10 @@ struct SettingsView: View {
 
     enum Section: String, CaseIterable, Identifiable {
         case general = "通用"
-        case screenshot = "超级截图"
+        case notch = "刘海面板"
         case glow = "Agent"
+        case widgets = "组件"
+        case screenshot = "超级截图"
         case chat = "AI 闪问"
         case about = "关于"
         var id: String { rawValue }
@@ -82,8 +84,10 @@ struct SettingsView: View {
     @ViewBuilder private var selectedContent: some View {
         switch selected {
         case .general:    generalContent
-        case .screenshot: screenshotContent
+        case .notch:      notchContent
         case .glow:       glowContent
+        case .widgets:    widgetsContent
+        case .screenshot: screenshotContent
         case .chat:       chatContent
         case .about:      aboutContent
         }
@@ -124,19 +128,20 @@ struct SettingsView: View {
             SettingsCard {
                 toggleRow("开机自动启动", isOn: $settings.launchAtLogin)
                 CardDivider()
-                toggleRow("全屏时隐藏刘海", isOn: $settings.hideNotchInFullscreen)
-                CardDivider()
-                // 关 = 停 0.5 秒轮询（真停机）；历史保留，清空是下面按钮的独立职责
-                toggleRow("记录剪贴板历史", isOn: $settings.clipboardEnabled)
-                CardDivider()
-                clipboardLimitRow
-                CardDivider()
-                clipboardShortcutRow
-                CardDivider()
-                clearClipboardRow
+                updateRow
             }
             if let hint = settings.loginItemHint {
                 noteText(hint, color: .orange)
+            }
+        }
+    }
+
+    // MARK: - 刘海面板
+    private var notchContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            pageTitle("刘海面板")
+            SettingsCard {
+                toggleRow("全屏时隐藏刘海", isOn: $settings.hideNotchInFullscreen)
             }
 
             Text("刘海两侧功能区").font(.system(size: 13, weight: .semibold))
@@ -151,8 +156,21 @@ struct SettingsView: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 2)
 
-            Text("恶劣天气预警").font(.system(size: 13, weight: .semibold))
+            Text("展开面板页面").font(.system(size: 13, weight: .semibold))
                 .foregroundColor(.white.opacity(0.85)).padding(.top, 4)
+            Text("刘海展开后的功能页可在面板内左右拖动调整顺序，排在最前的是每次展开的默认页。")
+                .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 2)
+        }
+    }
+
+    // MARK: - 组件
+    private var widgetsContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            pageTitle("组件")
+
+            sectionLabel("天气")
             SettingsCard {
                 // 总开关：关掉即停 900 秒兜底刷新（真停机），不影响天气大卡与槽位
                 toggleRow("未来 3 小时预警", isOn: $settings.weatherAlertsEnabled)
@@ -196,6 +214,18 @@ struct SettingsView: View {
                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 2)
+
+            sectionLabel("剪贴板")
+            SettingsCard {
+                // 关 = 停 0.5 秒轮询（真停机）；历史保留，清空是下面按钮的独立职责
+                toggleRow("记录剪贴板历史", isOn: $settings.clipboardEnabled)
+                CardDivider()
+                clipboardLimitRow
+                CardDivider()
+                clipboardShortcutRow
+                CardDivider()
+                clearClipboardRow
+            }
         }
     }
 
@@ -1054,8 +1084,6 @@ struct SettingsView: View {
                 }
                 .padding(.horizontal, 14).padding(.vertical, 11)
                 CardDivider()
-                updateRow
-                CardDivider()
                 HStack {
                     Text("项目主页").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
                     Spacer()
@@ -1093,7 +1121,7 @@ struct SettingsView: View {
         .padding(.horizontal, 14).padding(.vertical, 11)
     }
 
-    // MARK: - 组件
+    // MARK: - 复用行组件
 
     private func pageTitle(_ title: String, subtitle: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 4) {
