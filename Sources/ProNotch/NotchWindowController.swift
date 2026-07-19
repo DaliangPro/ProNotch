@@ -6,25 +6,26 @@ final class NotchWindowController {
     let viewModel: NotchViewModel
     let launcherStore: LauncherStore
     let clipboardStore: ClipboardStore
-    let snippetStore: SnippetStore
     let chatStore: ChatStore
     let quickActions: QuickActionsStore
     private let panel: NotchPanel
+    /// 两侧功能区设置变更监听 token（close 时移除）
+    private var slotObserver: Any?
 
     /// 数据层由 AppDelegate 持有并传入：换屏重建窗口时对话记录、
     /// 剪贴板监听等状态不丢失
     init(screen: NSScreen,
          launcherStore: LauncherStore,
          clipboardStore: ClipboardStore,
-         snippetStore: SnippetStore,
          chatStore: ChatStore,
          quickActions: QuickActionsStore,
          settingsStore: SettingsStore,
          usageStore: UsageStore,
-         agentSessionsStore: AgentSessionsStore) {
+         agentSessionsStore: AgentSessionsStore,
+         memoryStore: MemoryStore,
+         weatherStore: WeatherStore) {
         self.launcherStore = launcherStore
         self.clipboardStore = clipboardStore
-        self.snippetStore = snippetStore
         self.chatStore = chatStore
         self.quickActions = quickActions
         let notchRect = NotchGeometry.notchRect(on: screen)
@@ -42,12 +43,13 @@ final class NotchWindowController {
                 .environmentObject(viewModel)
                 .environmentObject(launcherStore)
                 .environmentObject(clipboardStore)
-                .environmentObject(snippetStore)
                 .environmentObject(chatStore)
                 .environmentObject(quickActions)
                 .environmentObject(settingsStore)
                 .environmentObject(usageStore)
-                .environmentObject(agentSessionsStore))
+                .environmentObject(agentSessionsStore)
+                .environmentObject(memoryStore)
+                .environmentObject(weatherStore))
         panel.contentView = hosting
         panel.orderFrontRegardless()
         // 「全屏时隐藏刘海」：每秒检测一次，全屏时整窗隐藏、退出后恢复
@@ -55,6 +57,16 @@ final class NotchWindowController {
             guard settingsStore?.hideNotchInFullscreen == true else { return false }
             // 每块屏只检测自己屏的全屏（外接屏假刘海会遮挡全屏内容）
             return FullscreenDetector.hasFullscreenWindow(on: screen)
+        }
+        // 两侧功能区开关随设置联动：影响收起态黑条宽度与悬停热区
+        viewModel.sideSlotsActive = settingsStore.sideSlotsActive
+        slotObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ProNotchSlotSettingsChanged"),
+            object: nil, queue: .main) { [weak viewModel, weak settingsStore] _ in
+            Task { @MainActor in
+                guard let vm = viewModel, let settings = settingsStore else { return }
+                vm.sideSlotsActive = settings.sideSlotsActive
+            }
         }
         viewModel.startMouseTracking()
         print("[ProNotch] 固定窗口 frame: \(panel.frame)")
@@ -74,6 +86,10 @@ final class NotchWindowController {
 
     func close() {
         // 只清理窗口自身的资源；数据层由 AppDelegate 统一管理生命周期
+        if let observer = slotObserver {
+            NotificationCenter.default.removeObserver(observer)
+            slotObserver = nil
+        }
         viewModel.stop()
         panel.close()
     }

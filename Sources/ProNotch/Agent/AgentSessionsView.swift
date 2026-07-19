@@ -8,6 +8,8 @@ struct AgentSessionsView: View {
     @EnvironmentObject var usageStore: UsageStore
     /// 看着页面时状态要自己动:8 秒轮询,仅面板展开且当前页可见时才真的刷
     private let ticker = Timer.publish(every: 8, on: .main, in: .common).autoconnect()
+    /// 出场动画开关：两栏会话卡逐张发牌式上浮，切页/展开时重播
+    @State private var entrancePlayed = false
 
     var body: some View {
         Group {
@@ -19,6 +21,9 @@ struct AgentSessionsView: View {
                         .font(.system(size: 12)).foregroundColor(.white.opacity(0.4))
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .scaleEffect(entrancePlayed ? 1 : 0.92)
+                .opacity(entrancePlayed ? 1 : 0)
+                .animation(.spring(response: 0.4, dampingFraction: 0.8), value: entrancePlayed)
             } else {
                 // 左右分栏:Claude 左 / Codex 右,各自独立滚动,不混排
                 HStack(alignment: .top, spacing: 10) {
@@ -27,6 +32,8 @@ struct AgentSessionsView: View {
                 }
             }
         }
+        .padding(.horizontal, ExpandedContentView.pageHInset)   // 左右留白对齐全局基准线
+        .pageEntrance($entrancePlayed)
         .onAppear { store.refresh(); usageStore.refresh() }   // 顺带刷额度：拿每会话 token 消耗
         .onReceive(ticker) { _ in
             if vm.isExpanded, vm.activeTab == .agent { store.refresh(force: true); usageStore.refresh() }
@@ -49,10 +56,20 @@ struct AgentSessionsView: View {
                 Text("暂无会话")
                     .font(.system(size: 11)).foregroundColor(.white.opacity(0.25))
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .opacity(entrancePlayed ? 1 : 0)
+                    .animation(.easeOut(duration: 0.3).delay(0.1), value: entrancePlayed)
             } else {
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 8) {
-                        ForEach(items) { SessionCard(session: $0) }
+                        // 发牌：每张卡比上一张晚 0.055s 上浮进场，两栏并行各发各的
+                        ForEach(Array(items.enumerated()), id: \.element.id) { i, session in
+                            SessionCard(session: session)
+                                .offset(y: entrancePlayed ? 0 : 14)
+                                .opacity(entrancePlayed ? 1 : 0)
+                                .animation(.spring(response: 0.36, dampingFraction: 0.66)
+                                    .delay(min(0.05 + Double(i) * 0.055, 0.38)),
+                                           value: entrancePlayed)
+                        }
                     }
                     .padding(.bottom, 2)
                 }

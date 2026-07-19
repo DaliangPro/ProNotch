@@ -20,8 +20,6 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
 @MainActor
 final class ClipboardStore: ObservableObject {
     @Published private(set) var items: [ClipboardItem] = []
-    /// 剪贴板页子视图：false=历史，true=话术库
-    @Published var showingSnippets = false
 
     /// 保留条数上限（设置项 clipboardLimit，默认 200）
     private var maxItems: Int {

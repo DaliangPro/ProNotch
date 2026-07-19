@@ -1,26 +1,64 @@
 import Foundation
 import SwiftUI
 
-struct ChatMessage: Identifiable, Equatable {
-    enum Role: String {
+struct ChatMessage: Identifiable, Equatable, Codable {
+    enum Role: String, Codable {
         case user
         case assistant
     }
 
-    let id = UUID()
+    var id = UUID()
     let role: Role
     var content: String
     /// 该回复参考的联网搜索结果条数（nil 表示未联网）
     var searchResultCount: Int? = nil
     /// 随消息发送的截图附件（JPEG 数据；「截图问 AI」入口写入）
     var imageData: Data? = nil
+
+    /// 落盘只存文字与搜索条数：图片附件体积大且历史图片不需要重发，重启即弃
+    private enum CodingKeys: String, CodingKey {
+        case id, role, content, searchResultCount
+    }
+}
+
+/// 一段对话（侧栏一行）：标题取首条用户消息开头，列表按最近更新排序
+struct ChatConversation: Identifiable, Codable {
+    var id = UUID()
+    var title = ""
+    var messages: [ChatMessage] = []
+    var updatedAt = Date()
+}
+
+/// 一套 API 配置（大梁老师定）：DeepSeek 一套、Claude 一套……各自独立的 URL/Key/模型，可切换。
+/// Key 不落这里（体积小但仍属敏感），存钥匙串，账号见 keychainAccount；首套沿用旧账号 chatAPIKey 兼容历史数据
+struct APIProvider: Identifiable, Codable {
+    var id = UUID()
+    var name: String
+    var baseURL: String
+    var model: String
+    var customModels: [String] = []
+    var fetchedModels: [String] = []
+    var keychainAccount: String
 }
 
 /// AI 闪问数据源：OpenAI 兼容接口 + SSE 流式输出。
-/// 会话仅存内存（面板收起保留，应用重启清空）；设置持久化到 UserDefaults。
+/// 多会话、可切换，落盘到 App Support/ProNotch/chat-conversations.json（图片附件不落盘）；
+/// 设置持久化到 UserDefaults。
 @MainActor
 final class ChatStore: ObservableObject {
-    @Published var messages: [ChatMessage] = []
+    @Published var conversations: [ChatConversation] = []
+    @Published private(set) var currentID: UUID?
+    /// 正在流式写入的会话：用户切走后回复继续写回原会话，不串台
+    @Published private(set) var streamingConvID: UUID?
+
+    /// 当前会话的消息（原单会话代码的读写入口，落到 conversations 上）
+    var messages: [ChatMessage] {
+        get { conversations.first(where: { $0.id == currentID })?.messages ?? [] }
+        set {
+            guard let i = conversations.firstIndex(where: { $0.id == currentID }) else { return }
+            conversations[i].messages = newValue
+        }
+    }
     @Published private(set) var isStreaming = false
     @Published var errorText: String?
 
@@ -28,13 +66,20 @@ final class ChatStore: ObservableObject {
     @Published private(set) var apiKey: String
     @Published private(set) var model: String
 
+    /// 多套 API 配置与当前选中（大梁老师定）。上面 baseURL/apiKey/model 是「当前套」的运行时投影
+    @Published private(set) var providers: [APIProvider] = []
+    @Published private(set) var currentProviderID = UUID()
+
     // 表单草稿与对话输入框内容放在 Store 而非视图状态，
     // 面板收起（视图销毁）后重新展开不丢失
+    @Published var draftName = ""
     @Published var draftBaseURL: String
     @Published var draftAPIKey: String
     @Published var draftModel: String
     @Published var draftMessage = ""
     @Published private(set) var availableModels: [String] = []
+    /// 手动添加的模型（大梁老师定）：服务端 /models 只回一个或不可用时，自己补
+    @Published private(set) var customModels: [String] = []
     @Published private(set) var fetchingModels = false
     @Published var fetchError: String?
 
@@ -50,8 +95,6 @@ final class ChatStore: ObservableObject {
     @Published private(set) var braveKey: String
     @Published var draftBraveKey: String
     @Published private(set) var isSearching = false
-    /// 设置表单显隐（顶行入口与页面内容两处共用）
-    @Published var showSettings = false
     /// 待发送的截图附件（JPEG；随下一条用户消息发出后清空）
     @Published var draftAttachment: Data?
     /// 输入框聚焦信号（截图问 AI 唤入时 +1，视图侧聚焦）
@@ -108,14 +151,237 @@ final class ChatStore: ObservableObject {
         searchEngine = savedEngine
         draftSearchEngine = savedEngine
         webSearchEnabled = defaults.bool(forKey: "chatWebSearchEnabled")
+        // 模型列表持久化：右上角切换器不用每次先点「获取模型」
+        availableModels = defaults.stringArray(forKey: "chatAvailableModels") ?? []
+        customModels = defaults.stringArray(forKey: "chatCustomModels") ?? []
+        loadProviders()   // 建/载多套配置，并用当前套覆盖上面的运行时字段
+        loadConversations()
         loadKeysFromKeychain()
+    }
+
+    // MARK: - 多套 API 配置
+
+    /// 启动载入配置：无存档则把现有单套迁成第一套（Key 原地复用旧账号，零风险）
+    private func loadProviders() {
+        let defaults = UserDefaults.standard
+        if let data = defaults.data(forKey: "chatProviders"),
+           let list = try? JSONDecoder().decode([APIProvider].self, from: data), !list.isEmpty {
+            providers = list
+        } else {
+            providers = [APIProvider(name: Self.inferName(from: baseURL),
+                                     baseURL: baseURL, model: model,
+                                     customModels: customModels, fetchedModels: availableModels,
+                                     keychainAccount: "chatAPIKey")]
+            persistProviders()
+        }
+        if let s = defaults.string(forKey: "chatCurrentProviderID"), let uid = UUID(uuidString: s),
+           providers.contains(where: { $0.id == uid }) {
+            currentProviderID = uid
+        } else {
+            currentProviderID = providers[0].id
+        }
+        applyCurrentProviderToFields()
+    }
+
+    /// 把当前套的 URL/模型/模型列表载入运行时字段与草稿（不含 Key，Key 走钥匙串后台读）
+    private func applyCurrentProviderToFields() {
+        guard let p = providers.first(where: { $0.id == currentProviderID }) else { return }
+        baseURL = p.baseURL
+        model = p.model
+        draftName = p.name
+        draftBaseURL = p.baseURL
+        draftModel = p.model
+        customModels = p.customModels
+        availableModels = p.fetchedModels
+    }
+
+    /// 当前套的钥匙串账号（Key 读写都认它）
+    private var currentKeychainAccount: String {
+        providers.first(where: { $0.id == currentProviderID })?.keychainAccount ?? "chatAPIKey"
+    }
+
+    /// 从 URL 域名猜配置名：api.deepseek.com → Deepseek；空则「默认」
+    private static func inferName(from url: String) -> String {
+        let host = URLComponents(string: url)?.host ?? URL(string: url)?.host ?? ""
+        let parts = host.split(separator: ".")
+        if parts.count >= 2 { return parts[parts.count - 2].capitalized }
+        if !host.isEmpty { return host }
+        return url.isEmpty ? "默认" : "自定义"
+    }
+
+    private func persistProviders() {
+        if let data = try? JSONEncoder().encode(providers) {
+            UserDefaults.standard.set(data, forKey: "chatProviders")
+        }
+        UserDefaults.standard.set(currentProviderID.uuidString, forKey: "chatCurrentProviderID")
+    }
+
+    /// 把当前运行时的模型态写回当前套存档（切模型/加删模型/拉到列表后调用）
+    private func syncCurrentProviderModels() {
+        guard let i = providers.firstIndex(where: { $0.id == currentProviderID }) else { return }
+        providers[i].model = model
+        providers[i].customModels = customModels
+        providers[i].fetchedModels = availableModels
+        persistProviders()
+    }
+
+    /// 切换到某套配置：载入其 URL/模型，后台读它的 Key，重测连通
+    func activateProvider(_ id: UUID) {
+        guard id != currentProviderID, providers.contains(where: { $0.id == id }) else { return }
+        currentProviderID = id
+        applyCurrentProviderToFields()
+        apiKey = ""
+        draftAPIKey = ""
+        connectivity = .unknown
+        fetchError = nil
+        let account = currentKeychainAccount
+        persistProviders()
+        Task.detached(priority: .userInitiated) {
+            let k = KeychainStore.read(account) ?? ""
+            await MainActor.run { [weak self] in
+                guard let self, self.currentProviderID == id else { return }   // 期间又切走则弃
+                self.apiKey = k
+                self.draftAPIKey = k
+                if self.isConfigured { self.checkConnectivity(force: true) }
+            }
+        }
+    }
+
+    /// 新增一套空配置并切过去；当前已是空壳则复用，不堆空配置
+    func addProvider() {
+        if let cur = providers.first(where: { $0.id == currentProviderID }),
+           cur.baseURL.isEmpty, cur.model.isEmpty {
+            return
+        }
+        let p = APIProvider(name: "新配置", baseURL: "", model: "",
+                            keychainAccount: "chatAPIKey-\(UUID().uuidString)")
+        providers.append(p)
+        // 直接切过去（activateProvider 有「同 id 不切」保护，先落库再切）
+        persistProviders()
+        currentProviderID = p.id
+        applyCurrentProviderToFields()
+        apiKey = ""
+        draftAPIKey = ""
+        connectivity = .unknown
+        fetchError = nil
+        persistProviders()
+    }
+
+    /// 删除一套配置（至少保留一套）：连带清掉它的钥匙串 Key，删的是当前套则切到第一套
+    func deleteProvider(_ id: UUID) {
+        guard providers.count > 1 else { return }
+        if let p = providers.first(where: { $0.id == id }) {
+            KeychainStore.delete(p.keychainAccount)
+        }
+        let wasCurrent = id == currentProviderID
+        providers.removeAll { $0.id == id }
+        persistProviders()
+        if wasCurrent, let first = providers.first {
+            currentProviderID = first.id
+            applyCurrentProviderToFields()
+            apiKey = ""
+            draftAPIKey = ""
+            connectivity = .unknown
+            let account = currentKeychainAccount
+            Task.detached(priority: .userInitiated) {
+                let k = KeychainStore.read(account) ?? ""
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    self.apiKey = k
+                    self.draftAPIKey = k
+                    if self.isConfigured { self.checkConnectivity(force: true) }
+                }
+            }
+        }
+    }
+
+    // MARK: - 多会话管理
+
+    /// 侧栏顺序：最近更新在前
+    var sortedConversations: [ChatConversation] {
+        conversations.sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private var currentIndex: Int? {
+        conversations.firstIndex(where: { $0.id == currentID })
+    }
+
+    /// 启动加载历史会话；首次运行或文件损坏则从一个空会话开始
+    private func loadConversations() {
+        if let data = try? Data(contentsOf: Self.conversationsURL),
+           let list = try? JSONDecoder().decode([ChatConversation].self, from: data) {
+            conversations = list
+        }
+        currentID = sortedConversations.first?.id
+        ensureCurrentConversation()
+    }
+
+    /// 兜底：currentID 悬空时补一个空会话（删光、历史损坏都会走到）
+    private func ensureCurrentConversation() {
+        guard !conversations.contains(where: { $0.id == currentID }) else { return }
+        let conv = ChatConversation()
+        conversations.append(conv)
+        currentID = conv.id
+    }
+
+    func newConversation() {
+        errorText = nil
+        // 当前已是空会话就复用，避免侧栏攒一堆空「新对话」
+        if let cur = conversations.first(where: { $0.id == currentID }), cur.messages.isEmpty { return }
+        let conv = ChatConversation()
+        conversations.append(conv)
+        currentID = conv.id
+        persistConversations()
+    }
+
+    func selectConversation(_ id: UUID) {
+        guard id != currentID, conversations.contains(where: { $0.id == id }) else { return }
+        currentID = id
+        errorText = nil   // 错误条属于上一个会话的现场，切走即清
+    }
+
+    func deleteConversation(_ id: UUID) {
+        if streamingConvID == id { stopStreaming() }
+        conversations.removeAll { $0.id == id }
+        if currentID == id { currentID = sortedConversations.first?.id }
+        ensureCurrentConversation()
+        persistConversations()
+    }
+
+    /// 会话历史落盘位置（与 snippets.json 同目录）
+    private static var conversationsURL: URL {
+        let base = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return base.appendingPathComponent("ProNotch/chat-conversations.json")
+    }
+
+    /// 落盘时机：发消息、流结束、建删会话——流式逐字阶段不写盘
+    private func persistConversations() {
+        let list = conversations
+        let url = Self.conversationsURL
+        Task.detached(priority: .utility) {
+            do {
+                try FileManager.default.createDirectory(
+                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try JSONEncoder().encode(list).write(to: url, options: .atomic)
+            } catch {
+                print("[ProNotch] 会话历史落盘失败: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// 在流式写入目标会话上就地改动（用户可能已切去别的会话）
+    private func withStreamingConv(_ body: (inout [ChatMessage]) -> Void) {
+        guard let i = conversations.firstIndex(where: { $0.id == streamingConvID }) else { return }
+        body(&conversations[i].messages)
     }
 
     /// 后台线程读取钥匙串回填三个 Key：不阻塞主线程，重签后首启的授权弹框也不再卡住刘海出现。
     /// 测试参数域已注入的值优先，不覆盖
     private func loadKeysFromKeychain() {
+        let account = currentKeychainAccount   // 当前套的账号（首套=chatAPIKey）
         Task.detached(priority: .userInitiated) {
-            let api = KeychainStore.read("chatAPIKey") ?? ""
+            let api = KeychainStore.read(account) ?? ""
             let tavily = KeychainStore.read("chatTavilyKey") ?? ""
             let brave = KeychainStore.read("chatBraveKey") ?? ""
             await MainActor.run { [weak self] in
@@ -158,8 +424,20 @@ final class ChatStore: ObservableObject {
         defaults.set(baseURL, forKey: "chatBaseURL")
         defaults.set(model, forKey: "chatModel")
         defaults.set(searchEngine, forKey: "chatSearchEngine")
+        // 写回当前套配置存档（名称、URL、模型、模型列表），Key 存这套自己的钥匙串账号
+        let account = currentKeychainAccount
+        if let i = providers.firstIndex(where: { $0.id == currentProviderID }) {
+            let trimmedName = draftName.trimmingCharacters(in: .whitespaces)
+            providers[i].name = trimmedName.isEmpty ? Self.inferName(from: baseURL) : trimmedName
+            providers[i].baseURL = baseURL
+            providers[i].model = model
+            providers[i].fetchedModels = availableModels
+            providers[i].customModels = customModels
+            draftName = providers[i].name
+            persistProviders()
+        }
         // Key 只进钥匙串，不落明文配置
-        KeychainStore.save(apiKey, account: "chatAPIKey")
+        KeychainStore.save(apiKey, account: account)
         KeychainStore.save(tavilyKey, account: "chatTavilyKey")
         KeychainStore.save(braveKey, account: "chatBraveKey")
         print("[ProNotch] 已保存 AI 设置，端点: \((try? endpointURL())?.absoluteString ?? "无效")")
@@ -180,7 +458,8 @@ final class ChatStore: ObservableObject {
         let key = apiKey
         Task { [weak self] in
             do {
-                _ = try await Self.fetchAvailableModels(baseURL: url, apiKey: key)
+                let models = try await Self.fetchAvailableModels(baseURL: url, apiKey: key)
+                self?.updateAvailableModels(models)   // 探测顺带刷新列表，切换器保持新鲜
                 self?.connectivity = .ok
                 print("[ProNotch] API 连通检测: 正常")
             } catch {
@@ -224,7 +503,7 @@ final class ChatStore: ObservableObject {
             do {
                 let models = try await Self.fetchAvailableModels(baseURL: url, apiKey: key)
                 guard let self else { return }
-                self.availableModels = models
+                self.updateAvailableModels(models)
                 // 模型栏为空时自动填入第一个，少点一次
                 if self.draftModel.trimmingCharacters(in: .whitespaces).isEmpty,
                    let first = models.first {
@@ -236,6 +515,52 @@ final class ChatStore: ObservableObject {
             }
             self?.fetchingModels = false
         }
+    }
+
+    /// 右上角切换模型：立即生效并持久化，不必进设置表单
+    func selectModel(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, trimmed != model else { return }
+        model = trimmed
+        draftModel = trimmed
+        UserDefaults.standard.set(trimmed, forKey: "chatModel")
+        syncCurrentProviderModels()
+        print("[ProNotch] 已切换模型: \(trimmed)")
+    }
+
+    /// 模型列表既供设置表单也供右上角切换器，持久化后重启即用
+    private func updateAvailableModels(_ models: [String]) {
+        availableModels = models
+        UserDefaults.standard.set(models, forKey: "chatAvailableModels")
+        syncCurrentProviderModels()
+    }
+
+    /// 切换器展示的合并列表：手动添加的在前 + 服务端列表，去重；
+    /// 当前模型两边都没有（设置表单直接填的）也补进来
+    var switcherModels: [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for m in customModels + availableModels where seen.insert(m).inserted { out.append(m) }
+        if !model.isEmpty, !seen.contains(model) { out.insert(model, at: 0) }
+        return out
+    }
+
+    /// 往当前套的模型列表添加一个模型（设置页用）：只入列表、不切当前，重名不收
+    func addModelToList(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty,
+              !customModels.contains(trimmed), !availableModels.contains(trimmed) else { return }
+        customModels.append(trimmed)
+        UserDefaults.standard.set(customModels, forKey: "chatCustomModels")
+        syncCurrentProviderModels()
+        print("[ProNotch] 已添加模型到列表: \(trimmed)")
+    }
+
+    /// 移除手动添加的模型；正在用的不强制切走（列表里仍会显示当前模型）
+    func removeCustomModel(_ name: String) {
+        customModels.removeAll { $0 == name }
+        UserDefaults.standard.set(customModels, forKey: "chatCustomModels")
+        syncCurrentProviderModels()
     }
 
     /// 「截图问 AI」入口：压缩截图挂为待发附件，并请求输入框聚焦
@@ -286,9 +611,20 @@ final class ChatStore: ObservableObject {
         errorText = nil
         let attachment = draftAttachment
         draftAttachment = nil
+        ensureCurrentConversation()
         messages.append(ChatMessage(role: .user, content: trimmed, imageData: attachment))
         let history = messages.map(Self.payloadEntry)
         messages.append(ChatMessage(role: .assistant, content: ""))
+        if let i = currentIndex {
+            // 首条用户消息当侧栏标题（压掉换行，取一行放得下的长度）
+            if conversations[i].title.isEmpty {
+                let flat = trimmed.replacingOccurrences(of: "\n", with: " ")
+                conversations[i].title = String(flat.prefix(20))
+            }
+            conversations[i].updatedAt = Date()
+        }
+        streamingConvID = currentID
+        persistConversations()
         isStreaming = true
         streamTask = Task { [weak self] in
             await self?.run(question: trimmed, history: history)
@@ -342,15 +678,20 @@ final class ChatStore: ObservableObject {
 
     private func cancelBeforeStream() {
         isStreaming = false
-        if let last = messages.last, last.role == .assistant, last.content.isEmpty {
-            messages.removeLast()
+        withStreamingConv { msgs in
+            if let last = msgs.last, last.role == .assistant, last.content.isEmpty {
+                msgs.removeLast()
+            }
         }
+        persistConversations()
         print("[ProNotch] 已在搜索阶段停止")
     }
 
     private func setLastAssistantSearchCount(_ count: Int) {
-        if let index = messages.indices.last, messages[index].role == .assistant {
-            messages[index].searchResultCount = count
+        withStreamingConv { msgs in
+            if let index = msgs.indices.last, msgs[index].role == .assistant {
+                msgs[index].searchResultCount = count
+            }
         }
     }
 
@@ -450,12 +791,6 @@ final class ChatStore: ObservableObject {
         streamTask?.cancel()
     }
 
-    func clearConversation() {
-        stopStreaming()
-        messages = []
-        errorText = nil
-    }
-
     /// 拉取服务端可用模型列表（GET /v1/models，OpenAI 兼容）。
     /// 用表单当场填写的地址和 Key，不要求先保存
     static func fetchAvailableModels(baseURL: String, apiKey: String) async throws -> [String] {
@@ -515,6 +850,7 @@ final class ChatStore: ObservableObject {
         defer {
             isStreaming = false
             streamTask = nil
+            persistConversations()   // 成功、失败、停止统一在这落盘
         }
         do {
             var request = URLRequest(url: try endpointURL())
@@ -553,7 +889,9 @@ final class ChatStore: ObservableObject {
                       !content.isEmpty else { continue }
                 appendToLastAssistant(content)
             }
-            print("[ProNotch] AI 回复完成（\(messages.last?.content.count ?? 0) 字符）")
+            let chars = conversations.first(where: { $0.id == streamingConvID })?
+                .messages.last?.content.count ?? 0
+            print("[ProNotch] AI 回复完成（\(chars) 字符）")
             // 真实对话成功是最可靠的连通证据，顺带刷新状态灯
             connectivity = .ok
         } catch is CancellationError {
@@ -562,14 +900,20 @@ final class ChatStore: ObservableObject {
             print("[ProNotch] AI 回复已停止")
         } catch {
             errorText = error.localizedDescription
-            // 失败时移除空的占位回复
-            if let last = messages.last, last.role == .assistant, last.content.isEmpty {
-                messages.removeLast()
+            var imageStripped = false
+            withStreamingConv { msgs in
+                // 失败时移除空的占位回复
+                if let last = msgs.last, last.role == .assistant, last.content.isEmpty {
+                    msgs.removeLast()
+                }
+                // 关键：本次带图的 user 消息若发送失败，去掉它的图片（保留文字）——否则这条 image_url 会
+                // 永久留在历史，之后每次请求都重发它、被不支持图片的模型反复 400，会话彻底卡死。
+                if let idx = msgs.indices.last, msgs[idx].role == .user, msgs[idx].imageData != nil {
+                    msgs[idx].imageData = nil
+                    imageStripped = true
+                }
             }
-            // 关键：本次带图的 user 消息若发送失败，去掉它的图片（保留文字）——否则这条 image_url 会
-            // 永久留在历史，之后每次请求都重发它、被不支持图片的模型反复 400，会话彻底卡死。
-            if let idx = messages.indices.last, messages[idx].role == .user, messages[idx].imageData != nil {
-                messages[idx].imageData = nil
+            if imageStripped {
                 errorText = "图片发送失败，当前模型可能不支持图片：\(error.localizedDescription)"
             }
             print("[ProNotch] AI 请求失败: \(error.localizedDescription)")
@@ -580,8 +924,9 @@ final class ChatStore: ObservableObject {
     }
 
     private func appendToLastAssistant(_ chunk: String) {
-        guard let last = messages.indices.last,
-              messages[last].role == .assistant else { return }
-        messages[last].content += chunk
+        withStreamingConv { msgs in
+            guard let last = msgs.indices.last, msgs[last].role == .assistant else { return }
+            msgs[last].content += chunk
+        }
     }
 }

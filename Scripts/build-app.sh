@@ -24,5 +24,15 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$BIN" "$APP_DIR/Contents/MacOS/ProNotch"
 cp Resources/Info.plist "$APP_DIR/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
-codesign --force --sign - "$APP_DIR" >/dev/null 2>&1 || echo "提示: 临时签名失败，不影响本机运行"
+cp Resources/TabIconLauncher.png "$APP_DIR/Contents/Resources/TabIconLauncher.png"
+# 优先用与正式安装版相同的固定证书：TCC 权限（屏幕录制等）绑定 bundle id + 签名，
+# 若 debug 构建以 ad-hoc 签名运行过，同 bundle id 换了签名会作废已授的录屏权限
+#（2026-07 实测踩坑）；无固定证书（他人机器）才回退 ad-hoc
+SIGN_ID="ProNotch Local Signing"
+if security find-identity -p codesigning -v 2>/dev/null | grep -q "$SIGN_ID"; then
+    codesign --force --sign "$SIGN_ID" "$APP_DIR" >/dev/null 2>&1 \
+        || codesign --force --sign - "$APP_DIR" >/dev/null 2>&1 || true
+else
+    codesign --force --sign - "$APP_DIR" >/dev/null 2>&1 || echo "提示: 临时签名失败，不影响本机运行"
+fi
 echo "已生成: ${APP_DIR}（$(lipo -archs "$APP_DIR/Contents/MacOS/ProNotch" 2>/dev/null || echo 未知架构)）"

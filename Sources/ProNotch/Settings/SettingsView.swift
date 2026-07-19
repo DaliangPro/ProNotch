@@ -64,7 +64,17 @@ struct SettingsView: View {
         .onAppear {
             claudeConnected = GlowHookInstaller.isInstalled(.claude)
             codexConnected = GlowHookInstaller.isInstalled(.codex)
+            applyPendingSection()
         }
+        .onChange(of: settings.pendingSection) { _, _ in applyPendingSection() }
+    }
+
+    /// 消费 SettingsStore.pendingSection：刘海等外部入口要求定位到某分区时切页并清空，
+    /// 让「API 设置…」能直接落到「AI 闪问」页
+    private func applyPendingSection() {
+        guard let raw = settings.pendingSection, let sec = Section(rawValue: raw) else { return }
+        selected = sec
+        settings.pendingSection = nil
     }
 
     @ViewBuilder private var selectedContent: some View {
@@ -121,7 +131,42 @@ struct SettingsView: View {
             if let hint = settings.loginItemHint {
                 noteText(hint, color: .orange)
             }
+
+            Text("刘海两侧功能区").font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.white.opacity(0.85)).padding(.top, 4)
+            SettingsCard {
+                slotRow("左侧显示", selection: $settings.leftSlot)
+                CardDivider()
+                slotRow("右侧显示", selection: $settings.rightSlot)
+            }
+            Text("收起状态的刘海两侧常驻显示所选内容；两侧都关闭时，刘海恢复原始宽度。天气需要定位权限（系统设置 → 隐私与安全性 → 定位服务）。")
+                .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 2)
         }
+    }
+
+    /// 功能区内容选择行（左/右侧共用）：菜单列出全部可选组件
+    private func slotRow(_ label: String, selection: Binding<NotchSlot>) -> some View {
+        HStack {
+            Text(label).font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+            Spacer()
+            Menu {
+                ForEach(NotchSlot.allCases, id: \.self) { slot in
+                    Button(slot.title) { selection.wrappedValue = slot }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(selection.wrappedValue.title).font(.system(size: 12))
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 9))
+                }
+                .foregroundColor(.white.opacity(0.85))
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.12)))
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
     }
 
     private var clipboardLimitRow: some View {
@@ -401,14 +446,84 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - AI 闪问（独立页：对话模型 + 联网搜索，各带测试）
+    // MARK: - AI 闪问（独立页：多套配置 + 每套多模型 + 联网搜索）
     private var chatContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             pageTitle("AI 闪问")
 
-            sectionLabel("对话模型")
-            APIEndpointEditor(baseURL: $chatStore.draftBaseURL, apiKey: $chatStore.draftAPIKey,
-                              model: $chatStore.draftModel)
+            SettingsCard {
+                HStack {
+                    Text("呼出快捷键").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+                    Spacer()
+                    ShortcutRecorderField(shortcut: $settings.chatShortcut)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+            }
+            Text("设定后，在任意位置按下即从刘海弹出这个对话页并聚焦输入框；已停在闪问页时再按收起。")
+                .font(.system(size: 11)).foregroundColor(.white.opacity(0.35))
+                .fixedSize(horizontal: false, vertical: true).padding(.leading, 2)
+
+            sectionLabel("配置（可保存多套，如 DeepSeek / Claude，点胶囊切换）")
+            chatProviderBar
+
+            SettingsCard {
+                fieldRow("名称") { themedField("给这套起个名，如 DeepSeek / Claude", text: $chatStore.draftName) }
+                CardDivider()
+                fieldRow("API 地址") { themedField("https://api.deepseek.com", text: $chatStore.draftBaseURL) }
+                CardDivider()
+                fieldRow("API Key") {
+                    SecureField("sk-…", text: $chatStore.draftAPIKey)
+                        .textFieldStyle(.plain).font(.system(size: 13)).foregroundColor(.white).frame(maxWidth: .infinity)
+                }
+                CardDivider()
+                fieldRow("模型") {
+                    TextField("", text: $chatStore.draftModel,
+                              prompt: Text(chatStore.availableModels.isEmpty ? "如 deepseek-chat，或点「获取模型」" : "选择或输入模型名")
+                                  .foregroundColor(.white.opacity(0.28)))
+                        .textFieldStyle(.plain).font(.system(size: 13)).foregroundColor(.white).frame(maxWidth: .infinity)
+                    if !chatStore.switcherModels.isEmpty {
+                        Menu {
+                            ForEach(chatStore.switcherModels, id: \.self) { m in Button(m) { chatStore.draftModel = m } }
+                        } label: {
+                            Image(systemName: "chevron.up.chevron.down").font(.system(size: 10, weight: .medium)).foregroundColor(.white.opacity(0.6))
+                        }
+                        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                    }
+                    Button { chatStore.fetchModels() } label: {
+                        Group {
+                            if chatStore.fetchingModels { ProgressView().controlSize(.small) }
+                            else { Text("获取模型").font(.system(size: 12)) }
+                        }
+                        .foregroundColor(canFetchChatModels ? .white.opacity(0.85) : .white.opacity(0.35))
+                        .padding(.horizontal, 10).padding(.vertical, 4)
+                        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(canFetchChatModels ? 0.12 : 0.05)))
+                    }
+                    .buttonStyle(.plain).disabled(!canFetchChatModels).fixedSize()
+                }
+                CardDivider()
+                modelStatusRow
+            }
+            if let fetchError = chatStore.fetchError {
+                noteText(fetchError, color: .red.opacity(0.85))
+            }
+
+            sectionLabel("模型列表（右上角切换器在这些之间切换）")
+            chatModelListCard
+
+            if chatStore.providers.count > 1 {
+                HStack {
+                    Button { chatStore.deleteProvider(chatStore.currentProviderID) } label: {
+                        Label("删除这套配置", systemImage: "trash")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(Color(red: 1.0, green: 0.42, blue: 0.42))
+                            .padding(.horizontal, 12).padding(.vertical, 5)
+                            .background(Capsule().fill(Color.red.opacity(0.18)))
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                }
+                .padding(.leading, 2)
+            }
 
             sectionLabel("联网搜索")
             SettingsCard {
@@ -421,9 +536,124 @@ struct SettingsView: View {
 
             saveRow
 
-            Text("对话模型兼容 OpenAI /v1/chat/completions；联网搜索在对话输入框左侧地球图标开关。改完点「保存」生效。")
+            Text("每套配置各自保存地址、Key 与多个模型；兼容 OpenAI /v1/chat/completions。联网搜索在对话输入框左侧地球图标开关。改完点「保存」生效。")
                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.35))
                 .fixedSize(horizontal: false, vertical: true).padding(.leading, 2)
+        }
+    }
+
+    /// 顶部配置切换条：各套一枚胶囊 + 末尾「＋」新增（点胶囊载入该套 URL/Key/模型）
+    private var chatProviderBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(chatStore.providers) { p in
+                    let selected = p.id == chatStore.currentProviderID
+                    Button { chatStore.activateProvider(p.id) } label: {
+                        Text(p.name.isEmpty ? "未命名" : p.name)
+                            .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                            .foregroundColor(selected ? .white : .white.opacity(0.6))
+                            .lineLimit(1)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color.white.opacity(selected ? 0.16 : 0.06)))
+                    }
+                    .buttonStyle(.plain)
+                }
+                Button { chatStore.addProvider() } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.7))
+                        .frame(width: 30, height: 30)
+                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.white.opacity(0.06)))
+                }
+                .buttonStyle(.plain).help("新增一套 API 配置（如 Claude）")
+            }
+            .padding(.vertical, 1)
+        }
+    }
+
+    private var canFetchChatModels: Bool {
+        !chatStore.draftBaseURL.trimmingCharacters(in: .whitespaces).isEmpty
+            && !chatStore.draftAPIKey.trimmingCharacters(in: .whitespaces).isEmpty
+            && !chatStore.fetchingModels
+    }
+
+    /// 这套配置的模型清单：点选设为当前模型（草稿，保存生效），手动加的可删，底部现填现加
+    private var chatModelListCard: some View {
+        let models = chatStore.switcherModels
+        return SettingsCard {
+            if models.isEmpty {
+                HStack {
+                    Text("还没有模型，下方可添加，或在上方点「获取模型」自动拉取")
+                        .font(.system(size: 12)).foregroundColor(.white.opacity(0.45))
+                    Spacer()
+                }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+                CardDivider()
+            } else {
+                ForEach(models, id: \.self) { name in
+                    chatModelManageRow(name)
+                    CardDivider()
+                }
+            }
+            ChatModelAddRow { name in
+                chatStore.addModelToList(name)
+                chatStore.draftModel = name   // 加完顺手选为当前（草稿，保存后生效）
+            }
+        }
+    }
+
+    private func chatModelManageRow(_ name: String) -> some View {
+        HStack(spacing: 8) {
+            Button { chatStore.draftModel = name } label: {
+                HStack {
+                    Text(name).font(.system(size: 13)).foregroundColor(.white.opacity(0.9)).lineLimit(1)
+                    Spacer()
+                    if name == chatStore.draftModel {
+                        Image(systemName: "checkmark").font(.system(size: 11)).foregroundColor(.white.opacity(0.7))
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            // 手动加的模型可删；从服务端拉的不删（下次「获取模型」还会回来）
+            if chatStore.customModels.contains(name) {
+                Button { chatStore.removeCustomModel(name) } label: {
+                    Image(systemName: "xmark.circle.fill").font(.system(size: 12)).foregroundColor(.white.opacity(0.4))
+                }
+                .buttonStyle(.plain).help("从列表移除")
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
+    }
+
+    /// 「＋ 添加模型」常显输入行：回车或点「添加」加进当前套的模型列表
+    private struct ChatModelAddRow: View {
+        let onAdd: (String) -> Void
+        @State private var text = ""
+
+        var body: some View {
+            HStack(spacing: 8) {
+                Image(systemName: "plus").font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+                TextField("", text: $text,
+                          prompt: Text("输入模型名，回车添加").foregroundColor(.white.opacity(0.28)))
+                    .textFieldStyle(.plain).font(.system(size: 13)).foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .onSubmit(commit)
+                if !text.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Button("添加", action: commit)
+                        .buttonStyle(.plain).font(.system(size: 12)).foregroundColor(.cyan)
+                }
+            }
+            .padding(.horizontal, 14).padding(.vertical, 9)
+        }
+
+        private func commit() {
+            let t = text.trimmingCharacters(in: .whitespaces)
+            guard !t.isEmpty else { return }
+            onAdd(t)
+            text = ""
         }
     }
 

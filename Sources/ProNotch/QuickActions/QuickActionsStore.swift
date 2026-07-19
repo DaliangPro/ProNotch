@@ -1,30 +1,13 @@
 import AppKit
 import SwiftUI
 
-/// 刘海两侧快捷操作：区域截图、应用设置、熄屏锁定、防休眠、外观切换
+/// 刘海两侧快捷操作：应用设置、防休眠、净屏、外观切换
 @MainActor
 final class QuickActionsStore: ObservableObject {
     enum AppearanceMode: String {
         case system = "系统"
         case dark = "深色"
         case light = "浅色"
-    }
-
-    /// 左侧快捷动作（可拖动排序）；声明序即默认序：锁屏在前、截图在后（大梁老师定）
-    enum ActionKind: String, CaseIterable {
-        case lockScreen
-        case screenshot
-        case appSettings
-
-        /// 旧 rawValue 兼容映射（系统设置 → 应用设置），保留已存的拖动顺序
-        static let legacyNames: [String: ActionKind] = ["systemSettings": .appSettings]
-    }
-
-    /// 快捷动作顺序（持久化）
-    @Published var actionOrder: [ActionKind] {
-        didSet {
-            UserDefaults.standard.set(actionOrder.map(\.rawValue), forKey: "quickActionOrder2")
-        }
     }
 
     @Published private(set) var caffeinateActive = false
@@ -50,10 +33,6 @@ final class QuickActionsStore: ObservableObject {
     private var themeObserver: Any?
 
     init() {
-        // key 升位（quickActionOrder → quickActionOrder2）：默认序改为「锁屏、截图」，老持久化一次性重置
-        let saved = (UserDefaults.standard.stringArray(forKey: "quickActionOrder2") ?? [])
-            .compactMap { ActionKind(rawValue: $0) ?? ActionKind.legacyNames[$0] }
-        actionOrder = Set(saved) == Set(ActionKind.allCases) ? saved : ActionKind.allCases
         desktopIconsHidden = Self.readDesktopIconsHidden()
         appearanceMode = Self.readAppearanceMode()
         // 系统外观变化（无论谁触发）都同步分段控件状态
@@ -122,39 +101,11 @@ final class QuickActionsStore: ObservableObject {
 
     // MARK: - 其他快捷操作
 
-    /// 区域截图到剪贴板（-i 交互选区 -c 进剪贴板，配合剪贴板历史自动入列）。
-    /// 首次使用系统会请求屏幕录制权限
-    func screenshotToClipboard() {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
-        task.arguments = ["-i", "-c"]
-        do {
-            try task.run()
-            print("[ProNotch] 已唤起区域截图")
-        } catch {
-            print("[ProNotch] 截图唤起失败: \(error.localizedDescription)")
-        }
-    }
-
     /// 打开 ProNotch 自己的设置窗口（窗口由 AppDelegate 持有，走通知解耦）
     func openAppSettings() {
         NotificationCenter.default.post(
             name: NSNotification.Name("ProNotchOpenSettings"), object: nil)
         print("[ProNotch] 打开应用设置")
-    }
-
-    /// 熄屏锁定：CGSession 在新版 macOS 已移除，用 pmset 熄屏替代；
-    /// 配合系统「唤醒后立即要求密码」（默认开启）即等效锁屏
-    func lockScreen() {
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/usr/bin/pmset")
-        task.arguments = ["displaysleepnow"]
-        do {
-            try task.run()
-            print("[ProNotch] 已熄屏锁定")
-        } catch {
-            print("[ProNotch] 熄屏失败: \(error.localizedDescription)")
-        }
     }
 
     /// 净屏开关：隐藏/恢复桌面全部图标。走 Finder 的 CreateDesktop 偏好（标准做法，

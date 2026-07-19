@@ -14,6 +14,10 @@ final class SettingsStore: ObservableObject {
     }
     @Published private(set) var loginItemHint: String?
 
+    /// 打开设置窗口时要求定位到的分区（SettingsView.Section 的 rawValue，如 "AI 闪问"）；
+    /// 由刘海内入口（如模型切换器「API 设置…」）置值，SettingsView 显示后消费并清空
+    @Published var pendingSection: String?
+
     /// 当前屏幕有全屏应用时隐藏整个刘海（默认开启：外接屏假刘海会遮挡全屏内容）
     @Published var hideNotchInFullscreen: Bool {
         didSet {
@@ -28,6 +32,26 @@ final class SettingsStore: ObservableObject {
     private static var serviceStatus: SMAppService.Status {
         SMAppService.mainApp.status
     }
+
+    // MARK: - 收起态刘海两侧功能区
+    /// 左/右功能区内容（none 关闭该侧）；变更即持久化并通知刘海窗口调整收起态宽度
+    @Published var leftSlot: NotchSlot {
+        didSet {
+            UserDefaults.standard.set(leftSlot.rawValue, forKey: "notchLeftSlot")
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ProNotchSlotSettingsChanged"), object: nil)
+        }
+    }
+    @Published var rightSlot: NotchSlot {
+        didSet {
+            UserDefaults.standard.set(rightSlot.rawValue, forKey: "notchRightSlot")
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ProNotchSlotSettingsChanged"), object: nil)
+        }
+    }
+    /// 任一侧开启即认为功能区激活（收起态黑条加宽保持左右对称，
+    /// 只开一侧时另一侧留黑——形状必须以物理刘海为中心，不能不对称）
+    var sideSlotsActive: Bool { leftSlot != .none || rightSlot != .none }
 
     /// 剪贴板历史保留条数
     @Published var clipboardLimit: Int {
@@ -64,6 +88,19 @@ final class SettingsStore: ObservableObject {
             }
             NotificationCenter.default.post(
                 name: NSNotification.Name("ProNotchClipboardShortcutChanged"), object: nil)
+        }
+    }
+
+    /// AI 闪问全局快捷键（nil = 未设置）：按下从刘海弹出对话页；变更后通知 AppDelegate 重新注册
+    @Published var chatShortcut: ScreenshotShortcut? {
+        didSet {
+            if let s = chatShortcut, let data = try? JSONEncoder().encode(s) {
+                UserDefaults.standard.set(data, forKey: "chatShortcut")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "chatShortcut")
+            }
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ProNotchChatShortcutChanged"), object: nil)
         }
     }
 
@@ -136,6 +173,8 @@ final class SettingsStore: ObservableObject {
         ])
         hideNotchInFullscreen = UserDefaults.standard.bool(forKey: "hideNotchInFullscreen")
         clipboardLimit = UserDefaults.standard.integer(forKey: "clipboardLimit")
+        leftSlot = NotchSlot(rawValue: UserDefaults.standard.string(forKey: "notchLeftSlot") ?? "") ?? .memory
+        rightSlot = NotchSlot(rawValue: UserDefaults.standard.string(forKey: "notchRightSlot") ?? "") ?? .weather
         glowEnabled = UserDefaults.standard.bool(forKey: "glowEnabled")
         glowClaudeColorHex = UserDefaults.standard.string(forKey: "glowClaudeColorHex") ?? "#FF8A00"
         glowCodexColorHex = UserDefaults.standard.string(forKey: "glowCodexColorHex") ?? "#0A84FF"
@@ -154,6 +193,11 @@ final class SettingsStore: ObservableObject {
             screenshotShortcut = try? JSONDecoder().decode(ScreenshotShortcut.self, from: data)
         } else {
             screenshotShortcut = nil
+        }
+        if let data = UserDefaults.standard.data(forKey: "chatShortcut") {
+            chatShortcut = try? JSONDecoder().decode(ScreenshotShortcut.self, from: data)
+        } else {
+            chatShortcut = nil
         }
         // 剪贴板快捷键：有存值用存值；从未设过则给默认 ⌥⌘V 并持久化；用户清空过则尊重为 nil
         if let data = UserDefaults.standard.data(forKey: "clipboardShortcut") {

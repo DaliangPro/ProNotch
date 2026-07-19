@@ -3,16 +3,28 @@ import SwiftUI
 /// 额度页：Claude Code 与 Codex 两张卡片，各显示 5 小时窗 / 7 天窗的用量
 struct UsageView: View {
     @EnvironmentObject var store: UsageStore
+    /// 出场动画开关：三卡错落浮入，进度条随后从 0 充能到当前值
+    @State private var entrancePlayed = false
 
     var body: some View {
         HStack(spacing: 12) {
-            QuotaCard(title: "Claude Code", polys: BrandIconPaths.claude, quota: store.claude)
-            QuotaCard(title: "Codex", polys: BrandIconPaths.openai, quota: store.codex)
-            QuotaCard(title: "Grok", polys: BrandIconPaths.grok, quota: store.grok)
+            let cards = [("Claude Code", BrandIconPaths.claude, store.claude),
+                         ("Codex", BrandIconPaths.openai, store.codex),
+                         ("Grok", BrandIconPaths.grok, store.grok)]
+            ForEach(Array(cards.enumerated()), id: \.offset) { i, card in
+                QuotaCard(title: card.0, polys: card.1, quota: card.2,
+                          entrancePlayed: entrancePlayed)
+                    .offset(y: entrancePlayed ? 0 : 12)
+                    .opacity(entrancePlayed ? 1 : 0)
+                    .animation(.spring(response: 0.38, dampingFraction: 0.66)
+                        .delay(Double(i) * 0.07), value: entrancePlayed)
+            }
         }
-        .padding(14)
+        .padding(.vertical, 14)
+        .padding(.horizontal, ExpandedContentView.pageHInset)   // 左右留白对齐全局基准线
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { store.refresh() }
+        .pageEntrance($entrancePlayed)
     }
 }
 
@@ -21,6 +33,7 @@ private struct QuotaCard: View {
     let title: String
     let polys: [[CGPoint]]
     let quota: ServiceQuota?
+    var entrancePlayed = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -44,8 +57,14 @@ private struct QuotaCard: View {
                         .frame(maxWidth: .infinity, alignment: .center)
                     Spacer()
                 } else {
-                    if let p = q.primary { WindowRow(label: p.label, window: p, prominent: true) }
-                    if let s = q.secondary { WindowRow(label: s.label, window: s, prominent: false) }
+                    if let p = q.primary {
+                        WindowRow(label: p.label, window: p, prominent: true,
+                                  entrancePlayed: entrancePlayed)
+                    }
+                    if let s = q.secondary {
+                        WindowRow(label: s.label, window: s, prominent: false,
+                                  entrancePlayed: entrancePlayed)
+                    }
                     Spacer(minLength: 12)   // 把 Top 3 压到卡片底部（三卡等高，底部自然对齐）
                     if !q.topTasks.isEmpty {
                         VStack(alignment: .leading, spacing: 5) {
@@ -91,6 +110,7 @@ private struct WindowRow: View {
     let label: String
     let window: QuotaWindow
     let prominent: Bool
+    var entrancePlayed = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -112,8 +132,12 @@ private struct WindowRow: View {
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
                         Capsule().fill(Color.white.opacity(0.1))
+                        // 出场充能：从 0 涨到当前值；数据刷新时 pct 变化不受此动画影响
                         Capsule().fill(barColor(pct))
-                            .frame(width: max(3, geo.size.width * min(1, pct / 100)))
+                            .frame(width: max(3, geo.size.width * min(1, pct / 100)
+                                                 * (entrancePlayed ? 1 : 0)))
+                            .animation(.easeOut(duration: 0.55).delay(0.18),
+                                       value: entrancePlayed)
                     }
                 }
                 .frame(height: prominent ? 6 : 4)

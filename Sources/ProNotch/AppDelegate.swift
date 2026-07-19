@@ -32,6 +32,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let screenshotHotKey = GlobalHotKey(id: 1)
     /// 剪贴板切换器全局快捷键
     private let clipboardHotKey = GlobalHotKey(id: 2)
+    /// AI 闪问全局快捷键（弹出刘海对话页）
+    private let chatHotKey = GlobalHotKey(id: 3)
 
     // 数据层在应用级持有：换屏重建刘海窗口时状态不丢失
     private var launcherStore: LauncherStore!
@@ -42,32 +44,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var agentSessionsStore: AgentSessionsStore!
     private var quickActions: QuickActionsStore!
     private var settingsStore: SettingsStore!
+    private var memoryStore: MemoryStore!
+    private var weatherStore: WeatherStore!
     private let settingsWindow = SettingsWindowController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.migrateFromNotchHubIfNeeded()
         launcherStore = LauncherStore()
         clipboardStore = ClipboardStore()
+        snippetStore = SnippetStore()          // 提前初始化：DEBUG 配图分支与快捷键切换器都依赖它
         #if DEBUG
         // 一次性生成 README 配图：早于 ChatStore（避免同步读钥匙串弹框阻塞主线程），渲染后退出
         if CommandLine.arguments.contains("-snapshotDocs") {
             clipboardStore.loadDemoItems()                      // 演示数据，不暴露真实剪贴板
-            ClipboardSwitcherController.shared.configure(store: clipboardStore)
+            ClipboardSwitcherController.shared.configure(store: clipboardStore, snippets: snippetStore)
             debugSnapshotSwitcher()
             debugSnapshotToolbar()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { NSApp.terminate(nil) }
             return
         }
         #endif
-        snippetStore = SnippetStore()
+        // 对齐核查：离屏渲染展开面板四页 PNG 后退出（-snapshotPanel）。
+        // 不放 #if DEBUG——须用 /Applications 正式签名实例跑：钥匙串 ACL 已授权，
+        // ChatStore 的后台 Key 回填不会弹授权框（debug 裸二进制会弹）
+        if CommandLine.arguments.contains("-snapshotPanel") {
+            chatStore = ChatStore()
+            usageStore = UsageStore()
+            agentSessionsStore = AgentSessionsStore()
+            quickActions = QuickActionsStore()
+            settingsStore = SettingsStore()
+            memoryStore = MemoryStore()
+            weatherStore = WeatherStore()
+            weatherStore.loadDemoWeather()   // 渲染实例不定位不联网，也不弹授权框
+            launcherStore.refreshIfNeeded()
+            debugSnapshotPanel()
+            return   // 渲染实例不装菜单/状态栏/热键/监控，渲完 terminate
+        }
         chatStore = ChatStore()
         usageStore = UsageStore()
         agentSessionsStore = AgentSessionsStore()
         quickActions = QuickActionsStore()
         settingsStore = SettingsStore()
+        memoryStore = MemoryStore()
+        weatherStore = WeatherStore()
         launcherStore.refreshIfNeeded()
         clipboardStore.startMonitoring()
-        ClipboardSwitcherController.shared.configure(store: clipboardStore)
+        ClipboardSwitcherController.shared.configure(store: clipboardStore, snippets: snippetStore)
 
         setupMainMenu()
         setupStatusItem()
@@ -127,6 +149,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             Task { @MainActor in
                 guard let self else { return }
                 self.clipboardHotKey.update(self.settingsStore.clipboardShortcut)
+            }
+        }
+
+        // AI 闪问全局快捷键：按下从刘海弹出对话页；已停在闪问页时再按收起。改键后重新注册
+        chatHotKey.onTrigger = { [weak self] in
+            Task { @MainActor in self?.toggleChatPanel() }
+        }
+        chatHotKey.update(settingsStore.chatShortcut)
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ProNotchChatShortcutChanged"),
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.chatHotKey.update(self.settingsStore.chatShortcut)
             }
         }
 
@@ -198,9 +234,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugSnapshotToolbar),
             name: NSNotification.Name("com.daliangpro.ProNotch.snaptoolbar"), object: nil)
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugToggleSnippets),
-            name: NSNotification.Name("com.daliangpro.ProNotch.snippets"), object: nil)
         // 调试入口：驱动 Codex notify 转发器接入 / 卸载，验证软件层接入
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugCodexHookOn),
@@ -274,17 +307,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         print("[ProNotch] 调试：Codex notify 卸载 = \(GlowHookInstaller.setInstalled(.codex, false))")
     }
 
-    /// 调试用：切换剪贴板页的「历史/话术」子视图
-    @objc private func debugToggleSnippets() {
-        clipboardStore.showingSnippets.toggle()
-        print("[ProNotch] 剪贴板子视图: \(clipboardStore.showingSnippets ? "话术库" : "历史")")
-    }
-
     /// 调试用：离屏渲染剪贴板切换器到 PNG（生成 README 配图，无需屏幕录制权限）
     @objc private func debugSnapshotSwitcher() {
         let root = ZStack {
             Color(white: 0.08)
-            ClipboardSwitcherView(store: clipboardStore, controller: .shared)
+            ClipboardSwitcherView(store: clipboardStore, snippets: snippetStore, controller: .shared)
                 .environmentObject(clipboardStore!)
         }
         .frame(width: 960, height: 400)
@@ -323,6 +350,109 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             try? data.write(to: URL(fileURLWithPath: "/tmp/pronotch-toolbar.png"))
             print("[ProNotch] 超级截图工具栏快照已保存")
         }
+    }
+
+    /// 对齐核查：离屏渲染展开面板四页到 /tmp/pronotch-panel-<页>.png，
+    /// 叠红色基准线（左 x=43=20+pageHInset、右 x=917 对称），在图上直接检查
+    /// 「各页左缘是否压线、右侧留白是否对称」。渲染完自动退出进程
+    @objc private func debugSnapshotPanel() {
+        // 假刘海几何取 14 寸 MBP 典型值；挂进离屏 window 让 onAppear/pageEntrance 生效
+        let vm = NotchViewModel(notchRect: CGRect(x: 380, y: 0, width: 200, height: 38))
+        vm.debugToggle()   // 置 isExpanded=true：各页 pageEntrance 才会翻 played、内容可见
+        let size = vm.expandedShapeSize
+        let guide = 20 + ExpandedContentView.pageHInset
+        let pages: [(NotchViewModel.Tab, String)] = [(.launcher, "launcher"), (.chat, "chat"),
+                                                     (.usage, "usage"), (.agent, "agent"),
+                                                     (.widgets, "widgets")]
+        var index = 0
+        // 收起态渲染：黑形状在灰底上才看得见，独立 vm（不展开）跑真实容器视图
+        func renderCollapsed() {
+            let cvm = NotchViewModel(notchRect: CGRect(x: 380, y: 0, width: 200, height: 38))
+            // 渲染实例没有 NotchWindowController 的设置联动，这里手动同步一次
+            // （可用 -notchLeftSlot none -notchRightSlot none 参数验证「两侧全关」形态）
+            cvm.sideSlotsActive = self.settingsStore.sideSlotsActive
+            let root = ZStack(alignment: .top) {
+                Color(white: 0.3)
+                NotchContainerView()
+            }
+            .environmentObject(cvm)
+            .environmentObject(self.launcherStore!)
+            .environmentObject(self.clipboardStore!)
+            .environmentObject(self.chatStore!)
+            .environmentObject(self.quickActions!)
+            .environmentObject(self.settingsStore!)
+            .environmentObject(self.usageStore!)
+            .environmentObject(self.agentSessionsStore!)
+            .environmentObject(self.memoryStore!)
+            .environmentObject(self.weatherStore!)
+            .frame(width: size.width, height: size.height)
+            let hosting = NSHostingView(rootView: root)
+            hosting.appearance = NSAppearance(named: .darkAqua)
+            hosting.frame = NSRect(origin: .zero, size: size)
+            let win = NSWindow(contentRect: hosting.frame, styleMask: .borderless,
+                               backing: .buffered, defer: false)
+            win.isReleasedWhenClosed = false
+            win.contentView = hosting
+            hosting.layoutSubtreeIfNeeded()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                if let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
+                    hosting.cacheDisplay(in: hosting.bounds, to: rep)
+                    if let data = rep.representation(using: .png, properties: [:]) {
+                        try? data.write(to: URL(fileURLWithPath: "/tmp/pronotch-panel-collapsed.png"))
+                        print("[ProNotch] 面板快照: collapsed")
+                    }
+                }
+                win.close()
+                NSApp.terminate(nil)
+            }
+        }
+        func renderNext() {
+            guard index < pages.count else { renderCollapsed(); return }
+            let (tab, name) = pages[index]; index += 1
+            vm.activeTab = tab   // 每页新建视图树：displayedTab 初始 nil 直接显示该页，无过渡
+            let root = ZStack(alignment: .top) {
+                Color.black
+                ExpandedContentView()
+            }
+            .environmentObject(vm)
+            .environmentObject(self.launcherStore!)
+            .environmentObject(self.clipboardStore!)
+            .environmentObject(self.chatStore!)
+            .environmentObject(self.quickActions!)
+            .environmentObject(self.settingsStore!)
+            .environmentObject(self.usageStore!)
+            .environmentObject(self.agentSessionsStore!)
+            .environmentObject(self.memoryStore!)
+            .environmentObject(self.weatherStore!)
+            .overlay(alignment: .topLeading) {
+                Rectangle().fill(Color.red.opacity(0.85)).frame(width: 1).padding(.leading, guide)
+            }
+            .overlay(alignment: .topTrailing) {
+                Rectangle().fill(Color.red.opacity(0.85)).frame(width: 1).padding(.trailing, guide)
+            }
+            .frame(width: size.width, height: size.height)
+            let hosting = NSHostingView(rootView: root)
+            hosting.appearance = NSAppearance(named: .darkAqua)
+            hosting.frame = NSRect(origin: .zero, size: size)
+            let win = NSWindow(contentRect: hosting.frame, styleMask: .borderless,
+                               backing: .buffered, defer: false)
+            win.isReleasedWhenClosed = false   // ARC 下 close 默认连带 release，池排空时会过度释放崩溃
+            win.contentView = hosting   // 进 window 树 onAppear 才触发；不 orderFront，离屏
+            hosting.layoutSubtreeIfNeeded()
+            // pageEntrance 0.10s 后翻 played；cacheDisplay 渲模型终值，不必等动画播完
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                if let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
+                    hosting.cacheDisplay(in: hosting.bounds, to: rep)
+                    if let data = rep.representation(using: .png, properties: [:]) {
+                        try? data.write(to: URL(fileURLWithPath: "/tmp/pronotch-panel-\(name).png"))
+                        print("[ProNotch] 面板快照: \(name)")
+                    }
+                }
+                win.close()
+                renderNext()
+            }
+        }
+        renderNext()
     }
 
     /// 调试用：离屏渲染设置界面到 PNG（无需打开窗口与屏幕录制权限）
@@ -428,6 +558,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         settingsWindow.show(settings: settingsStore, chatStore: chatStore, glow: glowController, updates: updateChecker)
     }
 
+    /// AI 闪问快捷键：未展开→展开到闪问并聚焦输入框；已展开在别的页→切到闪问；已在闪问→收起
+    @objc private func toggleChatPanel() {
+        guard let wc = windowControllers.first else { return }
+        let vm = wc.viewModel
+        if vm.isExpanded, vm.activeTab == .chat {
+            vm.collapseNow()
+            return
+        }
+        vm.activeTab = .chat
+        vm.expandProgrammatically()
+        // 展开动画落定、面板成为 key 后聚焦输入框，直接打字
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            self?.chatStore.focusInputTick += 1
+        }
+    }
+
     /// 系统标准关于面板：图标、名称、版本来自 Info.plist，
     /// 署名与可点击的 GitHub 链接放在 credits 区
     @objc private func showAbout() {
@@ -475,12 +621,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 screen: screen,
                 launcherStore: launcherStore,
                 clipboardStore: clipboardStore,
-                snippetStore: snippetStore,
                 chatStore: chatStore,
                 quickActions: quickActions,
                 settingsStore: settingsStore,
                 usageStore: usageStore,
-                agentSessionsStore: agentSessionsStore)
+                agentSessionsStore: agentSessionsStore,
+                memoryStore: memoryStore,
+                weatherStore: weatherStore)
         }
     }
 
@@ -680,21 +827,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
     private func stopUsageTimer() { usageTimer?.invalidate(); usageTimer = nil }
 
-    /// 额度栏标题：C<5h%> · X<5h%>，高占用变色；无数据的服务省略。仅额度栏存在时更新
+    /// 额度栏标题：各家品牌 logo + 5h%；高占用百分比变色；无数据的服务省略。仅额度栏存在时更新
     private func updateUsageTitle() {
         guard let button = usageStatusItem?.button else { return }
-        let parts: [(String, ServiceQuota?)] = [("C", usageStore.claude), ("X", usageStore.codex), ("G", usageStore.grok)]
+        let items: [(polys: [[CGPoint]], tint: NSColor, q: ServiceQuota?)] = [
+            (BrandIconPaths.claude, NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1), usageStore.claude),   // Claude 橙
+            (BrandIconPaths.openai, .systemCyan, usageStore.codex),
+            (BrandIconPaths.grok,   .systemGray, usageStore.grok),
+        ]
         let title = NSMutableAttributedString()
         let base: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)]
-        for (tag, q) in parts {
-            guard let pct = q?.primary?.usedPercent else { continue }
+        for it in items {
+            guard let pct = it.q?.primary?.usedPercent else { continue }
             if title.length > 0 { title.append(NSAttributedString(string: "  ", attributes: base)) }
+            let att = NSTextAttachment()
+            att.image = brandImage(it.polys, tint: it.tint, size: 17)
+            att.bounds = CGRect(x: 0, y: -4.5, width: 17, height: 17)   // 图标与数字基线对齐
+            title.append(NSAttributedString(attachment: att))
             var seg = base
             seg[.foregroundColor] = pctColor(pct)
-            title.append(NSAttributedString(string: "\(tag)\(Int(pct.rounded()))%", attributes: seg))
+            title.append(NSAttributedString(string: " \(Int(pct.rounded()))%", attributes: seg))
         }
         button.attributedTitle = title.length > 0 ? title
             : NSAttributedString(string: "额度…", attributes: base)   // 还没数据时占位，别空着
+    }
+
+    /// 品牌 logo 渲染成菜单栏用小 NSImage：归一化折线 → 染色 evenodd 填充；Y 轴翻转适配 AppKit 坐标系
+    private func brandImage(_ polys: [[CGPoint]], tint: NSColor, size: CGFloat) -> NSImage {
+        let img = NSImage(size: NSSize(width: size, height: size))
+        img.lockFocus()
+        // 品牌色圆角底：实心色块保证在任意菜单栏背景上都醒目
+        let bg = NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: size, height: size), xRadius: size * 0.3, yRadius: size * 0.3)
+        tint.setFill(); bg.fill()
+        // 按各 logo 实际包围盒等比缩放到统一区域，保证三家视觉大小一致（长边填满、居中）
+        let pts = polys.flatMap { $0 }
+        let xs = pts.map { $0.x }, ys = pts.map { $0.y }
+        guard let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max() else { img.unlockFocus(); return img }
+        let bw = max(maxX - minX, 0.0001), bh = max(maxY - minY, 0.0001)
+        let inset = size * 0.16, avail = size - inset * 2   // 收窄留白，让 logo 在圆底里占更大面积
+        let scale = avail / max(bw, bh)
+        let offX = inset + (avail - bw * scale) / 2, offY = inset + (avail - bh * scale) / 2
+        NSColor.white.setFill()
+        let path = NSBezierPath()
+        for poly in polys {
+            guard let first = poly.first else { continue }
+            func m(_ p: CGPoint) -> NSPoint { NSPoint(x: offX + (p.x - minX) * scale, y: offY + (maxY - p.y) * scale) }
+            path.move(to: m(first))
+            for pt in poly.dropFirst() { path.line(to: m(pt)) }
+            path.close()
+        }
+        path.windingRule = .evenOdd
+        path.fill()
+        img.unlockFocus()
+        return img
     }
 
     private func pctColor(_ pct: Double) -> NSColor {

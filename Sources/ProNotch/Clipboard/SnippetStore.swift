@@ -12,11 +12,6 @@ struct Snippet: Identifiable, Codable, Equatable {
 final class SnippetStore: ObservableObject {
     @Published private(set) var snippets: [Snippet] = []
 
-    // 编辑器状态（新增与编辑共用一块输入区）
-    @Published var editorVisible = false
-    @Published var editorText = ""
-    private(set) var editingID: UUID?
-
     private let fileURL: URL = {
         let base = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -27,45 +22,22 @@ final class SnippetStore: ObservableObject {
         load()
     }
 
-    func beginNew() {
-        editingID = nil
-        editorText = ""
-        editorVisible = true
-    }
-
-    func beginEdit(_ snippet: Snippet) {
-        editingID = snippet.id
-        editorText = snippet.content
-        editorVisible = true
-    }
-
-    func cancelEditor() {
-        editorVisible = false
-        editorText = ""
-        editingID = nil
-    }
-
-    func commitEditor() {
-        let text = editorText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        if let id = editingID,
-           let index = snippets.firstIndex(where: { $0.id == id }) {
-            snippets[index].content = text
-        } else {
-            snippets.insert(Snippet(id: UUID(), content: text, date: Date()), at: 0)
-        }
-        save()
-        cancelEditor()
-        print("[ProNotch] 话术已保存（共 \(snippets.count) 条）")
-    }
-
-    /// 从剪贴板历史等外部来源直接入库
+    /// 新增话术：入库并置顶
     func add(content: String) {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         snippets.insert(Snippet(id: UUID(), content: text, date: Date()), at: 0)
         save()
         print("[ProNotch] 已存入话术库（共 \(snippets.count) 条）")
+    }
+
+    /// 纯数据更新（切换器面板自管编辑态，不经内部 editor 状态）
+    func update(id: UUID, content: String) {
+        let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty,
+              let index = snippets.firstIndex(where: { $0.id == id }) else { return }
+        snippets[index].content = text
+        save()
     }
 
     func delete(_ snippet: Snippet) {

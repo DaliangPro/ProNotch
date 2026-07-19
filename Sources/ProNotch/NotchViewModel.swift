@@ -8,37 +8,48 @@ import SwiftUI
 @MainActor
 final class NotchViewModel: ObservableObject {
     enum Tab: String, CaseIterable {
-        case launcher, clipboard, chat, usage, agent
+        case launcher, chat, usage, agent, widgets
 
         var title: String {
             switch self {
             case .launcher: return "启动台"
-            case .clipboard: return "剪切板"
             case .chat: return "闪问"
             case .usage: return "额度"
             case .agent: return "Agent"
+            case .widgets: return "组件"
             }
         }
 
+        /// SF Symbol 名；launcher/chat 实际显示 TabButton 里的自绘图形
+        /// （App Store 风三棒 A / AI+小星，大梁老师指定），此处仅兜底
         var icon: String {
             switch self {
             case .launcher: return "square.grid.2x2"
-            case .clipboard: return "clipboard"
-            case .chat: return "bubble"
-            case .usage: return "speedometer"
-            case .agent: return "cpu"
+            case .chat: return "bolt"
+            case .usage: return "gauge.with.needle"
+            case .agent: return "apple.terminal"
+            case .widgets: return "widget.small"
             }
         }
 
         /// 历次中文 rawValue 的兼容映射，老用户已保存的拖动顺序不丢
+        /// （剪切板页已下线，只保留快捷键触发；老用户存的 clipboard 顺序项会被自动过滤）
         static let legacyNames: [String: Tab] = [
-            "启动台": .launcher, "剪贴板": .clipboard,
-            "AI 对话": .chat,
+            "启动台": .launcher, "AI 对话": .chat,
         ]
     }
 
     @Published private(set) var isExpanded = false
     @Published var activeTab: Tab = .launcher
+
+    /// 用户显式锁定：锁上后鼠标离开也不自动收起（面板边缘的锁按钮控制）。
+    /// 收起时（collapse）自动复位——锁只对「当前这次展开」有效
+    @Published var isPinned = false {
+        didSet {
+            // 锁上瞬间取消可能已排程的收起，避免刚锁又被收走
+            if isPinned { pendingCollapse?.cancel(); pendingCollapse = nil }
+        }
+    }
 
     /// 标签顺序（可拖动调整并持久化）；排第一的是每次启动的默认页
     @Published var tabOrder: [Tab] {
@@ -49,8 +60,18 @@ final class NotchViewModel: ObservableObject {
 
     /// 刘海矩形（全局坐标）
     let notchRect: CGRect
-    /// 展开后刘海下方面板的内容尺寸
-    let panelSize = CGSize(width: 720, height: 340)
+    /// 展开后刘海下方面板的内容尺寸（原 720×340，大梁老师要求整体加大约 1/3）
+    let panelSize = CGSize(width: 960, height: 455)
+    /// 收起态两侧功能区宽度（单侧）：左内存右天气（大梁老师定的自由功能区）。
+    /// 内容实测 42-49pt（含 100%/-12° 极值），56 留最小气口——首版 80 被嫌过宽
+    let sideSlotWidth: CGFloat = 56
+    /// 两侧功能区是否启用（任一侧配了内容即 true，由设置驱动）；
+    /// 关闭后收起态退回物理刘海原宽，侧区热区同步失效
+    @Published var sideSlotsActive = true
+    /// 收起态黑形状总宽 = 物理刘海 + 两侧功能区（大梁老师要求收起态更宽）
+    var collapsedShapeWidth: CGFloat {
+        notchRect.width + (sideSlotsActive ? sideSlotWidth * 2 : 0)
+    }
 
     /// 搜索框聚焦期间为 true，暂停鼠标离开触发的自动收起
     var keyboardHold = false
@@ -102,9 +123,11 @@ final class NotchViewModel: ObservableObject {
                height: notchRect.height + panelSize.height)
     }
 
-    /// 窗口固定 frame：按展开尺寸四周留白给阴影，顶边贴屏幕顶
+    /// 窗口固定 frame：按展开尺寸四周留白，顶边贴屏幕顶。
+    /// 余量 = 弹跳过冲空间 + 阴影：展开弹跳冲到 +8%（960×0.08 单边 38.4pt）
+    /// 再加 14pt 阴影约需 53pt，留 64 保底——余量不足会把过冲峰值裁在窗口边上
     var windowFrame: CGRect {
-        let margin: CGFloat = 24
+        let margin: CGFloat = 64
         let width = expandedShapeSize.width + margin * 2
         let height = expandedShapeSize.height + margin
         return CGRect(x: notchRect.midX - width / 2,
@@ -114,10 +137,15 @@ final class NotchViewModel: ObservableObject {
     }
 
     /// 收起状态的悬停触发区：刘海矩形向屏幕顶边外延伸，
-    /// 避免鼠标贴死顶边时坐标恰好落在边界外
+    /// 避免鼠标贴死顶边时坐标恰好落在边界外。
+    /// 左右扩到两侧功能区——收起态黑形状加宽后，悬停侧区同样展开
     private var enterRect: CGRect {
         var rect = notchRect
         rect.size.height += 20
+        if sideSlotsActive {
+            rect.origin.x -= sideSlotWidth
+            rect.size.width += sideSlotWidth * 2
+        }
         return rect
     }
 
@@ -228,7 +256,7 @@ final class NotchViewModel: ObservableObject {
                 pendingCollapse = nil
                 // 鼠标真实进入面板，解除调试固定，交还自动收起控制权
                 debugPinned = false
-            } else if !debugPinned, !keyboardHold, pendingCollapse == nil {
+            } else if !debugPinned, !isPinned, !keyboardHold, pendingCollapse == nil {
                 scheduleCollapse()
             }
         } else {
@@ -366,7 +394,9 @@ final class NotchViewModel: ObservableObject {
         print("[ProNotch] 展开")
         // 展开期间窗口需要接收点击与悬停
         panel?.ignoresMouseEvents = false
-        withAnimation(.spring(response: animationDuration, dampingFraction: 0.8)) {
+        // 形状只管快速长大到位；弹跳（衰减震荡）由 NotchContainerView 的
+        // scale 关键帧负责，两者叠加成一次连续的「冲进来弹三下」
+        withAnimation(.easeOut(duration: 0.22)) {
             isExpanded = true
         }
     }
@@ -375,6 +405,7 @@ final class NotchViewModel: ObservableObject {
         guard isExpanded else { return }
         print("[ProNotch] 收起")
         debugPinned = false
+        isPinned = false   // 收起即解锁：下次展开回到默认「自动收起」
         keyboardHold = false
         pendingCollapse?.cancel()
         pendingCollapse = nil
