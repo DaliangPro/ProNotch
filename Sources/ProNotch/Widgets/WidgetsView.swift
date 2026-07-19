@@ -69,6 +69,17 @@ private struct CardRule: View {
     }
 }
 
+/// 卡内元素错峰出场（大梁老师：天气卡不能一整块出来）：
+/// 上浮 7pt + 淡入，按 delay 排队——与启动台波浪/Agent 页发牌同一节奏语言
+private extension View {
+    func entranceBit(_ played: Bool, delay: Double) -> some View {
+        opacity(played ? 1 : 0)
+            .offset(y: played ? 0 : 7)
+            .animation(.spring(response: 0.35, dampingFraction: 0.7).delay(delay),
+                       value: played)
+    }
+}
+
 /// 内存卡：占用概览 + 充能进度条 + App 占用排行（大梁老师定）+ 三类明细
 private struct MemoryCard: View {
     let snapshot: MemorySnapshot?
@@ -111,7 +122,8 @@ private struct MemoryCard: View {
                 }
                 .frame(height: 6)
                 Spacer(minLength: 4)
-                // App 占用排行：谁在吃内存一目了然（活动监视器 phys_footprint 口径）。
+                // App 占用排行：谁在吃内存一目了然。Helper/服务已并入宿主 App 一行
+                //（大梁老师定），数值为组内 phys_footprint 加总（活动监视器同口径）。
                 // 视口定高 6 行、位置不动，往下滑看其余名次（大梁老师：别铺满，能滑就行）
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 8) {
@@ -211,9 +223,10 @@ private struct WeatherCard: View {
                         }
                     }
                 }
+                .entranceBit(entrancePlayed, delay: 0.1)
                 // 逐时预报：未来 6 小时——紧贴焦点行的窄条，不吃纵向空间（大梁老师定）
                 HStack(spacing: 0) {
-                    ForEach(w.hourly) { h in
+                    ForEach(Array(w.hourly.enumerated()), id: \.element.id) { i, h in
                         VStack(spacing: 3) {
                             Text(h.hourLabel)
                                 .font(.system(size: 9))
@@ -226,13 +239,14 @@ private struct WeatherCard: View {
                                 .foregroundColor(.white.opacity(0.85))
                         }
                         .frame(maxWidth: .infinity)
+                        .entranceBit(entrancePlayed, delay: 0.16 + Double(i) * 0.035)   // 6 列波浪推右
                     }
                 }
                 CardRule()
                 // 5 天预报（大梁老师：与其留白不如填内容）：五行均分弹性区，
                 // 行高封顶 44 防天数少时拉太开
                 VStack(spacing: 0) {
-                    ForEach(w.days) { d in
+                    ForEach(Array(w.days.enumerated()), id: \.element.id) { i, d in
                         HStack(spacing: 8) {
                             Text(d.dayLabel)
                                 .font(.system(size: 12))
@@ -257,16 +271,21 @@ private struct WeatherCard: View {
                         }
                         .frame(maxHeight: .infinity)
                         .frame(maxHeight: 44)   // 行高封顶：舒展但别拉满
+                        .entranceBit(entrancePlayed, delay: 0.3 + Double(i) * 0.05)   // 5 行发牌
                     }
                 }
                 .frame(maxHeight: .infinity)
                 CardRule()
                 // 底行四指标：湿度 / 风速 / 日出 / 日落
+                let metrics = [("湿度", "\(w.humidity)%"),
+                               ("风速", String(format: "%.0f km/h", w.windSpeed)),
+                               ("日出", w.sunrise.isEmpty ? "--" : w.sunrise),
+                               ("日落", w.sunset.isEmpty ? "--" : w.sunset)]
                 HStack(spacing: 0) {
-                    bottomMetric("湿度", "\(w.humidity)%")
-                    bottomMetric("风速", String(format: "%.0f km/h", w.windSpeed))
-                    bottomMetric("日出", w.sunrise.isEmpty ? "--" : w.sunrise)
-                    bottomMetric("日落", w.sunset.isEmpty ? "--" : w.sunset)
+                    ForEach(Array(metrics.enumerated()), id: \.offset) { i, m in
+                        bottomMetric(m.0, m.1)
+                            .entranceBit(entrancePlayed, delay: 0.55 + Double(i) * 0.035)   // 指标收尾
+                    }
                 }
             } else if let err = error {
                 Spacer()
