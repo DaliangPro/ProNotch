@@ -158,7 +158,7 @@ struct SettingsView: View {
 
             Text("展开面板页面").font(.system(size: 13, weight: .semibold))
                 .foregroundColor(.white.opacity(0.85)).padding(.top, 4)
-            Text("刘海展开后的功能页可在面板内左右拖动调整顺序，排在最前的是每次展开的默认页。")
+            Text("刘海展开后的功能页可在面板内左右拖动调整顺序，排在最前的是每次展开的默认页。「额度」「Agent」页会跟随你在 Agent 区的勾选自动显隐，没有可展示的内容时不出现，勾选回来后仍回到原来的位置。")
                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 2)

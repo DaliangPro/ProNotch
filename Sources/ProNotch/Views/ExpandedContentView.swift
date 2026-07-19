@@ -92,7 +92,7 @@ struct ExpandedContentView: View {
             HStack(spacing: 14) {
                 // 标签拖动换位：与启动台置顶图标同款自绘手势重排（大梁老师点名去虚影），
                 // 顺序持久化由 tabOrder didSet 承接
-                ForEach(vm.tabOrder, id: \.self) { tab in
+                ForEach(vm.visibleTabs, id: \.self) { tab in
                     DraggableTabCell(tab: tab, isActive: shownTab == tab, ns: tabIndicatorNS,
                                      dragging: $draggedTab, dragOffset: $tabDragOffset)
                 }
@@ -139,8 +139,8 @@ struct ExpandedContentView: View {
             }
         }
         .onChange(of: vm.activeTab) { old, new in
-            let oi = vm.tabOrder.firstIndex(of: old) ?? 0
-            let ni = vm.tabOrder.firstIndex(of: new) ?? 0
+            let oi = vm.visibleTabs.firstIndex(of: old) ?? 0
+            let ni = vm.visibleTabs.firstIndex(of: new) ?? 0
             slideDX = ni >= oi ? 28 : -28
             withAnimation(.spring(response: 0.32, dampingFraction: 0.85)) {
                 displayedTab = new
@@ -501,22 +501,28 @@ private struct DraggableTabCell: View {
         .simultaneousGesture(
             DragGesture(minimumDistance: 6, coordinateSpace: .global)
                 .onChanged { value in
-                    guard let current = vm.tabOrder.firstIndex(of: tab) else { return }
+                    // 拖拽全程在「可见页」索引空间计算：有隐藏页时视觉槽位≠tabOrder 槽位，
+                    // 直接换算 tabOrder 会错位（隐藏页夹在中间时尤甚）
+                    let vis = vm.visibleTabs
+                    guard let current = vis.firstIndex(of: tab) else { return }
                     if dragging == nil {
                         dragging = tab
                         startIndex = current
                     }
                     // 目标槽位 = 起始槽位 + 累计位移格数（基于起点，不逐帧漂移）
                     let target = min(max(startIndex + Int((value.translation.width / slotStride).rounded()), 0),
-                                     vm.tabOrder.count - 1)
+                                     vis.count - 1)
                     if target != current {
+                        var newVisible = vis
+                        newVisible.move(fromOffsets: IndexSet(integer: current),
+                                        toOffset: target > current ? target + 1 : target)
+                        // 稳定合并写回：可见页按新序流入可见槽位，隐藏页锚定原位不动
                         withAnimation(.spring(response: 0.28, dampingFraction: 0.72)) {
-                            vm.tabOrder.move(fromOffsets: IndexSet(integer: current),
-                                             toOffset: target > current ? target + 1 : target)
+                            vm.tabOrder = NotchViewModel.mergeVisibleOrder(full: vm.tabOrder, visible: newVisible)
                         }
                     }
                     // 视觉偏移每帧重算 = 跟手位移 − 当前槽位相对起点的布局位移（胶囊贴着鼠标走）
-                    let nowIndex = vm.tabOrder.firstIndex(of: tab) ?? target
+                    let nowIndex = vm.visibleTabs.firstIndex(of: tab) ?? target
                     dragOffset = CGSize(
                         width: value.translation.width - CGFloat(nowIndex - startIndex) * slotStride,
                         height: value.translation.height)

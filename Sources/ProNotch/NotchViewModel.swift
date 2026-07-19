@@ -58,6 +58,41 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
+    /// 各家 Agent 勾选快照（与数据层同口径 enabledSet）；由 ProNotchAgentSelectionChanged 驱动刷新，
+    /// 唯一用途是推导 visibleTabs——不额外持久化
+    @Published private var enabledAgentsSnapshot: Set<AgentKind> = AgentKind.enabledSet()
+
+    /// 当前应显示的页签（面板跟随内容自动显隐）：顺序沿用 tabOrder，隐藏项就地跳过（不改持久化顺序）
+    var visibleTabs: [Tab] {
+        Self.visibleTabs(order: tabOrder, enabled: enabledAgentsSnapshot)
+    }
+
+    /// 页签可见性纯函数（可单测）：launcher/chat/widgets 常显；
+    /// 额度页要求勾选集里有能查额度的家，Agent 页要求有能看本地会话的家（只勾 Grok 时额度在、Agent 隐）
+    nonisolated static func visibleTabs(order: [Tab], enabled: Set<AgentKind>) -> [Tab] {
+        order.filter { tab in
+            switch tab {
+            case .launcher, .chat, .widgets: return true
+            case .usage: return enabled.contains { $0.supportsQuota }
+            case .agent: return enabled.contains { $0.supportsSessions }
+            }
+        }
+    }
+
+    /// 当前页仍可见就保持，否则落到第一个可见页（launcher 常显，兜底非空）
+    nonisolated static func resolvedActive(_ current: Tab, order: [Tab], enabled: Set<AgentKind>) -> Tab {
+        let vis = visibleTabs(order: order, enabled: enabled)
+        return vis.contains(current) ? current : (vis.first ?? .launcher)
+    }
+
+    /// 把可见页的新排列写回完整顺序：隐藏页锚定原槽位不动，可见页按新序依次流入可见槽位。
+    /// visible 必须是 full 中可见项的一个排列（页签拖拽重排后调用），隐藏页不受拖动影响
+    nonisolated static func mergeVisibleOrder(full: [Tab], visible: [Tab]) -> [Tab] {
+        let visibleSet = Set(visible)
+        var it = visible.makeIterator()
+        return full.map { visibleSet.contains($0) ? (it.next() ?? $0) : $0 }
+    }
+
     /// 刘海矩形（全局坐标）
     let notchRect: CGRect
     /// 展开后刘海下方面板的内容尺寸（原 720×340，大梁老师要求整体加大约 1/3）
@@ -94,6 +129,7 @@ final class NotchViewModel: ObservableObject {
     /// 空间切换通知 token（进入/退出全屏即切换空间，事件驱动零轮询）
     private var spaceObserver: Any?
     private var settingObserver: Any?
+    private var agentSelectionObserver: Any?
 
     weak var panel: NSPanel?
 
@@ -121,7 +157,9 @@ final class NotchViewModel: ObservableObject {
         var order = saved.filter { seen.insert($0).inserted }
         order.append(contentsOf: Tab.allCases.filter { !seen.contains($0) })
         tabOrder = order
-        activeTab = order.first ?? .launcher
+        // 落到第一个可见页：默认页（首位）若因未勾选对应 Agent 而隐藏，不空展示
+        activeTab = Self.resolvedActive(order.first ?? .launcher, order: order,
+                                        enabled: AgentKind.enabledSet())
     }
 
     // MARK: - 几何
@@ -215,6 +253,17 @@ final class NotchViewModel: ObservableObject {
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in self?.updateFullscreenHiding() }
         }
+        // Agent 勾选变化：刷新可见页快照，当前页若被隐藏则落到第一个可见页
+        agentSelectionObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ProNotchAgentSelectionChanged"),
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.enabledAgentsSnapshot = AgentKind.enabledSet()
+                self.activeTab = Self.resolvedActive(self.activeTab, order: self.tabOrder,
+                                                     enabled: self.enabledAgentsSnapshot)
+            }
+        }
         updateFullscreenHiding()
     }
 
@@ -242,6 +291,10 @@ final class NotchViewModel: ObservableObject {
         if let observer = settingObserver {
             NotificationCenter.default.removeObserver(observer)
             settingObserver = nil
+        }
+        if let observer = agentSelectionObserver {
+            NotificationCenter.default.removeObserver(observer)
+            agentSelectionObserver = nil
         }
         pendingExpand?.cancel()
         pendingExpand = nil
@@ -350,9 +403,11 @@ final class NotchViewModel: ObservableObject {
 
     /// 在 tabOrder 中左右切换当前页，循环。step=+1 下一个（右），-1 上一个（左）
     func switchTab(by step: Int) {
-        guard !tabOrder.isEmpty, let idx = tabOrder.firstIndex(of: activeTab) else { return }
-        let n = tabOrder.count
-        let target = tabOrder[((idx + step) % n + n) % n]
+        // 只在可见页之间横滑循环，不会切到被隐藏的页
+        let vis = visibleTabs
+        guard !vis.isEmpty, let idx = vis.firstIndex(of: activeTab) else { return }
+        let n = vis.count
+        let target = vis[((idx + step) % n + n) % n]
         guard target != activeTab else { return }
         withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
             activeTab = target

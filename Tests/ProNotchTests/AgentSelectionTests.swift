@@ -124,3 +124,86 @@ final class KimiQuotaParseTests: XCTestCase {
                      "limit 为 0 视为无效窗口，不渲染除零的假数据")
     }
 }
+
+/// 面板页签跟随内容自动显隐 + 拖拽稳定合并（2.0 设置重构 S3 的核心口径）
+final class NotchTabVisibilityTests: XCTestCase {
+    typealias Tab = NotchViewModel.Tab
+    /// 默认顺序，与 Tab.allCases 一致
+    private let fullOrder: [Tab] = [.launcher, .chat, .usage, .agent, .widgets]
+
+    // MARK: - ① visibleTabs 过滤（各勾选组合）
+
+    func test全不勾时只剩常显三页() {
+        XCTAssertEqual(NotchViewModel.visibleTabs(order: fullOrder, enabled: []),
+                       [.launcher, .chat, .widgets],
+                       "usage 需能查额度的家、agent 需能看会话的家，空集都不满足")
+    }
+
+    func test只勾Grok时额度页在Agent页隐() {
+        XCTAssertEqual(NotchViewModel.visibleTabs(order: fullOrder, enabled: [.grok]),
+                       [.launcher, .chat, .usage, .widgets],
+                       "Grok 支持额度不支持本地会话：额度页显示、Agent 页隐藏")
+    }
+
+    func test勾Claude时五页全显() {
+        XCTAssertEqual(NotchViewModel.visibleTabs(order: fullOrder, enabled: [.claude]),
+                       fullOrder, "Claude 额度、会话都支持，两页都显示")
+    }
+
+    func test勾Kimi时五页全显() {
+        XCTAssertEqual(NotchViewModel.visibleTabs(order: fullOrder, enabled: [.kimi]),
+                       fullOrder, "Kimi 额度、会话都支持")
+    }
+
+    func test显隐只过滤不改相对顺序() {
+        let custom: [Tab] = [.widgets, .agent, .launcher, .usage, .chat]
+        XCTAssertEqual(NotchViewModel.visibleTabs(order: custom, enabled: [.grok]),
+                       [.widgets, .launcher, .usage, .chat],
+                       "沿用 tabOrder 相对顺序，只把隐藏页就地抽走")
+    }
+
+    // MARK: - ② 拖拽稳定合并（隐藏页锚定原位不受拖动影响）
+
+    func test稳定合并隐藏页夹中间不动() {
+        // full 里 usage、agent 隐藏，分别夹在索引 1、3
+        let full: [Tab] = [.launcher, .usage, .chat, .agent, .widgets]
+        let newVisible: [Tab] = [.widgets, .launcher, .chat]   // 把 widgets 拖到最前
+        XCTAssertEqual(NotchViewModel.mergeVisibleOrder(full: full, visible: newVisible),
+                       [.widgets, .usage, .launcher, .agent, .chat],
+                       "可见页按新序流入可见槽位，隐藏 usage/agent 原索引不动")
+    }
+
+    func test稳定合并跨隐藏页拖到末尾() {
+        // 自查揪出的错位场景：launcher 拖到最右，中间隔着隐藏的 usage
+        let full: [Tab] = [.launcher, .chat, .usage, .widgets]
+        let newVisible: [Tab] = [.chat, .widgets, .launcher]
+        let merged = NotchViewModel.mergeVisibleOrder(full: full, visible: newVisible)
+        XCTAssertEqual(merged, [.chat, .widgets, .usage, .launcher])
+        XCTAssertEqual(merged.filter { $0 != .usage }, newVisible,
+                       "抽掉隐藏页后可见序必须与拖拽结果完全一致（旧的定步距换算会错位）")
+    }
+
+    func test稳定合并无隐藏页等价于纯重排() {
+        let newVisible: [Tab] = [.chat, .launcher, .usage, .agent, .widgets]
+        XCTAssertEqual(NotchViewModel.mergeVisibleOrder(full: fullOrder, visible: newVisible),
+                       newVisible, "没有隐藏页时结果就是可见序本身")
+    }
+
+    // MARK: - ③ activeTab 兜底（当前页被隐则落第一个可见页）
+
+    func test当前页仍可见时保持不变() {
+        XCTAssertEqual(NotchViewModel.resolvedActive(.usage, order: fullOrder, enabled: [.claude]),
+                       .usage, "usage 仍可见，停在原页")
+    }
+
+    func test当前页被隐时落到第一个可见页() {
+        XCTAssertEqual(NotchViewModel.resolvedActive(.agent, order: fullOrder, enabled: []),
+                       .launcher, "Agent 页被隐，落到第一个可见页 launcher")
+    }
+
+    func test当前页与首位同时被隐仍落可见首页() {
+        let order: [Tab] = [.usage, .agent, .launcher, .chat, .widgets]
+        XCTAssertEqual(NotchViewModel.resolvedActive(.agent, order: order, enabled: []),
+                       .launcher, "order 首位 usage 也被隐，兜到第一个真正可见的 launcher")
+    }
+}

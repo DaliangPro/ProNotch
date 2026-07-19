@@ -147,11 +147,11 @@ final class NotchWindowController {
         chatStore.send("有什么能让 Mac 用起来更高效的小技巧？")
     }
 
-    /// 调试用：循环切换标签页
+    /// 调试用：循环切换标签页（只在当前可见页之间循环，与横滑切页口径一致）
     func debugNextTab() {
-        let all = NotchViewModel.Tab.allCases
-        guard let index = all.firstIndex(of: viewModel.activeTab) else { return }
-        viewModel.activeTab = all[(index + 1) % all.count]
+        let vis = viewModel.visibleTabs
+        guard let index = vis.firstIndex(of: viewModel.activeTab) else { return }
+        viewModel.activeTab = vis[(index + 1) % vis.count]
         print("[ProNotch] 切换到标签: \(viewModel.activeTab.title)")
     }
 
