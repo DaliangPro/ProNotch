@@ -28,6 +28,7 @@ final class ClipboardStore: ObservableObject {
     }
 
     private var limitObserver: Any?
+    private var clearObserver: Any?
     /// 单张图片超过此大小不入历史，避免磁盘膨胀
     private let maxImageBytes = 5 * 1024 * 1024
     private var timer: Timer?
@@ -47,20 +48,39 @@ final class ClipboardStore: ObservableObject {
         .init("org.nspasteboard.TransientType"),
     ]
 
-    func startMonitoring() {
+    init() {
+        // 设置页「清空历史」走通知触发（设置窗口不持有本 store，沿用全局通知风格）；
+        // 与记录开关独立：关着也能清
+        clearObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ProNotchClipboardClearRequested"),
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.clear() }
+        }
+    }
+
+    /// 只加载历史、不开轮询（记录开关关闭时的启动路径）：历史仍可查看、粘贴
+    func loadHistoryOnly() {
         try? FileManager.default.createDirectory(
             at: directory, withIntermediateDirectories: true)
         loadIndex()
+    }
+
+    func startMonitoring() {
+        loadHistoryOnly()
         timer?.invalidate()
+        // 从「现在」起记：启动或中途重开时，开关关闭期间落在剪贴板里的内容不补录
+        lastChangeCount = NSPasteboard.general.changeCount
         // 系统没有剪贴板变更通知，只能轮询 changeCount（整数比较，零负担）
         timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.poll() }
         }
         // 设置里调小上限时立即裁剪
-        limitObserver = NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchClipboardLimitChanged"),
-            object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.trimAndSave() }
+        if limitObserver == nil {
+            limitObserver = NotificationCenter.default.addObserver(
+                forName: NSNotification.Name("ProNotchClipboardLimitChanged"),
+                object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.trimAndSave() }
+            }
         }
     }
 
