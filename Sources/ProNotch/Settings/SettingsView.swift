@@ -24,7 +24,7 @@ struct SettingsView: View {
     enum Section: String, CaseIterable, Identifiable {
         case general = "通用"
         case screenshot = "超级截图"
-        case glow = "Agent 提醒"
+        case glow = "Agent"
         case chat = "AI 闪问"
         case about = "关于"
         var id: String { rawValue }
@@ -33,6 +33,7 @@ struct SettingsView: View {
     @State private var selected: Section = .general
     @State private var claudeConnected = false
     @State private var codexConnected = false
+    @State private var probeResults: [AgentProbeResult] = []   // 本地 Agent 检测结果（打开 Agent 页 / 点扫描时刷新）
     @State private var justSaved = false
     @State private var translateKey = ""   // 翻译独立接口的 API key 草稿（惰性从钥匙串载入）
     @State private var packRequest: [String]?          // [源语言码, 目标语言码]：置值触发系统语言包下载确认
@@ -393,12 +394,36 @@ struct SettingsView: View {
         .padding(.horizontal, 14).padding(.vertical, 10)
     }
 
-    // MARK: - 光晕提醒
+    // MARK: - Agent（本地检测 + 每家总开关 + 光晕提醒）
     private var glowContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            pageTitle("Agent 提醒",
-                      subtitle: "Claude Code / Codex 完成任务时，屏幕四周亮起呼吸光晕提醒你。")
+            pageTitle("Agent",
+                      subtitle: "统一管理本机 AI Agent：勾选监控哪些家，配置任务完成时的光晕提醒。")
 
+            // 本地 Agent 检测（stat 级、毫秒完成）：打开本页自动列一次，装了新 CLI 点「重新扫描」
+            HStack {
+                sectionLabel("本地 Agent")
+                Spacer()
+                Button {
+                    probeResults = AgentProbe.detect()
+                } label: {
+                    Text("重新扫描")
+                        .font(.system(size: 12)).foregroundColor(.white.opacity(0.9))
+                        .padding(.horizontal, 12).padding(.vertical, 4)
+                        .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(Color.white.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+            }
+            SettingsCard {
+                ForEach(Array(probeResults.enumerated()), id: \.element.id) { i, r in
+                    if i > 0 { CardDivider() }
+                    agentRow(r)
+                }
+            }
+            noteText("每家一个总开关：关闭即不再读取它的额度、会话与任何本地文件，额度页 / 菜单栏 / 监控台同步隐藏。", color: .white.opacity(0.4))
+
+            sectionLabel("光晕提醒")
             // 总开关：与刘海面板的「Agent 提醒」按钮联动（同一个 glowEnabled）
             SettingsCard {
                 HStack {
@@ -446,6 +471,43 @@ struct SettingsView: View {
             claudeConnected = GlowHookInstaller.isInstalled(.claude)
             codexConnected = GlowHookInstaller.isInstalled(.codex)
         }
+        // 每次进本页都重新检测（stat 级零成本），列表始终反映本机现状
+        .onAppear { probeResults = AgentProbe.detect() }
+    }
+
+    /// 本地 Agent 一行：品牌图标 + 名称 + 检测状态 + 总开关。
+    /// 未发现的家灰显但开关仍可用（检测只认特征目录，留手动兜底的余地）
+    private func agentRow(_ r: AgentProbeResult) -> some View {
+        HStack(spacing: 10) {
+            BrandIcon(polys: r.kind.polys)
+                .foregroundColor(r.kind.tint)
+                .frame(width: 15, height: 15)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(r.kind.displayName).font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+                Text(agentStatus(r)).font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
+            }
+            Spacer()
+            ThemedSwitch(isOn: agentEnabledBinding(r.kind))
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
+        .opacity(r.installed ? 1 : 0.55)
+    }
+
+    private func agentEnabledBinding(_ kind: AgentKind) -> Binding<Bool> {
+        Binding(get: { settings.enabledAgents.contains(kind) },
+                set: { on in
+                    if on { settings.enabledAgents.insert(kind) }
+                    else { settings.enabledAgents.remove(kind) }
+                })
+    }
+
+    private func agentStatus(_ r: AgentProbeResult) -> String {
+        guard r.installed else { return "未发现（~/.\(r.kind.rawValue) 不存在）" }
+        guard let d = r.lastActive else { return "已安装" }
+        let s = Int(Date().timeIntervalSince(d))
+        if s < 3600 { return "已安装 · 刚刚活跃" }
+        if s < 86400 { return "已安装 · \(s / 3600) 小时前活跃" }
+        return "已安装 · \(s / 86400) 天前活跃"
     }
 
     /// 提醒来源勾选（并排、无副文字）：勾上 = 接入完成钩子，取消 = 移出；

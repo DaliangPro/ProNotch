@@ -134,6 +134,19 @@ final class SettingsStore: ObservableObject {
 
     static let translateLangs = ["中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский"]
 
+    // MARK: - Agent 数据源勾选
+    /// 监控哪些本机 Agent（每家一个总开关：额度 + 监控台 + 会话榜一体联动）。
+    /// 变更即持久化并广播：UsageStore / AgentSessionsStore 立刻按新勾选重扫，
+    /// 菜单栏额度栏标题同步增减
+    @Published var enabledAgents: Set<AgentKind> {
+        didSet {
+            UserDefaults.standard.set(enabledAgents.map(\.rawValue).sorted(),
+                                      forKey: AgentKind.selectionKey)
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ProNotchAgentSelectionChanged"), object: nil)
+        }
+    }
+
     // MARK: - 光晕提醒
     @Published var glowEnabled: Bool {
         didSet {
@@ -189,6 +202,16 @@ final class SettingsStore: ObservableObject {
         translateEngine = UserDefaults.standard.string(forKey: "translateEngine")
             ?? (SystemTranslator.isSupported ? "system" : "ai")
         translatePrompt = UserDefaults.standard.string(forKey: "translatePrompt") ?? Self.defaultTranslatePrompt
+        // Agent 勾选：有存值用存值；首启/升级则本机检测一次，检测到的默认全勾
+        // （升级无感，大梁老师定）——三个目录的 stat 检查毫秒级，不会拖慢启动
+        if let raw = UserDefaults.standard.stringArray(forKey: AgentKind.selectionKey) {
+            enabledAgents = Set(raw.compactMap(AgentKind.init(rawValue:)))
+        } else {
+            let detected = Set(AgentProbe.detect().filter(\.installed).map(\.kind))
+            enabledAgents = detected
+            UserDefaults.standard.set(detected.map(\.rawValue).sorted(),
+                                      forKey: AgentKind.selectionKey)
+        }
         if let data = UserDefaults.standard.data(forKey: "screenshotShortcut") {
             screenshotShortcut = try? JSONDecoder().decode(ScreenshotShortcut.self, from: data)
         } else {

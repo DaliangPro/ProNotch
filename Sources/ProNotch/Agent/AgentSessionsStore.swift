@@ -49,16 +49,25 @@ final class AgentSessionsStore: ObservableObject {
     init() {
         // 恢复持久化的宿主映射:上次运行采集到的 host 仍可用于跳转,不必等本次再轮结束一次
         hostBySession = (UserDefaults.standard.dictionary(forKey: Self.hostStoreKey) as? [String: String]) ?? [:]
+        // 设置页 Agent 勾选变更 → 立即重扫,取消家的卡片马上从监控台消失
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ProNotchAgentSelectionChanged"),
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.refresh(force: true) }
+        }
     }
 
-    /// 刷新(10 秒节流,force 忽略节流);扫描在后台线程,主线程叠加 hook 事件后收结果
+    /// 刷新(10 秒节流,force 忽略节流);扫描在后台线程,主线程叠加 hook 事件后收结果。
+    /// 只扫勾选的家(设置 → Agent 每家总开关):未勾选家不读它的任何会话文件
     func refresh(force: Bool = false) {
         guard force || Date().timeIntervalSince(lastRefresh) > 10 else { return }
         guard !refreshing else { return }
         refreshing = true
         lastRefresh = Date()
+        let enabled = AgentKind.enabledSet()   // 主线程取快照,后台闭包用同一份
         Task.detached(priority: .utility) {
-            let raw = Self.scanClaude() + Self.scanCodex()
+            let raw = (enabled.contains(.claude) ? Self.scanClaude() : [])
+                    + (enabled.contains(.codex) ? Self.scanCodex() : [])
             await MainActor.run { [weak self] in
                 self?.rawSessions = raw
                 self?.rebuild()

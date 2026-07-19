@@ -1,24 +1,33 @@
 import SwiftUI
 
-/// 额度页：Claude Code 与 Codex 两张卡片，各显示 5 小时窗 / 7 天窗的用量
+/// 额度页：按设置勾选的 Agent 逐家一张卡片，各显示 5 小时窗 / 7 天窗的用量
 struct UsageView: View {
     @EnvironmentObject var store: UsageStore
-    /// 出场动画开关：三卡错落浮入，进度条随后从 0 充能到当前值
+    @EnvironmentObject var settings: SettingsStore
+    @EnvironmentObject var quickActions: QuickActionsStore
+    @EnvironmentObject var vm: NotchViewModel
+    /// 出场动画开关：卡片错落浮入，进度条随后从 0 充能到当前值
     @State private var entrancePlayed = false
 
     var body: some View {
-        HStack(spacing: 12) {
-            // 品牌色图标（大梁老师定）：与收起态额度光晕同一套配色语言
-            let cards = [("Claude Code", BrandIconPaths.claude, Color(hex: "#D97757"), store.claude),
-                         ("Codex", BrandIconPaths.openai, Color.cyan, store.codex),
-                         ("Grok", BrandIconPaths.grok, Color(white: 0.8), store.grok)]
-            ForEach(Array(cards.enumerated()), id: \.offset) { i, card in
-                QuotaCard(title: card.0, polys: card.1, iconColor: card.2, quota: card.3,
-                          entrancePlayed: entrancePlayed)
-                    .offset(y: entrancePlayed ? 0 : 12)
-                    .opacity(entrancePlayed ? 1 : 0)
-                    .animation(.spring(response: 0.38, dampingFraction: 0.66)
-                        .delay(Double(i) * 0.07), value: entrancePlayed)
+        // 只渲染勾选的家（每家总开关，设置 → Agent）；勾选顺序固定按枚举序，卡片不跳位
+        let enabled = AgentKind.allCases.filter { settings.enabledAgents.contains($0) }
+        Group {
+            if enabled.isEmpty {
+                emptyState
+            } else {
+                HStack(spacing: 12) {
+                    // 品牌色图标（大梁老师定）：与收起态额度光晕同一套配色语言
+                    ForEach(Array(enabled.enumerated()), id: \.element) { i, kind in
+                        QuotaCard(title: kind.displayName, polys: kind.polys,
+                                  iconColor: kind.tint, quota: store.quota(for: kind),
+                                  entrancePlayed: entrancePlayed)
+                            .offset(y: entrancePlayed ? 0 : 12)
+                            .opacity(entrancePlayed ? 1 : 0)
+                            .animation(.spring(response: 0.38, dampingFraction: 0.66)
+                                .delay(Double(i) * 0.07), value: entrancePlayed)
+                    }
+                }
             }
         }
         .padding(.vertical, 14)
@@ -26,6 +35,26 @@ struct UsageView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear { store.refresh() }
         .pageEntrance($entrancePlayed)
+    }
+
+    /// 一家都没勾：引导去设置勾选，而不是留一页空白
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "gauge.with.needle")
+                .font(.system(size: 26)).foregroundColor(.white.opacity(0.3))
+            Text("尚未勾选要监控的 Agent")
+                .font(.system(size: 13, weight: .medium)).foregroundColor(.white.opacity(0.7))
+            Button {
+                settings.pendingSection = SettingsView.Section.glow.rawValue
+                quickActions.openAppSettings()
+                vm.collapseNow()   // 收起刘海，别挡住弹出的设置窗口
+            } label: {
+                Text("打开设置 → Agent")
+                    .font(.system(size: 12, weight: .semibold)).foregroundColor(.cyan)
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

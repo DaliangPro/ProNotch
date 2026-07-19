@@ -6,15 +6,18 @@ import AppKit
 /// 逻辑与刘海额度页一致：柱状条显示「已用/消耗了多少」（不是剩余）。
 struct UsageMenuView: View {
     @ObservedObject var store: UsageStore
+    @ObservedObject var settings: SettingsStore
     var onRefresh: () -> Void = {}
     var onSettings: () -> Void = {}
-    @State private var tab = 0   // 0=概览，1/2/3 = 各服务
+    @State private var tab = 0   // 0=概览，1…n = 各勾选服务
 
     private struct Svc { let name: String; let short: String; let polys: [[CGPoint]]; let tint: Color; let quota: ServiceQuota? }
+    /// 只列勾选的家（设置 → Agent 每家总开关），与额度页/菜单栏标题同一套过滤
     private var services: [Svc] {
-        [Svc(name: "Claude Code", short: "Claude", polys: BrandIconPaths.claude, tint: Color(hex: "#D97757"), quota: store.claude),
-         Svc(name: "Codex", short: "Codex", polys: BrandIconPaths.openai, tint: .cyan, quota: store.codex),
-         Svc(name: "Grok", short: "Grok", polys: BrandIconPaths.grok, tint: Color(hex: "#8E8E93"), quota: store.grok)]
+        AgentKind.allCases.filter { settings.enabledAgents.contains($0) }.map {
+            Svc(name: $0.displayName, short: $0.shortName, polys: $0.polys,
+                tint: $0.tint, quota: store.quota(for: $0))
+        }
     }
 
     var body: some View {
@@ -22,7 +25,8 @@ struct UsageMenuView: View {
             tabBar
             Divider()
             Group {
-                if tab == 0 { overview } else { detail(services[tab - 1]) }
+                // 勾选变少后 tab 可能越界（面板开着时取消勾选）：回落概览
+                if tab >= 1, tab <= services.count { detail(services[tab - 1]) } else { overview }
             }
             .padding(.horizontal, 16).padding(.vertical, 14)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -61,9 +65,15 @@ struct UsageMenuView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - 概览：三服务简览（已用%）
+    // MARK: - 概览：勾选服务简览（已用%）
     private var overview: some View {
         VStack(spacing: 12) {
+            if services.isEmpty {
+                Text("未勾选要监控的 Agent（设置 → Agent 里勾选）")
+                    .font(.system(size: 12)).foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 12)
+            }
             ForEach(0..<services.count, id: \.self) { i in
                 let s = services[i]
                 HStack(spacing: 8) {

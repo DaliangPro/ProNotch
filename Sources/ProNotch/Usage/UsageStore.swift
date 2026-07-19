@@ -40,26 +40,57 @@ final class UsageStore: ObservableObject {
     @Published private(set) var refreshing = false
     private var lastRefresh: Date = .distantPast
 
-    /// 刷新（30 秒节流，force 忽略节流）。文件扫描在后台线程，主线程只收结果
+    init() {
+        // 设置页勾选变更 → 立即清掉取消家的数据与缓存、重拉新勾家；平时刷新自然按勾选走
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ProNotchAgentSelectionChanged"),
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.applyAgentSelection() }
+        }
+    }
+
+    /// 按 AgentKind 取额度快照（UI 层按勾选遍历渲染用）
+    func quota(for kind: AgentKind) -> ServiceQuota? {
+        switch kind {
+        case .claude: return claude
+        case .codex: return codex
+        case .grok: return grok
+        }
+    }
+
+    /// 勾选变更即时生效：取消的家数据置空、解析缓存释放；新勾的家马上拉一轮
+    private func applyAgentSelection() {
+        let enabled = AgentKind.enabledSet()
+        if !enabled.contains(.claude) { claude = nil }
+        if !enabled.contains(.codex) { codex = nil }
+        if !enabled.contains(.grok) { grok = nil }
+        SessionUsage.clearCaches(keeping: enabled)
+        MemoryRelief.relieveSoon()
+        refresh(force: true)
+    }
+
+    /// 刷新（30 秒节流，force 忽略节流）。文件扫描在后台线程，主线程只收结果。
+    /// 只处理勾选的 Agent（每家总开关）：未勾选家不发请求、不扫它的任何文件
     func refresh(force: Bool = false) {
         guard force || Date().timeIntervalSince(lastRefresh) > 30 else { return }
         guard !refreshing else { return }
         lastRefresh = Date()
         refreshing = true
+        let enabled = AgentKind.enabledSet()   // 主线程取快照，后台闭包全程用同一份
         Task.detached(priority: .utility) {
-            let cx = await CodexQuotaLoader.load()
-            let cl = await ClaudeQuotaLoader.load()
-            let gr = await GrokQuotaLoader.load()
-            // 每会话 token 统计（与额度数据源解耦，总是算）；Top 5 占比锚定周额度已用%（无周窗则退 5 小时窗）
-            let claudeSessions = SessionUsage.scanClaude()
-            let codexSessions = SessionUsage.scanCodex()
+            let cx = enabled.contains(.codex) ? await CodexQuotaLoader.load() : nil
+            let cl = enabled.contains(.claude) ? await ClaudeQuotaLoader.load() : nil
+            let gr = enabled.contains(.grok) ? await GrokQuotaLoader.load() : nil
+            // 每会话 token 统计（与额度数据源解耦）；Top 5 占比锚定周额度已用%（无周窗则退 5 小时窗）
+            let claudeSessions = enabled.contains(.claude) ? SessionUsage.scanClaude() : []
+            let codexSessions = enabled.contains(.codex) ? SessionUsage.scanCodex() : []
             let claudeTop = SessionUsage.top(claudeSessions,
-                weekUsedPercent: cl.secondary?.usedPercent ?? cl.primary?.usedPercent, source: .claude)
+                weekUsedPercent: cl?.secondary?.usedPercent ?? cl?.primary?.usedPercent, source: .claude)
             let codexTop = SessionUsage.top(codexSessions,
-                weekUsedPercent: cx.secondary?.usedPercent ?? cx.primary?.usedPercent, source: .codex)
+                weekUsedPercent: cx?.secondary?.usedPercent ?? cx?.primary?.usedPercent, source: .codex)
             let tokens = Dictionary((claudeSessions + codexSessions).map { ($0.id, $0.tokens) }) { a, _ in a }
-            let claudeQuota = { var q = cl; q.topTasks = claudeTop; return q }()
-            let codexQuota = { var q = cx; q.topTasks = codexTop; return q }()
+            let claudeQuota = cl.map { q in var q = q; q.topTasks = claudeTop; return q }
+            let codexQuota = cx.map { q in var q = q; q.topTasks = codexTop; return q }
             await MainActor.run { [weak self] in
                 self?.codex = codexQuota
                 self?.claude = claudeQuota

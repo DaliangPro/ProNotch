@@ -789,6 +789,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         item.button?.action = #selector(toggleUsagePopover)
         let content = NSHostingView(rootView: UsageMenuView(
             store: usageStore,
+            settings: settingsStore,
             onRefresh: { [weak self] in self?.usageStore.refresh(force: true) },
             onSettings: { [weak self] in
                 self?.dismissUsagePanel()
@@ -839,21 +840,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
     private func stopUsageTimer() { usageTimer?.invalidate(); usageTimer = nil }
 
-    /// 额度栏标题：各家品牌 logo + 5h%；高占用百分比变色；无数据的服务省略。仅额度栏存在时更新
+    /// 额度栏标题：勾选各家品牌 logo + 5h%；高占用百分比变色；无数据的服务省略。仅额度栏存在时更新
     private func updateUsageTitle() {
         guard let button = usageStatusItem?.button else { return }
-        let items: [(polys: [[CGPoint]], tint: NSColor, q: ServiceQuota?)] = [
-            (BrandIconPaths.claude, NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1), usageStore.claude),   // Claude 橙
-            (BrandIconPaths.openai, .systemCyan, usageStore.codex),
-            (BrandIconPaths.grok,   .systemGray, usageStore.grok),
+        // 只显示勾选的家（设置 → Agent 每家总开关）；取消勾选时数据被置 nil，
+        // objectWillChange 会把这里再驱动一遍，标题即时增减
+        let tints: [AgentKind: NSColor] = [
+            .claude: NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1),   // Claude 橙
+            .codex: .systemCyan,
+            .grok: .systemGray,
         ]
+        let items = AgentKind.allCases.filter { settingsStore.enabledAgents.contains($0) }
         let title = NSMutableAttributedString()
         let base: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)]
-        for it in items {
-            guard let pct = it.q?.primary?.usedPercent else { continue }
+        for kind in items {
+            guard let pct = usageStore.quota(for: kind)?.primary?.usedPercent else { continue }
             if title.length > 0 { title.append(NSAttributedString(string: "  ", attributes: base)) }
             let att = NSTextAttachment()
-            att.image = brandImage(it.polys, tint: it.tint, size: 17)
+            att.image = brandImage(kind.polys, tint: tints[kind] ?? .systemGray, size: 17)
             att.bounds = CGRect(x: 0, y: -4.5, width: 17, height: 17)   // 图标与数字基线对齐
             title.append(NSAttributedString(attachment: att))
             var seg = base

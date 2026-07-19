@@ -260,6 +260,19 @@ enum SessionUsage {
         return nil
     }
 
+    // MARK: - 缓存释放
+
+    /// 勾选变更时释放未勾选家的解析缓存（几 MB 级的条目数组即刻归还，
+    /// 后续 MemoryRelief 把空闲大块还给内核）；勾选中的家缓存保留，重开零成本
+    static func clearCaches(keeping enabled: Set<AgentKind>) {
+        if !enabled.contains(.claude) {
+            claudeCacheLock.lock(); claudeCache = [:]; claudeCacheLock.unlock()
+        }
+        if !enabled.contains(.codex) {
+            codexCacheLock.lock(); codexCache = [:]; codexCacheLock.unlock()
+        }
+    }
+
     // MARK: - Top 5
 
     /// 排序取前 count（默认 5，大梁老师定：3 条太少），
