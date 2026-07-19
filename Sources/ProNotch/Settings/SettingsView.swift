@@ -34,9 +34,8 @@ struct SettingsView: View {
     @State private var glowConnected: [AgentKind: Bool] = [:]   // 各家完成钩子接入态（supportsGlow 的家）
     @State private var probeResults: [AgentProbeResult] = []   // 本地 Agent 检测结果（打开 Agent 页 / 点扫描时刷新）
     @State private var discoveredTools: [DiscoveredTool] = []  // 认识但暂无监控能力的工具（仅展示）
-    @State private var zhipuKeyDraft = ""                      // 智谱 API Key 草稿（展开输入时用）
-    @State private var zhipuKeyEditing = false                 // 智谱 Key 输入区展开中
     @State private var justSaved = false
+    @State private var confirmingClipboardClear = false   // 清空历史两步确认（3 秒不点自动还原）
     @State private var translateKey = ""   // 翻译独立接口的 API key 草稿（惰性从钥匙串载入）
     @State private var packRequest: [String]?          // [源语言码, 目标语言码]：置值触发系统语言包下载确认
 
@@ -127,9 +126,14 @@ struct SettingsView: View {
                 CardDivider()
                 toggleRow("全屏时隐藏刘海", isOn: $settings.hideNotchInFullscreen)
                 CardDivider()
+                // 关 = 停 0.5 秒轮询（真停机）；历史保留，清空是下面按钮的独立职责
+                toggleRow("记录剪贴板历史", isOn: $settings.clipboardEnabled)
+                CardDivider()
                 clipboardLimitRow
                 CardDivider()
                 clipboardShortcutRow
+                CardDivider()
+                clearClipboardRow
             }
             if let hint = settings.loginItemHint {
                 noteText(hint, color: .orange)
@@ -150,15 +154,10 @@ struct SettingsView: View {
             Text("恶劣天气预警").font(.system(size: 13, weight: .semibold))
                 .foregroundColor(.white.opacity(0.85)).padding(.top, 4)
             SettingsCard {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("未来 3 小时预警").font(.system(size: 13))
-                        .foregroundColor(.white.opacity(0.9))
-                    Text("出现大雨、大雪、冻雨、雷暴或 6 级以上大风时，刘海弹出预警大卡，点击可看详情")
-                        .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 14).padding(.vertical, 10)
+                // 总开关：关掉即停 900 秒兜底刷新（真停机），不影响天气大卡与槽位
+                toggleRow("未来 3 小时预警", isOn: $settings.weatherAlertsEnabled)
+                CardDivider()
+                alertTypesRow
                 CardDivider()
                 HStack {
                     Text("预览提醒效果").font(.system(size: 13))
@@ -193,7 +192,38 @@ struct SettingsView: View {
                 }
                 .padding(.horizontal, 14).padding(.vertical, 10)
             }
+            Text("勾选的天气类型在未来 3 小时内出现时，刘海弹出预警大卡，点击可看详情；关闭预警即停掉后台的定期天气刷新。")
+                .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 2)
         }
+    }
+
+    /// 预警类型多选（五类胶囊）：总开关关闭时整行淡化禁用
+    private var alertTypesRow: some View {
+        HStack {
+            Text("预警类型").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+            Spacer()
+            HStack(spacing: 6) {
+                ForEach(WeatherAlertType.allCases, id: \.self) { type in
+                    let on = settings.weatherAlertTypes.contains(type)
+                    Button {
+                        if on { settings.weatherAlertTypes.remove(type) }
+                        else { settings.weatherAlertTypes.insert(type) }
+                    } label: {
+                        Text(type.displayName).font(.system(size: 12))
+                            .foregroundColor(on ? .white : .white.opacity(0.4))
+                            .padding(.horizontal, 9).padding(.vertical, 4)
+                            .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(on ? Color.cyan.opacity(0.26) : Color.white.opacity(0.07)))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+        .opacity(settings.weatherAlertsEnabled ? 1 : 0.4)
+        .disabled(!settings.weatherAlertsEnabled)
     }
 
     /// 功能区内容选择行（左/右侧共用）：菜单列出全部可选组件
@@ -215,6 +245,37 @@ struct SettingsView: View {
                 .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.12)))
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    /// 清空剪贴板历史（连图片文件一起删，不可恢复）：两步确认防误点，
+    /// 通过通知触发——设置窗口不持有 ClipboardStore
+    private var clearClipboardRow: some View {
+        HStack {
+            Text("清空剪贴板历史").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+            Spacer()
+            Button {
+                if confirmingClipboardClear {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("ProNotchClipboardClearRequested"), object: nil)
+                    confirmingClipboardClear = false
+                } else {
+                    confirmingClipboardClear = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                        confirmingClipboardClear = false
+                    }
+                }
+            } label: {
+                Text(confirmingClipboardClear ? "确认清空" : "清空")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(confirmingClipboardClear ? .white : Color(hex: "#FF453A"))
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(confirmingClipboardClear ? Color(hex: "#FF453A").opacity(0.85)
+                                                       : Color.white.opacity(0.1)))
+            }
+            .buttonStyle(.plain)
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
     }
@@ -418,13 +479,28 @@ struct SettingsView: View {
                 .buttonStyle(.plain)
             }
             SettingsCard {
-                ForEach(Array(probeResults.enumerated()), id: \.element.id) { i, r in
+                // 只列扫描发现的家（大梁老师定：没装就不出现选项）；已勾选但本体已卸载的仍显示，
+                // 留住关闭入口——否则它会在额度面板里留一个「无数据」的幽灵 tab 没处关
+                let visible = probeResults.filter { $0.installed || settings.enabledAgents.contains($0.kind) }
+                if visible.isEmpty {
+                    Text("未检测到支持的 AI 编码工具（Claude Code / Codex / Grok / Kimi Code）")
+                        .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14).padding(.vertical, 12)
+                }
+                ForEach(Array(visible.enumerated()), id: \.element.id) { i, r in
                     if i > 0 { CardDivider() }
                     agentRow(r)
-                    if r.kind == .zhipu, zhipuKeyEditing { zhipuKeyEditor }
                 }
             }
-            noteText("每家一个总开关：关闭即不再读取它的额度、会话与任何本地文件，额度页 / 菜单栏 / 监控台同步隐藏。各家能力不同——Grok 仅额度，智谱是纯额度服务（GLM Coding Plan 挂在其他工具上用，配 API Key 即可看用量），其余三家额度 / 监控台 / 完成提醒齐全。", color: .white.opacity(0.4))
+            noteText("每家一个总开关：关闭即不再读取它的额度、会话与任何本地文件，额度页 / 菜单栏 / 监控台同步隐藏。各家能力不同——Claude Code / Codex / Kimi Code 额度 / 监控台 / 完成提醒齐全，Grok 额度 + 完成提醒。", color: .white.opacity(0.4))
+
+            sectionLabel("菜单栏额度")
+            SettingsCard {
+                // 与菜单栏主菜单「Agent 额度」同一份状态；关 = 图标移除 + 60 秒定时刷新停
+                toggleRow("在菜单栏显示额度", isOn: $settings.showUsageInMenuBar)
+            }
+            noteText("开启后菜单栏常驻各家用量百分比。点开面板能看到全部接入的家，每家页面里各有一个「在顶部菜单栏显示」开关，决定收起后标题里露出谁。", color: .white.opacity(0.4))
 
             // 认识但暂无监控能力的工具：只报告「已发现」，不给开关、不假装能监控
             if !discoveredTools.isEmpty {
@@ -439,51 +515,63 @@ struct SettingsView: View {
             }
 
             sectionLabel("光晕提醒")
-            // 总开关：与刘海面板的「Agent 提醒」按钮联动（同一个 glowEnabled）
-            SettingsCard {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("启用 Agent 提醒")
-                            .font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
-                        Text("总开关，与刘海面板上的按钮联动")
-                            .font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
-                    }
-                    Spacer()
-                    ThemedSwitch(isOn: $settings.glowEnabled)
+            if glowKinds.isEmpty {
+                // 与上方本地 Agent 勾选联动（大梁老师定）：一家都没接入就不留没对象可设的开关
+                SettingsCard {
+                    Text("上方接入 \(AgentKind.allCases.filter(\.supportsGlow).map(\.displayName).joined(separator: " / ")) 任意一家后，这里出现完成提醒设置")
+                        .font(.system(size: 12)).foregroundColor(.white.opacity(0.5))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14).padding(.vertical, 12)
                 }
-                .padding(.horizontal, 14).padding(.vertical, 11)
-            }
+            } else {
+                // 总开关：与刘海面板的「Agent 提醒」按钮联动（同一个 glowEnabled）
+                SettingsCard {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("启用 Agent 提醒")
+                                .font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+                            Text("总开关，与刘海面板上的按钮联动")
+                                .font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
+                        }
+                        Spacer()
+                        ThemedSwitch(isOn: $settings.glowEnabled)
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 11)
+                }
 
-            // 完成时提醒：勾选哪些 Agent（并排，随检测到的支持钩子的家动态出现）；总开关关闭时整块禁用、灰显
-            sectionLabel("完成时提醒")
-            SettingsCard {
-                HStack(spacing: 0) {
+                // 完成时提醒：勾选哪些 Agent（并排，随接入且支持钩子的家动态增减）；总开关关闭时整块禁用、灰显
+                sectionLabel("完成时提醒")
+                SettingsCard {
+                    HStack(spacing: 0) {
+                        ForEach(glowKinds) { kind in
+                            sourceRow(kind.displayName, source: kind)
+                        }
+                    }
+                }
+                .disabled(!settings.glowEnabled)
+                .opacity(settings.glowEnabled ? 1 : 0.4)
+
+                sectionLabel("外观")
+                SettingsCard {
                     ForEach(glowKinds) { kind in
-                        sourceRow(kind.displayName, source: kind)
+                        colorRow("\(kind.displayName) 颜色", binding: glowColorBinding(kind), source: kind)
+                        CardDivider()
                     }
-                }
-            }
-            .disabled(!settings.glowEnabled)
-            .opacity(settings.glowEnabled ? 1 : 0.4)
-
-            sectionLabel("外观")
-            SettingsCard {
-                ForEach(glowKinds) { kind in
-                    colorRow("\(kind.displayName) 颜色", binding: glowColorBinding(kind), source: kind)
+                    glowSliderRow("呼吸周期", value: $settings.glowBreathPeriod, range: 1.5...6,
+                                  display: String(format: "%.1f 秒", settings.glowBreathPeriod))
                     CardDivider()
+                    glowSliderRow("光晕强度", value: $settings.glowIntensity, range: 0.3...1,
+                                  display: "\(Int(settings.glowIntensity * 100))%")
+                    CardDivider()
+                    glowSliderRow("光晕厚度", value: $settings.glowThickness, range: 40...180,
+                                  display: "\(Int(settings.glowThickness)) pt")
                 }
-                glowSliderRow("呼吸周期", value: $settings.glowBreathPeriod, range: 1.5...6,
-                              display: String(format: "%.1f 秒", settings.glowBreathPeriod))
-                CardDivider()
-                glowSliderRow("光晕强度", value: $settings.glowIntensity, range: 0.3...1,
-                              display: "\(Int(settings.glowIntensity * 100))%")
-                CardDivider()
-                glowSliderRow("光晕厚度", value: $settings.glowThickness, range: 40...180,
-                              display: "\(Int(settings.glowThickness)) pt")
             }
         }
         // 总开关变化后（含面板联动触发）刷新勾选，反映 didSet 里的接入/移除结果
         .onChange(of: settings.glowEnabled) { _, _ in refreshGlowConnected() }
+        // 本地 Agent 勾选增减后同步：SettingsStore didSet 已卸/装钩子，这里刷新勾选态
+        .onChange(of: settings.enabledAgents) { _, _ in refreshGlowConnected() }
         // 每次进本页都重新检测（stat 级零成本），列表始终反映本机现状
         .onAppear {
             probeResults = AgentProbe.detect()
@@ -491,16 +579,20 @@ struct SettingsView: View {
         }
     }
 
-    /// 支持完成钩子的家（光晕勾选行 / 颜色行按这个动态渲染）
-    private var glowKinds: [AgentKind] { AgentKind.allCases.filter(\.supportsGlow) }
+    /// 支持完成钩子且已接入的家（光晕三区按这个渲染，随上方本地 Agent 勾选增减）
+    private var glowKinds: [AgentKind] {
+        AgentKind.allCases.filter { $0.supportsGlow && settings.enabledAgents.contains($0) }
+    }
 
     private func refreshGlowConnected() {
-        for kind in glowKinds { glowConnected[kind] = GlowHookInstaller.isInstalled(kind) }
+        // 整表重建：家被关掉后不留旧 true 残项，否则 sourceRow 的「全没勾自动关总开关」会误判
+        var next: [AgentKind: Bool] = [:]
+        for kind in glowKinds { next[kind] = GlowHookInstaller.isInstalled(kind) }
+        glowConnected = next
     }
 
     /// 本地 Agent 一行：品牌图标 + 名称 + 检测状态 + 总开关。
-    /// 未发现的家灰显但开关仍可用（检测只认特征目录，留手动兜底的余地）；
-    /// 智谱是服务型：未配置时开关换成「添加 Key」按钮
+    /// 已卸载但仍勾选的家灰显（列表只留它的关闭入口）
     private func agentRow(_ r: AgentProbeResult) -> some View {
         HStack(spacing: 10) {
             BrandIcon(polys: r.kind.polys)
@@ -511,58 +603,11 @@ struct SettingsView: View {
                 Text(agentStatus(r)).font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
             }
             Spacer()
-            if r.kind == .zhipu {
-                Button {
-                    zhipuKeyDraft = settings.zhipuAPIKey()
-                    zhipuKeyEditing.toggle()
-                } label: {
-                    Text(r.installed ? "更换 Key" : "添加 Key")
-                        .font(.system(size: 12)).foregroundColor(.white.opacity(0.9))
-                        .padding(.horizontal, 12).padding(.vertical, 4)
-                        .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
-                            .fill(Color.white.opacity(0.12)))
-                }
-                .buttonStyle(.plain)
-                if r.installed { ThemedSwitch(isOn: agentEnabledBinding(r.kind)) }
-            } else {
-                ThemedSwitch(isOn: agentEnabledBinding(r.kind))
-            }
+            ThemedSwitch(isOn: agentEnabledBinding(r.kind))
         }
         .padding(.horizontal, 14).padding(.vertical, 9)
         .opacity(r.installed ? 1 : 0.55)
         .help(capabilityHelp(r.kind))
-    }
-
-    /// 智谱 API Key 输入区（智谱行下展开）：保存进钥匙串并默认勾选；清空即退出监控
-    private var zhipuKeyEditor: some View {
-        HStack(spacing: 8) {
-            SecureField("粘贴 bigmodel.cn 的 API Key", text: $zhipuKeyDraft)
-                .textFieldStyle(.plain).font(.system(size: 12)).foregroundColor(.white)
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(Color.white.opacity(0.08)))
-            Button {
-                settings.setZhipuAPIKey(zhipuKeyDraft)
-                zhipuKeyEditing = false
-                zhipuKeyDraft = ""
-                probeResults = AgentProbe.detect()   // 「已连接」状态即时反映
-            } label: {
-                Text("保存")
-                    .font(.system(size: 12, weight: .semibold)).foregroundColor(.cyan)
-                    .padding(.horizontal, 12).padding(.vertical, 5)
-                    .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(Color.cyan.opacity(0.15)))
-            }
-            .buttonStyle(.plain)
-            Button {
-                zhipuKeyEditing = false
-                zhipuKeyDraft = ""
-            } label: {
-                Text("取消").font(.system(size: 12)).foregroundColor(.white.opacity(0.6))
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 14).padding(.bottom, 10)
     }
 
     /// 零能力工具一行：字母徽记 + 名称 + 目录，无开关
@@ -599,13 +644,8 @@ struct SettingsView: View {
     }
 
     private func agentStatus(_ r: AgentProbeResult) -> String {
-        // 智谱是服务型（无本地 CLI）：状态说的是 Key 配置，不是目录检测
-        if r.kind == .zhipu {
-            return r.installed ? "已连接 bigmodel.cn" : "未配置 API Key（GLM Coding Plan 用量）"
-        }
         guard r.installed else {
-            let dir = r.kind.homeDir?.lastPathComponent ?? ".\(r.kind.rawValue)"
-            return "未发现（~/\(dir) 不存在）"
+            return "未发现（~/\(r.kind.homeDir.lastPathComponent) 不存在）"
         }
         guard let d = r.lastActive else { return "已安装" }
         let s = Int(Date().timeIntervalSince(d))
@@ -622,6 +662,9 @@ struct SettingsView: View {
             let target = !isOn
             // 接入/卸载失败（如配置文件不可写）则保持原状，不误导成「已接入」
             glowConnected[source] = GlowHookInstaller.setInstalled(source, target) ? target : isOn
+            // setInstalled 只动文件不广播：补发一次，取消勾选时这家正亮着的光晕立即熄灭
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ProNotchGlowSettingsChanged"), object: nil)
             // 勾选变化后总开关跟随「还有没有勾选」：全没勾就自动关
             let any = glowConnected.values.contains(true)
             if settings.glowEnabled != any { settings.glowEnabled = any }

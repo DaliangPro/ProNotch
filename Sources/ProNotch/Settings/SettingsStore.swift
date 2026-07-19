@@ -53,6 +53,36 @@ final class SettingsStore: ObservableObject {
     /// 只开一侧时另一侧留黑——形状必须以物理刘海为中心，不能不对称）
     var sideSlotsActive: Bool { leftSlot != .none || rightSlot != .none }
 
+    // MARK: - 恶劣天气预警
+    /// 预警总开关（默认开）。关闭即停 AppDelegate 的 900 秒兜底定时器——
+    /// 预警扫描是那个定时器唯一的存在理由（大卡/槽位天气各有自己的按需刷新）
+    @Published var weatherAlertsEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(weatherAlertsEnabled, forKey: WeatherAlertType.masterKey)
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ProNotchWeatherAlertSettingsChanged"), object: nil)
+        }
+    }
+    /// 预警类型多选（默认五类全选）；清空等效关闭，但总开关状态各自保留
+    @Published var weatherAlertTypes: Set<WeatherAlertType> {
+        didSet {
+            UserDefaults.standard.set(weatherAlertTypes.map(\.rawValue).sorted(),
+                                      forKey: WeatherAlertType.typesKey)
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ProNotchWeatherAlertSettingsChanged"), object: nil)
+        }
+    }
+
+    /// 剪贴板历史记录开关（默认开）。关 = 停 0.5 秒轮询（真停机），已有历史保留可看；
+    /// 清历史是独立按钮的职责——误关开关不丢数据（大梁老师定）
+    @Published var clipboardEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(clipboardEnabled, forKey: "clipboardEnabled")
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ProNotchClipboardEnabledChanged"), object: nil)
+        }
+    }
+
     /// 剪贴板历史保留条数
     @Published var clipboardLimit: Int {
         didSet {
@@ -134,28 +164,6 @@ final class SettingsStore: ObservableObject {
 
     static let translateLangs = ["中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский"]
 
-    // MARK: - 智谱 API Key（服务型接入：Key 本体走钥匙串惰性读写，
-    // 「已配置」布尔标记走 UserDefaults 供检测/启动路径零钥匙串访问）
-    func zhipuAPIKey() -> String { KeychainStore.read("zhipuAPIKey") ?? "" }
-    func setZhipuAPIKey(_ v: String) {
-        let trimmed = v.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            _ = KeychainStore.delete("zhipuAPIKey")
-            UserDefaults.standard.set(false, forKey: AgentKind.zhipuConfiguredKey)
-            enabledAgents.remove(.zhipu)   // 清 Key 即退出监控，额度页卡片同步消失
-        } else {
-            _ = KeychainStore.save(trimmed, account: "zhipuAPIKey")
-            UserDefaults.standard.set(true, forKey: AgentKind.zhipuConfiguredKey)
-            if enabledAgents.contains(.zhipu) {
-                // 已勾选时换 Key：勾选集没变不会触发广播，手动通知各 Store 用新 Key 重拉
-                NotificationCenter.default.post(
-                    name: NSNotification.Name("ProNotchAgentSelectionChanged"), object: nil)
-            } else {
-                enabledAgents.insert(.zhipu)   // 配好 Key 默认即开（didSet 自会广播）
-            }
-        }
-    }
-
     // MARK: - Agent 数据源勾选
     /// 监控哪些本机 Agent（每家一个总开关：额度 + 监控台 + 会话榜一体联动）。
     /// 变更即持久化并广播：UsageStore / AgentSessionsStore 立刻按新勾选重扫，
@@ -166,6 +174,39 @@ final class SettingsStore: ObservableObject {
                                       forKey: AgentKind.selectionKey)
             NotificationCenter.default.post(
                 name: NSNotification.Name("ProNotchAgentSelectionChanged"), object: nil)
+            // 与完成提醒联动（大梁老师定）：家关闭即卸它的钩子——设置里该家的提醒行随之
+            // 隐藏，不能留一个没有界面可关的孤儿钩子继续点亮光晕；重新接入且光晕总开关
+            // 开着则恢复。变更后广播一次，正亮着的光晕立即按新状态熄灭
+            let removed = oldValue.subtracting(enabledAgents).filter(\.supportsGlow)
+            let added = enabledAgents.subtracting(oldValue).filter(\.supportsGlow)
+            guard !removed.isEmpty || !added.isEmpty else { return }
+            for kind in removed { GlowHookInstaller.setInstalled(kind, false) }
+            if glowEnabled {
+                for kind in added { GlowHookInstaller.setInstalled(kind, true) }
+            }
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ProNotchGlowSettingsChanged"), object: nil)
+        }
+    }
+
+    // MARK: - 菜单栏额度栏
+    /// 菜单栏额度栏总开关（与主菜单「Agent 额度」勾选同一份状态，两处双向同步）。
+    /// 关 = status item 隐藏 + 60 秒定时刷新停（真停机）
+    @Published var showUsageInMenuBar: Bool {
+        didSet {
+            UserDefaults.standard.set(showUsageInMenuBar, forKey: "showUsageInMenuBar")
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ProNotchUsageMenuBarChanged"), object: nil)
+        }
+    }
+    /// 菜单栏标题露出哪些家（默认全家）：刘海里看全量、菜单栏只挑常用的——
+    /// 与 enabledAgents 取交集渲染，只影响标题，详情面板与刘海各页不受影响
+    @Published var menuBarAgents: Set<AgentKind> {
+        didSet {
+            UserDefaults.standard.set(menuBarAgents.map(\.rawValue).sorted(),
+                                      forKey: "menuBarAgents")
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ProNotchMenuBarAgentsChanged"), object: nil)
         }
     }
 
@@ -177,14 +218,16 @@ final class SettingsStore: ObservableObject {
             // 放 didSet 而非 binding set，避开「set 里改被绑值」的 re-entrancy。
             // 同值赋值不动钩子：否则「取消勾选一家但还剩别家」时会把刚移除的钩子装回去
             guard oldValue != glowEnabled else { return }
+            // 只装 enabledAgents 里的家：被关掉的家不因总开关重开而被误装回钩子
             for kind in AgentKind.allCases where kind.supportsGlow {
-                GlowHookInstaller.setInstalled(kind, glowEnabled)
+                GlowHookInstaller.setInstalled(kind, glowEnabled && enabledAgents.contains(kind))
             }
         }
     }
     @Published var glowClaudeColorHex: String { didSet { persistGlow(glowClaudeColorHex, "glowClaudeColorHex") } }
     @Published var glowCodexColorHex: String { didSet { persistGlow(glowCodexColorHex, "glowCodexColorHex") } }
     @Published var glowKimiColorHex: String { didSet { persistGlow(glowKimiColorHex, "glowKimiColorHex") } }
+    @Published var glowGrokColorHex: String { didSet { persistGlow(glowGrokColorHex, "glowGrokColorHex") } }
 
     /// 光晕色按家取（GlowController 点亮时用）
     func glowColorHex(for kind: AgentKind) -> String {
@@ -192,6 +235,7 @@ final class SettingsStore: ObservableObject {
         case .claude: return glowClaudeColorHex
         case .codex: return glowCodexColorHex
         case .kimi: return glowKimiColorHex
+        case .grok: return glowGrokColorHex
         default: return "#FFFFFF"
         }
     }
@@ -201,6 +245,7 @@ final class SettingsStore: ObservableObject {
         case .claude: glowClaudeColorHex = hex
         case .codex: glowCodexColorHex = hex
         case .kimi: glowKimiColorHex = hex
+        case .grok: glowGrokColorHex = hex
         default: break
         }
     }
@@ -219,11 +264,13 @@ final class SettingsStore: ObservableObject {
         launchAtLogin = Self.serviceStatus == .enabled
         UserDefaults.standard.register(defaults: [
             "hideNotchInFullscreen": true,
+            "clipboardEnabled": true,
             "clipboardLimit": 200,
             "glowEnabled": true,
             "glowClaudeColorHex": "#FF8A00",
             "glowCodexColorHex": "#0A84FF",
             "glowKimiColorHex": "#2ED3B7",
+            "glowGrokColorHex": "#FFFFFF",
             "glowBreathPeriod": 3.2,
             "glowIntensity": 0.9,
             "glowThickness": 90.0,
@@ -231,13 +278,24 @@ final class SettingsStore: ObservableObject {
             "translateUseChatAPI": true,
         ])
         hideNotchInFullscreen = UserDefaults.standard.bool(forKey: "hideNotchInFullscreen")
+        weatherAlertsEnabled = UserDefaults.standard.object(forKey: WeatherAlertType.masterKey) as? Bool ?? true
+        // 类型多选：有存值用存值（空数组 = 用户主动全清，尊重）；无存值默认全选
+        weatherAlertTypes = UserDefaults.standard.stringArray(forKey: WeatherAlertType.typesKey)
+            .map { Set($0.compactMap(WeatherAlertType.init(rawValue:))) }
+            ?? Set(WeatherAlertType.allCases)
+        clipboardEnabled = UserDefaults.standard.bool(forKey: "clipboardEnabled")
         clipboardLimit = UserDefaults.standard.integer(forKey: "clipboardLimit")
+        // 菜单栏额度：沿用旧键（老用户开关状态原样保留，默认关）；家勾选无存值默认全家
+        showUsageInMenuBar = UserDefaults.standard.bool(forKey: "showUsageInMenuBar")
+        menuBarAgents = UserDefaults.standard.stringArray(forKey: "menuBarAgents")
+            .map { Set($0.compactMap(AgentKind.init(rawValue:))) } ?? Set(AgentKind.allCases)
         leftSlot = NotchSlot(rawValue: UserDefaults.standard.string(forKey: "notchLeftSlot") ?? "") ?? .memory
         rightSlot = NotchSlot(rawValue: UserDefaults.standard.string(forKey: "notchRightSlot") ?? "") ?? .weather
         glowEnabled = UserDefaults.standard.bool(forKey: "glowEnabled")
         glowClaudeColorHex = UserDefaults.standard.string(forKey: "glowClaudeColorHex") ?? "#FF8A00"
         glowCodexColorHex = UserDefaults.standard.string(forKey: "glowCodexColorHex") ?? "#0A84FF"
         glowKimiColorHex = UserDefaults.standard.string(forKey: "glowKimiColorHex") ?? "#2ED3B7"
+        glowGrokColorHex = UserDefaults.standard.string(forKey: "glowGrokColorHex") ?? "#FFFFFF"
         glowBreathPeriod = UserDefaults.standard.double(forKey: "glowBreathPeriod")
         glowIntensity = UserDefaults.standard.double(forKey: "glowIntensity")
         glowThickness = UserDefaults.standard.double(forKey: "glowThickness")

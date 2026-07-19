@@ -7,7 +7,7 @@ import SwiftUI
 /// 各家能力不同（supportsQuota / supportsSessions / supportsGlow），界面按能力诚实渲染：
 /// 不支持的能力不显示、不假装。零能力的「仅发现」工具见 `DiscoveredTool`，不进本枚举。
 enum AgentKind: String, CaseIterable, Identifiable, Codable {
-    case claude, codex, grok, kimi, zhipu
+    case claude, codex, grok, kimi
     var id: String { rawValue }
 
     var displayName: String {
@@ -16,7 +16,6 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
         case .codex: return "Codex"
         case .grok: return "Grok"
         case .kimi: return "Kimi Code"
-        case .zhipu: return "智谱 GLM"
         }
     }
 
@@ -26,7 +25,6 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
         case .codex: return "Codex"
         case .grok: return "Grok"
         case .kimi: return "Kimi"
-        case .zhipu: return "智谱"
         }
     }
 
@@ -37,7 +35,6 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
         case .codex: return BrandIconPaths.openai
         case .grok: return BrandIconPaths.grok
         case .kimi: return BrandIconPaths.kimi
-        case .zhipu: return BrandIconPaths.zhipu
         }
     }
 
@@ -48,43 +45,39 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
         case .codex: return .cyan
         case .grok: return Color(hex: "#8E8E93")
         case .kimi: return Color(hex: "#EDEDED")    // 月之暗面黑白极简，深色 UI 取白
-        case .zhipu: return Color(hex: "#3859FF")
         }
     }
 
-    /// 特征目录：存在即视为已安装。nil = 无本地安装形态（智谱是纯额度服务，
-    /// GLM Coding Plan 挂在 Claude Code 等工具上用，本机没有自己的目录）
-    var homeDir: URL? {
+    /// 特征目录：存在即视为已安装（大梁老师定的口径：扫描发现什么，设置里才出现什么）
+    var homeDir: URL {
         let home = FileManager.default.homeDirectoryForCurrentUser
         switch self {
         case .claude: return home.appendingPathComponent(".claude")
         case .codex: return home.appendingPathComponent(".codex")
         case .grok: return home.appendingPathComponent(".grok")
         case .kimi: return home.appendingPathComponent(".kimi-code")
-        case .zhipu: return nil
         }
     }
 
     /// 活跃度探测路径：会话/日志目录的 mtime 即「最近用过」的时间
-    var activityPath: URL? {
+    var activityPath: URL {
         switch self {
-        case .claude: return homeDir?.appendingPathComponent("projects")
-        case .codex: return homeDir?.appendingPathComponent("sessions")
-        case .grok: return homeDir?.appendingPathComponent("logs")
-        case .kimi: return homeDir?.appendingPathComponent("sessions")
-        case .zhipu: return nil
+        case .claude: return homeDir.appendingPathComponent("projects")
+        case .codex: return homeDir.appendingPathComponent("sessions")
+        case .grok: return homeDir.appendingPathComponent("logs")
+        case .kimi: return homeDir.appendingPathComponent("sessions")
         }
     }
 
-    /// 是否有额度可查（五家全支持；Kimi 走 CLI 内置 managed-usage 同款接口，见 KimiQuotaLoader）
+    /// 是否有额度可查（四家全支持；Kimi 走 CLI 内置 managed-usage 同款接口，见 KimiQuotaLoader）
     var supportsQuota: Bool { true }
 
-    /// 是否支持会话监控台（Grok CLI 无本地会话文件可扫；智谱无本地形态）
+    /// 是否支持会话监控台（Grok CLI 无本地会话文件可扫）
     var supportsSessions: Bool { self == .claude || self == .codex || self == .kimi }
 
-    /// 是否支持光晕完成提醒（有完成钩子可装：Claude Stop 钩子 / Codex notify /
-    /// Kimi config.toml [[hooks]] Stop 事件；Grok、智谱无钩子机制）
-    var supportsGlow: Bool { self == .claude || self == .codex || self == .kimi }
+    /// 是否支持光晕完成提醒——四家全有完成钩子可装：Claude Stop 钩子 / Codex notify /
+    /// Kimi config.toml [[hooks]] Stop 事件 / Grok hooks 目录独立 JSON（Stop 事件）
+    var supportsGlow: Bool { true }
 
     /// 对应桌面 App 的 bundle id（光晕「切到前台就熄灭」兜底识别用）；
     /// 无桌面版的家为 nil，宿主识别完全依赖 hook 的进程链探测
@@ -120,12 +113,6 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
         let fresh = Set(allCases).subtracting(known).intersection(detectedInstalled)
         return (current.union(fresh), Set(allCases))
     }
-
-    // MARK: - 智谱（服务型：无本地目录，「已配置 API Key」即视为存在）
-
-    /// 「Key 已配置」标记存 UserDefaults——检测走这里，绝不碰钥匙串
-    /// （钥匙串在启动路径同步读会弹框阻塞，Key 本体只在发额度请求时惰性读）
-    nonisolated static let zhipuConfiguredKey = "zhipuKeyConfigured"
 }
 
 /// 一家 Agent 的本机检测结果
@@ -142,13 +129,8 @@ enum AgentProbe {
     static func detect() -> [AgentProbeResult] {
         let fm = FileManager.default
         return AgentKind.allCases.map { kind in
-            guard let dir = kind.homeDir else {
-                // 服务型（智谱）：配置过 API Key 即「已接入」
-                let configured = UserDefaults.standard.bool(forKey: AgentKind.zhipuConfiguredKey)
-                return AgentProbeResult(kind: kind, installed: configured, lastActive: nil)
-            }
-            let installed = fm.fileExists(atPath: dir.path)
-            let lastActive = installed ? (kind.activityPath.flatMap(mtime) ?? mtime(dir)) : nil
+            let installed = fm.fileExists(atPath: kind.homeDir.path)
+            let lastActive = installed ? (mtime(kind.activityPath) ?? mtime(kind.homeDir)) : nil
             return AgentProbeResult(kind: kind, installed: installed, lastActive: lastActive)
         }
     }
@@ -178,6 +160,7 @@ extension AgentProbe {
         ("OpenCode", ".config/opencode", "O"),
         ("iFlow CLI", ".iflow", "i"),
         ("Qwen Code", ".qwen", "Q"),
+        ("ZCode（智谱）", ".zcode", "Z"),
     ]
 
     /// 只返回本机存在的（未装的不列——零能力家列一排「未发现」没有信息量）

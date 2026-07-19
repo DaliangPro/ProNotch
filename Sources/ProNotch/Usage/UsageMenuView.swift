@@ -11,11 +11,12 @@ struct UsageMenuView: View {
     var onSettings: () -> Void = {}
     @State private var tab = 0   // 0=概览，1…n = 各勾选服务
 
-    private struct Svc { let name: String; let short: String; let polys: [[CGPoint]]; let tint: Color; let quota: ServiceQuota? }
-    /// 只列勾选的家（设置 → Agent 每家总开关），与额度页/菜单栏标题同一套过滤
+    private struct Svc { let kind: AgentKind; let name: String; let short: String; let polys: [[CGPoint]]; let tint: Color; let quota: ServiceQuota? }
+    /// 只列勾选的家（设置 → Agent 每家总开关）——注意面板始终显示全部接入的家，
+    /// 每家页内的「顶部菜单栏」开关只影响收起后菜单栏标题露不露这家（大梁老师定）
     private var services: [Svc] {
         AgentKind.allCases.filter { $0.supportsQuota && settings.enabledAgents.contains($0) }.map {
-            Svc(name: $0.displayName, short: $0.shortName, polys: $0.polys,
+            Svc(kind: $0, name: $0.displayName, short: $0.shortName, polys: $0.polys,
                 tint: $0.tint, quota: store.quota(for: $0))
         }
     }
@@ -123,7 +124,25 @@ struct UsageMenuView: View {
                     }
                 }
             }
+            Divider()
+            // 每家自己的菜单栏露出开关（大梁老师定的位置：就在这家的页面里）——
+            // 关掉只影响收起后的菜单栏标题，这个面板里这家照常显示
+            HStack {
+                Text("在顶部菜单栏显示").font(.system(size: 12.5))
+                Spacer()
+                Toggle("", isOn: menuBarBinding(s.kind))
+                    .toggleStyle(.switch).controlSize(.small).labelsHidden()
+            }
         }
+    }
+
+    /// 菜单栏标题勾选集读写（与 AppDelegate 标题渲染的 menuBarAgents 同一份）
+    private func menuBarBinding(_ kind: AgentKind) -> Binding<Bool> {
+        Binding(get: { settings.menuBarAgents.contains(kind) },
+                set: { on in
+                    if on { settings.menuBarAgents.insert(kind) }
+                    else { settings.menuBarAgents.remove(kind) }
+                })
     }
 
     /// 单个额度窗口小节：标题（如「7 天额度」）+ 柱状条 + 已用% + 重置倒计时

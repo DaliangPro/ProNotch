@@ -7,6 +7,8 @@ import Foundation
 ///   等下游不被打断）。原 `notify` 以 base64 存进脚本头部，卸载时据此还原。
 /// - Kimi Code：`~/.kimi-code/config.toml` 的 `[[hooks]]` 数组表（官方 Stop 事件，
 ///   stdin JSON 带 session_id，与 Claude 同构）——追加我们自己的一段，卸载时整段删除。
+/// - Grok CLI：`~/.grok/hooks/` 全局钩子目录，每个应用一个独立 JSON 文件（Claude 同构
+///   schema，机内 vibe-island.json 为实证）——我们写 `pronotch.json`，卸载时整文件删除。
 ///
 /// 安全策略：写前备份 `.pronotch.bak`；每家只动我们自己写入的内容；全部可还原。
 enum GlowHookInstaller {
@@ -18,7 +20,7 @@ enum GlowHookInstaller {
         case .claude: return isClaudeInstalled()
         case .codex:  return isCodexInstalled()
         case .kimi:   return isKimiInstalled()
-        default:      return false   // 无完成钩子机制的家（Grok / 智谱）
+        case .grok:   return isGrokInstalled()
         }
     }
 
@@ -28,7 +30,7 @@ enum GlowHookInstaller {
         case .claude: return setClaudeInstalled(on)
         case .codex:  return setCodexInstalled(on)
         case .kimi:   return setKimiInstalled(on)
-        default:      return false
+        case .grok:   return setGrokInstalled(on)
         }
     }
 
@@ -288,6 +290,71 @@ enum GlowHookInstaller {
         }
         lines.removeSubrange(head..<end)
         return lines.joined(separator: "\n")
+    }
+
+    // MARK: - Grok CLI（~/.grok/hooks/pronotch.json 独立钩子文件，Stop 事件 Claude 同构）
+
+    private static let grokHome = ("~/.grok" as NSString).expandingTildeInPath
+    private static let grokHooksDir = ("~/.grok/hooks" as NSString).expandingTildeInPath
+    private static let grokHookFile = ("~/.grok/hooks/pronotch.json" as NSString).expandingTildeInPath
+
+    private static var grokScript: String {
+        NSHomeDirectory() + "/Library/Application Support/ProNotch/grok-notify.sh"
+    }
+
+    /// Grok 转发脚本：与 Claude 同构（Stop 事件 stdin JSON，session_id 抓不到也不影响点亮）
+    @discardableResult
+    private static func writeGrokScript() -> Bool {
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: (grokScript as NSString).deletingLastPathComponent,
+                                withIntermediateDirectories: true)
+        let script = """
+        #!/bin/bash
+        # ProNotch · Grok 完成提醒（自动生成，勿手改）· PRONOTCH_FMT=\(scriptFormat)
+        \(hostDetectSnippet)
+        payload=$(cat)
+        host=$(detect_host)
+        sid=$(printf '%s' "$payload" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
+        url="pronotch://done?source=grok"
+        [ -n "$host" ] && url="$url&host=$host"
+        [ -n "$sid" ] && url="$url&session=$sid"
+        open -g "$url"
+        """
+        guard (try? script.write(toFile: grokScript, atomically: true, encoding: .utf8)) != nil else { return false }
+        try? fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: grokScript)
+        return true
+    }
+
+    private static func isGrokInstalled() -> Bool {
+        FileManager.default.fileExists(atPath: grokHookFile)
+            && FileManager.default.fileExists(atPath: grokScript)
+    }
+
+    @discardableResult
+    private static func setGrokInstalled(_ on: Bool) -> Bool {
+        let fm = FileManager.default
+        // 没装 Grok CLI（~/.grok 不存在）就无法接入
+        guard fm.fileExists(atPath: grokHome) else { return false }
+
+        if on {
+            // 幂等：钩子文件在 + 脚本最新 → 不动文件
+            if isGrokInstalled(), scriptIsCurrent(grokScript) { return true }
+            guard writeGrokScript() else { return false }
+            try? fm.createDirectory(atPath: grokHooksDir, withIntermediateDirectories: true)
+            // 路径含空格（Application Support），command 经 shell 解释，须引号包裹
+            let root: [String: Any] = ["hooks": ["Stop": [
+                ["hooks": [["type": "command", "command": "\"\(grokScript)\""]]]
+            ]]]
+            guard let out = try? JSONSerialization.data(
+                    withJSONObject: root, options: [.prettyPrinted, .sortedKeys]),
+                  (try? out.write(to: URL(fileURLWithPath: grokHookFile))) != nil else { return false }
+            return true
+        } else {
+            // pronotch.json 整个文件都是我们写的：直接删即还原（不碰别家的钩子文件）
+            try? fm.removeItem(atPath: grokHookFile)
+            try? fm.removeItem(atPath: grokScript)
+            return true
+        }
     }
 
     // MARK: - Codex（config.toml 的 notify 转发器）

@@ -6,7 +6,6 @@ final class AgentSelectionTests: XCTestCase {
     override func tearDown() {
         UserDefaults.standard.removeObject(forKey: AgentKind.selectionKey)
         UserDefaults.standard.removeObject(forKey: AgentKind.knownKey)
-        UserDefaults.standard.removeObject(forKey: AgentKind.zhipuConfiguredKey)
         super.tearDown()
     }
 
@@ -40,15 +39,6 @@ final class AgentSelectionTests: XCTestCase {
         }
     }
 
-    func test智谱检测只认配置标记不碰目录() {
-        UserDefaults.standard.removeObject(forKey: AgentKind.zhipuConfiguredKey)
-        XCTAssertEqual(AgentProbe.detect().first { $0.kind == .zhipu }?.installed, false)
-        UserDefaults.standard.set(true, forKey: AgentKind.zhipuConfiguredKey)
-        let r = AgentProbe.detect().first { $0.kind == .zhipu }
-        XCTAssertEqual(r?.installed, true, "服务型家：Key 标记即「已连接」")
-        XCTAssertNil(r?.lastActive, "无本地目录，永远没有活跃时间")
-    }
-
     // MARK: - 能力矩阵（界面按此诚实渲染：不支持的能力不显示、不假装）
 
     func test能力矩阵与产品口径一致() {
@@ -57,13 +47,12 @@ final class AgentSelectionTests: XCTestCase {
         XCTAssertTrue(AgentKind.codex.supportsSessions)
         XCTAssertTrue(AgentKind.kimi.supportsSessions)
         XCTAssertFalse(AgentKind.grok.supportsSessions)
-        XCTAssertFalse(AgentKind.zhipu.supportsSessions, "智谱是纯额度服务，无本地会话可看")
-        // 额度：五家全支持（Kimi 走 CLI 内置 managed-usage 同款接口）
+        // 额度：四家全支持（Kimi 走 CLI 内置 managed-usage 同款接口）
         for kind in AgentKind.allCases {
             XCTAssertTrue(kind.supportsQuota, "\(kind) 应支持额度查询")
         }
-        // 完成钩子：有 hooks 机制的三家
-        XCTAssertEqual(AgentKind.allCases.filter(\.supportsGlow), [.claude, .codex, .kimi])
+        // 完成钩子：四家全有（Claude Stop / Codex notify / Grok hooks 目录 / Kimi config.toml）
+        XCTAssertEqual(AgentKind.allCases.filter(\.supportsGlow), AgentKind.allCases)
     }
 
     // MARK: - 升级出新家的增量补勾（mergeNewlyDetected 纯函数）
@@ -88,54 +77,6 @@ final class AgentSelectionTests: XCTestCase {
             current: [], known: Set(AgentKind.allCases),
             detectedInstalled: [.claude, .codex])
         XCTAssertEqual(enabled, [], "见过的家即使检测到已安装，也尊重用户的取消")
-    }
-}
-
-/// 智谱额度接口响应解析（纯函数，不发网络请求）
-final class ZhipuQuotaParseTests: XCTestCase {
-    func test标准双窗口响应() {
-        let obj: [String: Any] = ["data": [
-            "level": "pro",
-            "limits": [
-                ["type": "TOKENS_LIMIT", "percentage": 37.5, "duration": 18000],
-                ["type": "TOKENS_LIMIT", "percentage": 12, "duration": 604800,
-                 "nextResetTime": 1_800_000_000_000],   // 毫秒时间戳
-            ],
-        ]]
-        let q = ZhipuQuotaLoader.parse(obj)
-        XCTAssertEqual(q?.plan, "Pro", "档位首字母大写展示")
-        XCTAssertEqual(q?.primary?.windowMinutes, 300, "最短窗做主窗（5 小时）")
-        XCTAssertEqual(q?.primary?.usedPercent, 37.5)
-        XCTAssertEqual(q?.secondary?.windowMinutes, 10080, "最长窗做副窗（7 天）")
-        XCTAssertEqual(q?.secondary?.resetsAt?.timeIntervalSince1970 ?? 0,
-                       1_800_000_000, accuracy: 1, "毫秒时间戳要除 1000")
-    }
-
-    func test无时长字段按出现顺序兜底() {
-        let obj: [String: Any] = ["data": ["limits": [
-            ["type": "TOKENS_LIMIT", "percentage": 60],
-            ["type": "TOKENS_LIMIT", "percentage": 8],
-        ]]]
-        let q = ZhipuQuotaLoader.parse(obj)
-        XCTAssertEqual(q?.primary?.windowMinutes, 300, "字段名对不上时首条按 5 小时窗兜底")
-        XCTAssertEqual(q?.secondary?.windowMinutes, 10080)
-    }
-
-    func test乱序与非TOKENS条目() {
-        let obj: [String: Any] = ["data": ["limits": [
-            ["type": "TOKENS_LIMIT", "percentage": 5, "window_seconds": 604800],
-            ["type": "REQUESTS_LIMIT", "percentage": 99],   // 非 token 限额：忽略
-            ["type": "TOKENS_LIMIT", "percentage": 42, "window_seconds": 18000],
-        ]]]
-        let q = ZhipuQuotaLoader.parse(obj)
-        XCTAssertEqual(q?.primary?.usedPercent, 42, "按窗口时长排序后 5 小时窗仍是主窗")
-        XCTAssertEqual(q?.secondary?.usedPercent, 5)
-    }
-
-    func test结构不识别返回nil() {
-        XCTAssertNil(ZhipuQuotaLoader.parse(["code": 200]))
-        XCTAssertNil(ZhipuQuotaLoader.parse(["data": ["limits": [[String: Any]]()]]),
-                     "空 limits 视为不识别，外层给统一错误文案")
     }
 }
 

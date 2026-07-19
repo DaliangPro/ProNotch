@@ -20,7 +20,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var usagePanel: NSPanel?                              // 额度栏点开的 iOS 风格矩形面板（无箭头/无毛玻璃）
     private var usagePanelMonitor: Any?                           // 点面板外收起（其他 App）
     private var usagePanelLocalMonitor: Any?                      // 点面板外收起（本 App 其他窗口）
-    private lazy var showUsageInMenuBar = UserDefaults.standard.bool(forKey: "showUsageInMenuBar")
     private var usageTimer: Timer?
     /// 恶劣天气预警兜底刷新：两侧功能区都没配天气时也保证数据定期落地供扫描
     private var weatherTimer: Timer?
@@ -90,7 +89,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         memoryStore = MemoryStore()
         weatherStore = WeatherStore()
         launcherStore.refreshIfNeeded()
-        clipboardStore.startMonitoring()
+        // 剪贴板历史：索引总是加载（记录关闭时历史仍可看），0.5 秒轮询按开关起停（真停机）
+        if settingsStore.clipboardEnabled {
+            clipboardStore.startMonitoring()
+        } else {
+            clipboardStore.loadHistoryOnly()
+        }
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ProNotchClipboardEnabledChanged"),
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                if self.settingsStore.clipboardEnabled {
+                    self.clipboardStore.startMonitoring()
+                } else {
+                    self.clipboardStore.stop()
+                }
+            }
+        }
         ClipboardSwitcherController.shared.configure(store: clipboardStore, snippets: snippetStore)
 
         setupMainMenu()
@@ -103,21 +119,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             self?.handleUpdate(release, manual: false)
         }
 
-        // 光晕提醒：常驻一个覆盖整屏的光晕层（默认不显示，等 pronotch:// 信号点亮）
+        // 光晕提醒：控制器常驻（很轻），覆盖整屏的光晕窗点亮才建、熄灭即拆
         glowController = GlowController(settings: settingsStore)
 
-        // 恶劣天气预警兜底：即使两侧功能区都没配天气（没了 10 秒心跳），也每 15 分钟
-        // 刷一次数据供扫描。已授权定位才刷，绝不在后台弹授权框；store 内置节流，
-        // 与 slot 心跳撞车也只会实际请求一次
-        weatherTimer = Timer.scheduledTimer(withTimeInterval: 900, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.weatherStore.refreshIfAuthorized() }
+        // 恶劣天气预警兜底定时器：预警是它唯一的存在理由——预警关闭即不跑（真停机），
+        // 设置页改动预警开关/类型时实时起停
+        applyWeatherTimerState()
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ProNotchWeatherAlertSettingsChanged"),
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.applyWeatherTimerState() }
         }
-        weatherStore.refreshIfAuthorized()
 
         // 升级迁移：把已接入的旧 hook 刷新到带「宿主 App 探测」的新格式（终端/IDE 通用）。
         // 仅刷新已接入的，不改变接入与否，避免误开用户已取消的 Agent。
-        GlowHookInstaller.migrateIfInstalled(.claude)
-        GlowHookInstaller.migrateIfInstalled(.codex)
+        for kind in AgentKind.allCases where kind.supportsGlow {
+            GlowHookInstaller.migrateIfInstalled(kind)
+        }
         // 清除早期 hooks.json 接入残留的「无 host」pronotch 孤儿（与接入与否无关，幂等）
         GlowHookInstaller.cleanCodexHooksOrphan()
 
@@ -299,7 +317,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // host 偶发抓空（Claudian 的 claude 有时没挂在 Obsidian 进程链下）→ 复用该会话之前抓对过的宿主，
         // 不回退桌面版；否则光晕的 activeHosts 记成桌面版，切回 Obsidian 匹配不上、熄不掉
         let effectiveHost = (host?.isEmpty == false) ? host : agentSessionsStore?.knownHost(for: session)
-        // source 参数即 AgentKind 的 rawValue（claude/codex/kimi），支持光晕的家统一走这一条路
+        // source 参数即 AgentKind 的 rawValue（claude/codex/kimi/grok），支持光晕的家统一走这一条路
         guard let kind = source.flatMap(AgentKind.init(rawValue:)), kind.supportsGlow else { return }
         glowController?.notifyCompletion(kind, host: effectiveHost)
         agentSessionsStore?.markTurnEnded(session: session, source: kind, host: host)
@@ -696,7 +714,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let usageToggle = NSMenuItem(title: "Agent 额度", action: #selector(toggleUsageMenuBar), keyEquivalent: "")
         usageToggle.target = self
         usageToggle.image = emptyImage
-        usageToggle.state = showUsageInMenuBar ? .on : .off
+        usageToggle.state = settingsStore.showUsageInMenuBar ? .on : .off
         menu.addItem(usageToggle)
         usageToggleItem = usageToggle
         menu.addItem(.separator())
@@ -749,21 +767,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.updateUsageTitle() }
         applyUsageVisibility()   // 按持久化开关状态显隐额度栏并启停定时刷新
+        // 总开关状态归 SettingsStore：主菜单勾选与设置页开关改的是同一份，任一处动这里统一应用
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ProNotchUsageMenuBarChanged"),
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.usageToggleItem?.state = self.settingsStore.showUsageInMenuBar ? .on : .off
+                self.applyUsageVisibility()
+            }
+        }
+        // per-Agent 菜单栏勾选只影响标题渲染，不动数据层
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ProNotchMenuBarAgentsChanged"),
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.updateUsageTitle() }
+        }
     }
 
     // MARK: - 独立「额度」菜单栏项（可开关）
 
     @objc private func toggleUsageMenuBar() {
-        showUsageInMenuBar.toggle()
-        UserDefaults.standard.set(showUsageInMenuBar, forKey: "showUsageInMenuBar")
-        usageToggleItem?.state = showUsageInMenuBar ? .on : .off
-        applyUsageVisibility()
+        // 只翻状态：持久化与应用统一走 SettingsStore didSet → 通知回来（设置页开关同一条链）
+        settingsStore.showUsageInMenuBar.toggle()
     }
 
     /// 用 NSStatusItem.isVisible 显隐额度栏（不销毁重建，避开「关掉再打开消失」的重建坑）：
     /// 首次开启才真正创建 item，此后只切 isVisible + 启停 60 秒定时刷新
     private func applyUsageVisibility() {
-        if showUsageInMenuBar {
+        if settingsStore.showUsageInMenuBar {
             if usageStatusItem == nil { createUsageStatusItem() }
             usageStatusItem?.isVisible = true
             updateUsageTitle()
@@ -779,7 +811,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func createUsageStatusItem() {
         guard usageStatusItem == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.toolTip = "AI 编码额度（Claude / Codex / Grok）"
+        item.button?.toolTip = "AI 编码额度"
         item.button?.target = self
         item.button?.action = #selector(toggleUsagePopover)
         let content = NSHostingView(rootView: UsageMenuView(
@@ -826,6 +858,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if let m = usagePanelLocalMonitor { NSEvent.removeMonitor(m); usagePanelLocalMonitor = nil }
     }
 
+    /// 恶劣天气预警兜底：预警开着才跑——即使两侧功能区都没配天气（没了 10 秒心跳），
+    /// 也每 15 分钟刷一次数据供扫描。已授权定位才刷，绝不在后台弹授权框；
+    /// store 内置节流，与 slot 心跳撞车也只会实际请求一次
+    private func applyWeatherTimerState() {
+        let alertsOn = !WeatherAlertType.enabledSet().isEmpty
+        if alertsOn, weatherTimer == nil {
+            weatherTimer = Timer.scheduledTimer(withTimeInterval: 900, repeats: true) { [weak self] _ in
+                Task { @MainActor in self?.weatherStore.refreshIfAuthorized() }
+            }
+            weatherStore.refreshIfAuthorized()
+        } else if !alertsOn, let t = weatherTimer {
+            t.invalidate()
+            weatherTimer = nil
+        }
+    }
+
     /// 定时刷新只在额度栏显示时运行——隐藏即停，不再无谓访问 Claude / ChatGPT 接口
     private func startUsageTimer() {
         guard usageTimer == nil else { return }
@@ -838,16 +886,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// 额度栏标题：勾选各家品牌 logo + 5h%；高占用百分比变色；无数据的服务省略。仅额度栏存在时更新
     private func updateUsageTitle() {
         guard let button = usageStatusItem?.button else { return }
-        // 只显示勾选的家（设置 → Agent 每家总开关）；取消勾选时数据被置 nil，
+        // 双重过滤：接入勾选（设置 → Agent 每家总开关）∩ 菜单栏勾选（每家「菜单栏」小开关）——
+        // 刘海里看全量、菜单栏只挑常用的。取消接入时数据被置 nil，
         // objectWillChange 会把这里再驱动一遍，标题即时增减
         let tints: [AgentKind: NSColor] = [
             .claude: NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1),   // Claude 橙
             .codex: .systemCyan,
             .grok: .systemGray,
             .kimi: NSColor(srgbRed: 0.929, green: 0.929, blue: 0.929, alpha: 1),     // 月之暗面白
-            .zhipu: NSColor(srgbRed: 0.22, green: 0.35, blue: 1.0, alpha: 1),        // 智谱蓝
         ]
-        let items = AgentKind.allCases.filter { $0.supportsQuota && settingsStore.enabledAgents.contains($0) }
+        let items = AgentKind.allCases.filter {
+            $0.supportsQuota && settingsStore.enabledAgents.contains($0)
+                && settingsStore.menuBarAgents.contains($0)
+        }
         let title = NSMutableAttributedString()
         let base: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)]
         for kind in items {
@@ -861,8 +912,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             seg[.foregroundColor] = pctColor(pct)
             title.append(NSAttributedString(string: " \(Int(pct.rounded()))%", attributes: seg))
         }
+        // 占位区分两种空：勾了家但数据没到 =「额度…」（在加载）；菜单栏一家没勾 =「额度」（静态入口，点开看详情）
         button.attributedTitle = title.length > 0 ? title
-            : NSAttributedString(string: "额度…", attributes: base)   // 还没数据时占位，别空着
+            : NSAttributedString(string: items.isEmpty ? "额度" : "额度…", attributes: base)
     }
 
     /// 品牌 logo 渲染成菜单栏用小 NSImage：归一化折线 → 染色 evenodd 填充；Y 轴翻转适配 AppKit 坐标系
