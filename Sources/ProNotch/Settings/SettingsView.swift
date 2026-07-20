@@ -26,6 +26,7 @@ struct SettingsView: View {
         case notch = "刘海面板"
         case glow = "Agent"
         case widgets = "组件"
+        case clipboard = "剪贴板"
         case screenshot = "超级截图"
         case chat = "AI 闪问"
         case about = "关于"
@@ -87,6 +88,7 @@ struct SettingsView: View {
         case .notch:      notchContent
         case .glow:       glowContent
         case .widgets:    widgetsContent
+        case .clipboard:  clipboardContent
         case .screenshot: screenshotContent
         case .chat:       chatContent
         case .about:      aboutContent
@@ -214,8 +216,13 @@ struct SettingsView: View {
                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 2)
+        }
+    }
 
-            sectionLabel("剪贴板")
+    // MARK: - 剪贴板
+    private var clipboardContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            pageTitle("剪贴板")
             SettingsCard {
                 // 关 = 停 0.5 秒轮询（真停机）；历史保留，清空是下面按钮的独立职责
                 toggleRow("记录剪贴板历史", isOn: $settings.clipboardEnabled)
@@ -226,6 +233,10 @@ struct SettingsView: View {
                 CardDivider()
                 clearClipboardRow
             }
+            Text("关闭后停止后台监听、不再记录新内容，已存历史保留；按快捷键仍可呼出历史面板。")
+                .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 2)
         }
     }
 
