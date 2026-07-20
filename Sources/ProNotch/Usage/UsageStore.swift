@@ -289,7 +289,7 @@ enum KimiQuotaLoader {
         guard tokCode == 200,
               let tokObj = try? JSONSerialization.jsonObject(with: tokData) as? [String: Any],
               let access = tokObj["access_token"] as? String, !access.isEmpty else {
-            return ServiceQuota(error: "Kimi 登录已过期，在终端重新 kimi login")
+            return ServiceQuota(error: tokenError(code: tokCode, body: tokData))
         }
         guard let uurl = URL(string: usageEndpoint) else { return ServiceQuota(error: "接口地址异常") }
         var ureq = URLRequest(url: uurl)
@@ -305,6 +305,27 @@ enum KimiQuotaLoader {
             return ServiceQuota(error: "Kimi 接口返回异常（HTTP \(ucode)）")
         }
         return parse(uobj) ?? ServiceQuota(error: "Kimi 返回了无法识别的数据结构")
+    }
+
+    /// token 刷新失败的归因（纯函数，可测）：非 200 一律报「登录已过期」会骗人白跑一趟——
+    /// 限流和服务端故障重登多少次都是红的，登完还红只会让人以为是 ProNotch 坏了。
+    /// 只有服务端明确说凭证不认（400 invalid_grant / 401）才该让用户去 kimi login
+    static func tokenError(code: Int, body: Data) -> String {
+        let reason = (try? JSONSerialization.jsonObject(with: body) as? [String: Any])
+            .flatMap { $0?["error"] as? String }
+        switch code {
+        case 429:
+            return "Kimi 接口限流，稍后自动重试"
+        case 500...599:
+            return "Kimi 服务暂时不可用（HTTP \(code)）"
+        case 200:
+            return "Kimi 认证返回了无法识别的数据结构"
+        case 400, 401, 403:
+            return "Kimi 登录已过期，在终端重新 kimi login"
+        default:
+            // 认不出的状态码别硬扣「登录过期」的帽子，把码报出来更有助于排查
+            return reason.map { "Kimi 认证被拒（\($0)）" } ?? "Kimi 认证失败（HTTP \(code)）"
+        }
     }
 
     /// 解析响应（纯函数，可测）。实测结构（2026-07）：
