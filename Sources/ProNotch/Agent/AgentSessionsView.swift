@@ -87,8 +87,17 @@ struct AgentSessionsView: View {
                                            value: entrancePlayed)
                         }
                     }
-                    .padding(.bottom, 2)
+                    .padding(.bottom, 12)   // 底部留白与渐隐等高，滚到底最后一张卡不被吃掉
                 }
+                // 滚到底的卡片渐隐消失，替代生硬截断（与启动器页同一范式）
+                .mask(
+                    VStack(spacing: 0) {
+                        Rectangle().fill(Color.black)
+                        LinearGradient(colors: [.black, .clear],
+                                       startPoint: .top, endPoint: .bottom)
+                            .frame(height: 12)
+                    }
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
