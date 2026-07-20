@@ -44,7 +44,7 @@
 
 ![Agent 提醒](docs/screenshot-agent.png)
 
-**Agent 任务监控台**（新）— 刘海「Agent」页把本机的 Claude Code / Codex / Kimi Code 会话按家分栏收进监控台（Grok CLI 没有本地会话文件可扫，不在此列）：每张卡片显示会话标题、所在项目、实时状态（该你了 / 运行中 / 空闲）、最后一条回复与 token 消耗；Agent 停下等你确认时，卡片橙色呼吸并置顶，点卡片直接跳回它所在的终端 / IDE。多任务并行跑 Agent，谁在干活、谁在等你，一眼全知道：
+**Agent 任务监控台**（新）— 刘海「Agent」页把本机的 Claude Code / Codex / Grok / Kimi Code 会话按家分栏收进监控台：每张卡片显示会话标题、所在项目、实时状态（该你了 / 运行中 / 空闲）、最后一条回复与 token 消耗；Agent 停下等你确认时，卡片橙色呼吸并置顶，点卡片直接跳回它所在的终端 / IDE。多任务并行跑 Agent，谁在干活、谁在等你，一眼全知道：
 
 ![Agent 任务监控台](docs/screenshot-agent-center.png)
 

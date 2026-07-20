@@ -72,8 +72,10 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
     /// 是否有额度可查（四家全支持；Kimi 走 CLI 内置 managed-usage 同款接口，见 KimiQuotaLoader）
     var supportsQuota: Bool { true }
 
-    /// 是否支持会话监控台（Grok CLI 无本地会话文件可扫）
-    var supportsSessions: Bool { self == .claude || self == .codex || self == .kimi }
+    /// 是否支持会话监控台——四家全支持。
+    /// Grok 一度被判定「无本地会话文件可扫」，那是漏看：只查了 ~/.grok/logs 没进 sessions/，
+    /// 实际每个会话一个目录（summary.json + chat_history.jsonl），结构比 Claude 的 jsonl 还规整
+    var supportsSessions: Bool { true }
 
     /// 是否支持光晕完成提醒——四家全有完成钩子可装：Claude Stop 钩子 / Codex notify /
     /// Kimi config.toml [[hooks]] Stop 事件 / Grok hooks 目录独立 JSON（Stop 事件）

@@ -24,7 +24,8 @@ struct AgentSession: Identifiable {
     var projectName: String { (projectPath as NSString).lastPathComponent }
 }
 
-/// Agent 页数据源:扫描 ~/.claude/projects 与 ~/.codex/sessions 的会话文件列出近期会话。
+/// Agent 页数据源:扫描四家的会话文件列出近期会话
+/// (~/.claude/projects、~/.codex/sessions、~/.kimi-code/sessions、~/.grok/sessions)。
 /// 性能红线:transcript 可达几十 MB,只读尾部 64KB(Codex 另读首 8KB 取 meta),绝不整读。
 /// 状态判定(2026-07 实测):两家都没有「等待批准」的落盘事件,
 /// - Claude:最后一行是 assistant 且 content 含 tool_use = 悬空(等确认或工具执行中);
@@ -66,6 +67,7 @@ final class AgentSessionsStore: ObservableObject {
             let raw = (enabled.contains(.claude) ? Self.scanClaude() : [])
                     + (enabled.contains(.codex) ? Self.scanCodex() : [])
                     + (enabled.contains(.kimi) ? Self.scanKimi() : [])
+                    + (enabled.contains(.grok) ? Self.scanGrok() : [])
             await MainActor.run { [weak self] in
                 self?.rawSessions = raw
                 self?.rebuild()
@@ -358,6 +360,85 @@ final class AgentSessionsStore: ObservableObject {
                             lastMessage: summarize(lastPrompt),
                             title: titleize(title),
                             state: state(mtime: mtime, inTurn: inTurn))
+    }
+
+    // MARK: - Grok(~/.grok/sessions/<URL 编码的项目路径>/<会话 uuid>/)
+
+    /// 每个会话一个目录:summary.json(元信息) + chat_history.jsonl(对话)。
+    /// 目录名是 URL 编码的项目路径,但不必解码——summary.json 的 info.cwd 就是原路径。
+    /// 轮边界(实测 2026-07-20):尾部倒扫,最后一条 user = 模型还在跑;assistant = 一轮收尾
+    private nonisolated static func scanGrok() -> [AgentSession] {
+        let fm = FileManager.default
+        let root = fm.homeDirectoryForCurrentUser.appendingPathComponent(".grok/sessions")
+        guard let projects = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey]) else { return [] }
+        let cutoff = Date().addingTimeInterval(-recentWindow)
+        var out: [AgentSession] = []
+        for proj in projects {
+            // 项目层还混着 prompt_history.jsonl 等散文件与 session_search.sqlite,只进目录
+            guard (try? proj.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true,
+                  let dirs = try? fm.contentsOfDirectory(at: proj, includingPropertiesForKeys: [.isDirectoryKey]) else { continue }
+            for d in dirs {
+                guard (try? d.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
+                let chat = d.appendingPathComponent("chat_history.jsonl")
+                guard let mtime = (try? chat.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+                      mtime > cutoff else { continue }
+                if let s = parseGrok(dir: d, chat: chat, mtime: mtime) { out.append(s) }
+            }
+        }
+        return out
+    }
+
+    private nonisolated static func parseGrok(dir: URL, chat: URL, mtime: Date) -> AgentSession? {
+        // 元信息全在 summary.json(几百字节,整读无压力):项目路径 / 模型 / 会话名
+        var cwd: String?, model: String?, summary: String?
+        if let data = try? Data(contentsOf: dir.appendingPathComponent("summary.json")),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            cwd = (obj["info"] as? [String: Any])?["cwd"] as? String
+            model = obj["current_model_id"] as? String
+            summary = obj["session_summary"] as? String
+        }
+        guard let cwd else { return nil }   // 没有 summary.json / 无 cwd = 非会话目录,跳过
+        // 尾部倒扫定轮态与末条回复。user 的 content 是 [{type,text}] 数组、assistant 是纯字符串
+        var inTurn = false, lastText: String?
+        if let tail = readTail(chat, bytes: 64 * 1024) {
+            var settled = false
+            for raw in tail.split(separator: "\n").reversed() {
+                guard let obj = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+                      let type = obj["type"] as? String else { continue }
+                if !settled, type == "user" || type == "assistant" {
+                    settled = true
+                    inTurn = (type == "user")   // 最后一条是用户发言 = 模型还没回完,正在跑
+                }
+                if lastText == nil, type == "assistant", let c = obj["content"] as? String {
+                    let clean = c.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !clean.isEmpty { lastText = clean }
+                }
+                if settled, lastText != nil { break }
+            }
+        }
+        // session_summary 实测多为空(Grok 不自动命名)→ 回退首句 prompt
+        let name = (summary?.isEmpty == false) ? summary : grokHeadTitle(chat)
+        return AgentSession(id: dir.lastPathComponent,
+                            source: .grok, projectPath: cwd, model: model,
+                            lastActivity: mtime,
+                            lastMessage: summarize(lastText),
+                            title: titleize(name),
+                            state: state(mtime: mtime, inTurn: inTurn))
+    }
+
+    /// 会话名兜底:取首条 user prompt,与 Claude 的 headTitle 同思路。
+    /// system 提示词占开头约 4KB,16KB 窗口足够读到首条 user
+    private nonisolated static func grokHeadTitle(_ chat: URL) -> String? {
+        guard let head = readHead(chat, bytes: 16 * 1024) else { return nil }
+        for raw in head.split(separator: "\n") {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+                  obj["type"] as? String == "user",
+                  let content = obj["content"] as? [[String: Any]],
+                  let text = content.first(where: { ($0["type"] as? String) == "text" })?["text"] as? String
+            else { continue }
+            if let clean = SessionUsage.cleanUserPrompt(text) { return clean }
+        }
+        return nil
     }
 
     // MARK: - 共用

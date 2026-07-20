@@ -72,7 +72,9 @@ final class NotchViewModel: ObservableObject {
     }
 
     /// 页签可见性纯函数（可单测）：launcher/chat 常显；组件页要求内存/天气内部开关任一开；
-    /// 额度页要求勾选集里有能查额度的家，Agent 页要求有能看本地会话的家（只勾 Grok 时额度在、Agent 隐）
+    /// 额度页要求勾选集里有能查额度的家，Agent 页要求有能看本地会话的家。
+    /// 当前四家额度与会话都支持 → 勾任意一家两页都在，全不勾才隐；能力判断保留，
+    /// 是为将来接入只有部分能力的家（不写死成「勾了就显」）
     nonisolated static func visibleTabs(order: [Tab], enabled: Set<AgentKind>,
                                         widgetsVisible: Bool) -> [Tab] {
         order.filter { tab in

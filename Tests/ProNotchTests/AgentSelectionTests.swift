@@ -42,11 +42,10 @@ final class AgentSelectionTests: XCTestCase {
     // MARK: - 能力矩阵（界面按此诚实渲染：不支持的能力不显示、不假装）
 
     func test能力矩阵与产品口径一致() {
-        // 会话监控台：只有装了本地 CLI 且会话可解析的家
-        XCTAssertTrue(AgentKind.claude.supportsSessions)
-        XCTAssertTrue(AgentKind.codex.supportsSessions)
-        XCTAssertTrue(AgentKind.kimi.supportsSessions)
-        XCTAssertFalse(AgentKind.grok.supportsSessions)
+        // 会话监控台：四家全支持（Grok 一度被判定无本地会话可扫，实为漏看 ~/.grok/sessions/）
+        for kind in AgentKind.allCases {
+            XCTAssertTrue(kind.supportsSessions, "\(kind) 应支持会话监控台")
+        }
         // 额度：四家全支持（Kimi 走 CLI 内置 managed-usage 同款接口）
         for kind in AgentKind.allCases {
             XCTAssertTrue(kind.supportsQuota, "\(kind) 应支持额度查询")
@@ -140,10 +139,9 @@ final class NotchTabVisibilityTests: XCTestCase {
                        "usage 需能查额度的家、agent 需能看会话的家，空集都不满足")
     }
 
-    func test只勾Grok时额度页在Agent页隐() {
+    func test只勾Grok时五页全显() {
         XCTAssertEqual(NotchViewModel.visibleTabs(order: fullOrder, enabled: [.grok], widgetsVisible: true),
-                       [.launcher, .chat, .usage, .widgets],
-                       "Grok 支持额度不支持本地会话：额度页显示、Agent 页隐藏")
+                       fullOrder, "Grok 接入 ~/.grok/sessions 后额度、会话都支持，两页都显示")
     }
 
     func test勾Claude时五页全显() {
@@ -157,9 +155,11 @@ final class NotchTabVisibilityTests: XCTestCase {
     }
 
     func test显隐只过滤不改相对顺序() {
+        // 四家能力齐平后，勾任意一家都不再产生隐藏页 → 用全不勾造隐藏，
+        // 且 agent(索引1)、usage(索引3) 双双夹在中间，比原先单页隐藏覆盖更强
         let custom: [Tab] = [.widgets, .agent, .launcher, .usage, .chat]
-        XCTAssertEqual(NotchViewModel.visibleTabs(order: custom, enabled: [.grok], widgetsVisible: true),
-                       [.widgets, .launcher, .usage, .chat],
+        XCTAssertEqual(NotchViewModel.visibleTabs(order: custom, enabled: [], widgetsVisible: true),
+                       [.widgets, .launcher, .chat],
                        "沿用 tabOrder 相对顺序，只把隐藏页就地抽走")
     }
 
