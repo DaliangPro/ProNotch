@@ -230,7 +230,10 @@ final class NotchViewModel: ObservableObject {
             monitors.append(scroll)
         }
         poller = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.evaluateMouse() }
+            Task { @MainActor [weak self] in
+                self?.evaluateMouse()
+                self?.tickFullscreenCheck()
+            }
         }
 
         // 全屏隐藏走事件驱动：进入/退出全屏必然切换空间，
@@ -264,6 +267,19 @@ final class NotchViewModel: ObservableObject {
                                                      enabled: self.enabledAgentsSnapshot)
             }
         }
+        updateFullscreenHiding()
+    }
+
+    /// 全屏兜底检测计数：复用 0.2s 鼠标心跳，每 5 拍（约 1 秒）兜底重评一次全屏。
+    /// 事件驱动（切空间）会漏掉 Keynote 放映这种「不换空间的覆盖式全屏」，靠这个兜底。
+    /// 必须独立于 evaluateMouse 调用——后者在隐藏态会提前 return，无法检测「退出全屏」。
+    /// CGWindowList 只读边界、微秒级、无需权限；updateFullscreenHiding 内有状态去重，
+    /// 无变化时几乎零开销。
+    private var fullscreenTick = 0
+    private func tickFullscreenCheck() {
+        fullscreenTick += 1
+        guard fullscreenTick >= 5 else { return }
+        fullscreenTick = 0
         updateFullscreenHiding()
     }
 

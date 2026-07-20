@@ -52,7 +52,8 @@ final class NotchWindowController {
                 .environmentObject(weatherStore))
         panel.contentView = hosting
         panel.orderFrontRegardless()
-        // 「全屏时隐藏刘海」：每秒检测一次，全屏时整窗隐藏、退出后恢复
+        // 「全屏时隐藏刘海」：事件驱动（切空间/改设置）+ 每秒兜底重评（Keynote 放映不换
+        // 空间，纯事件驱动漏检，靠 poller 兜底）；全屏时整窗隐藏、退出后恢复
         viewModel.shouldHideForFullscreen = { [weak settingsStore] in
             guard settingsStore?.hideNotchInFullscreen == true else { return false }
             // 每块屏只检测自己屏的全屏（外接屏假刘海会遮挡全屏内容）
