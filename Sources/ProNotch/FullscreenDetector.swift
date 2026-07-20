@@ -15,18 +15,25 @@ enum FullscreenDetector {
         guard let windows = CGWindowListCopyWindowInfo(
             [.optionOnScreenOnly, .excludeDesktopElements],
             kCGNullWindowID) as? [[String: Any]] else { return false }
-        return hasFullscreen(in: windows, target: target,
-                             excludingPID: Int(ProcessInfo.processInfo.processIdentifier))
+        var excluded: Set<Int> = [Int(ProcessInfo.processInfo.processIdentifier)]
+        // 排除程序坞：它在每块屏上都挂一个与整屏等大的背景窗（layer 20）。放宽层级判据后
+        // 这东西会被当成全屏应用，副屏刘海就此永久隐藏——用户看到的是「副屏根本没有刘海」，
+        // 极难联想到是全屏检测误判。按 bundle id 认，不认本地化的 owner 名
+        for app in NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock") {
+            excluded.insert(Int(app.processIdentifier))
+        }
+        return hasFullscreen(in: windows, target: target, excludingPIDs: excluded)
     }
 
-    /// 纯判定（可单测）：窗口列表里是否存在铺满 target 屏、且非本进程的可见窗口。
+    /// 纯判定（可单测）：窗口列表里是否存在铺满 target 屏、且不属于排除进程的可见窗口。
     /// 放宽层级——不再只认普通窗口层(layer 0)：Keynote 放映幕布挂在抬升层(layer>0)，
-    /// 只要与整屏等大即算全屏；但必须排除本进程窗口——自家全屏光晕窗也整屏等大，
-    /// 若不排除会把自己误判成"别的全屏应用"而永久隐藏刘海。
+    /// 只要与整屏等大即算全屏；代价是必须显式排除那些同样整屏等大的常驻窗：
+    /// 本进程（自家全屏光晕窗）与程序坞（每屏一个整屏背景窗），
+    /// 漏排任一个都会把自己误判成「别的全屏应用」而永久隐藏刘海。
     nonisolated static func hasFullscreen(in windows: [[String: Any]],
-                                          target: CGRect, excludingPID: Int) -> Bool {
+                                          target: CGRect, excludingPIDs: Set<Int>) -> Bool {
         for window in windows {
-            guard let pid = window[kCGWindowOwnerPID as String] as? Int, pid != excludingPID,
+            guard let pid = window[kCGWindowOwnerPID as String] as? Int, !excludingPIDs.contains(pid),
                   let layer = window[kCGWindowLayer as String] as? Int, layer >= 0,
                   let alpha = window[kCGWindowAlpha as String] as? Double, alpha > 0.1,
                   let boundsDict = window[kCGWindowBounds as String] as? NSDictionary,

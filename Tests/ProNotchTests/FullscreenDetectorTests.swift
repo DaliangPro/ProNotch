@@ -9,6 +9,7 @@ final class FullscreenDetectorTests: XCTestCase {
     /// 目标屏（CGWindow 坐标系，左上原点）
     private let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
     private let selfPID = 4321   // 假定「自家」进程号
+    private let dockPID = 1234   // 程序坞：每屏一个整屏背景窗，同样要排除
     private let otherPID = 9999  // 别家进程
 
     private func win(pid: Int, layer: Int, alpha: Double, bounds: CGRect) -> [String: Any] {
@@ -21,7 +22,8 @@ final class FullscreenDetectorTests: XCTestCase {
     }
 
     private func detect(_ windows: [[String: Any]]) -> Bool {
-        FullscreenDetector.hasFullscreen(in: windows, target: screen, excludingPID: selfPID)
+        FullscreenDetector.hasFullscreen(in: windows, target: screen,
+                                         excludingPIDs: [selfPID, dockPID])
     }
 
     func test别家普通层整屏窗算全屏() {
@@ -36,6 +38,12 @@ final class FullscreenDetectorTests: XCTestCase {
     func test自家整屏窗被排除() {
         // 自家全屏光晕窗也整屏等大，若不排除会把自己误判成「别的全屏应用」而永久隐藏刘海
         XCTAssertFalse(detect([win(pid: selfPID, layer: 25, alpha: 1, bounds: screen)]))
+    }
+
+    func test程序坞整屏背景窗被排除() {
+        // 实测：副屏上程序坞挂着一个与整屏严丝合缝的窗（layer 20），不排除就会让副屏刘海
+        // 永久隐藏——现象是「副屏根本没有刘海」，看不出与全屏检测有关
+        XCTAssertFalse(detect([win(pid: dockPID, layer: 20, alpha: 1, bounds: screen)]))
     }
 
     func test非整屏窗不算全屏() {
