@@ -3,6 +3,7 @@ import SwiftUI
 
 struct Snippet: Identifiable, Codable, Equatable {
     let id: UUID
+    var title: String?     // 可选标题，便于识别；旧数据无此字段，解码为 nil
     var content: String
     var date: Date
 }
@@ -22,20 +23,27 @@ final class SnippetStore: ObservableObject {
         load()
     }
 
+    /// 标题归一：去空白，空串存 nil（列表判空口径统一）
+    private static func normalize(_ title: String?) -> String? {
+        let t = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return t.isEmpty ? nil : t
+    }
+
     /// 新增话术：入库并置顶
-    func add(content: String) {
+    func add(title: String?, content: String) {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        snippets.insert(Snippet(id: UUID(), content: text, date: Date()), at: 0)
+        snippets.insert(Snippet(id: UUID(), title: Self.normalize(title), content: text, date: Date()), at: 0)
         save()
         print("[ProNotch] 已存入话术库（共 \(snippets.count) 条）")
     }
 
     /// 纯数据更新（切换器面板自管编辑态，不经内部 editor 状态）
-    func update(id: UUID, content: String) {
+    func update(id: UUID, title: String?, content: String) {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty,
               let index = snippets.firstIndex(where: { $0.id == id }) else { return }
+        snippets[index].title = Self.normalize(title)
         snippets[index].content = text
         save()
     }

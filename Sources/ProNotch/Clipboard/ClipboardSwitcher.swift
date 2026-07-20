@@ -27,6 +27,7 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
     // 话术编辑器（面板自管编辑态：无边框面板键盘被全局拦，编辑时放行键入）
     @Published var editorVisible = false
     @Published var editorText = ""
+    @Published var editorTitle = ""                       // 编辑态标题草稿（可选）
     @Published private(set) var editingExisting = false   // true=改已有，false=新增（决定标题/按钮文案）
     private var editingSnippetID: UUID?
 
@@ -277,6 +278,7 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
         if mode != .snippet { setMode(.snippet) }
         editingSnippetID = nil
         editingExisting = false
+        editorTitle = ""
         editorText = ""
         editorVisible = true
     }
@@ -287,6 +289,7 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
         let snippet = snippets.snippets[idx]
         editingSnippetID = snippet.id
         editingExisting = true
+        editorTitle = snippet.title ?? ""
         editorText = snippet.content
         editorVisible = true
     }
@@ -294,6 +297,7 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
     /// 取消编辑：回到话术浏览态（不关面板）
     func cancelEditor() {
         editorVisible = false
+        editorTitle = ""
         editorText = ""
         editingSnippetID = nil
         editingExisting = false
@@ -304,10 +308,11 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
         guard let snippets else { return }
         let text = editorText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { cancelEditor(); return }
+        let title = editorTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         if let id = editingSnippetID {
-            snippets.update(id: id, content: text)
+            snippets.update(id: id, title: title, content: text)
         } else {
-            snippets.add(content: text)                            // 新增插到最前
+            snippets.add(title: title, content: text)             // 新增插到最前
         }
         cancelEditor()
         selectedIndex = 0
@@ -473,7 +478,8 @@ struct ClipboardSwitcherView: View {
                     if isSnippet {
                         ForEach(Array(snippets.snippets.enumerated()), id: \.element.id) { idx, snippet in
                             cardCell(idx: idx) {
-                                SnippetCard(content: snippet.content,
+                                SnippetCard(title: snippet.title,
+                                            content: snippet.content,
                                             selected: controller.selectedSet.contains(idx))
                             } menu: {
                                 Button { controller.beginEditSnippet(at: idx) } label: {
@@ -570,8 +576,9 @@ struct ClipboardSwitcherView: View {
                 Text(controller.editingExisting ? "编辑话术" : "新增话术")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.white.opacity(0.9))
+                SnippetTitleField(text: $controller.editorTitle)
                 SnippetEditor(text: $controller.editorText)
-                    .frame(height: 150)
+                    .frame(height: 130)
                 HStack(spacing: 10) {
                     Text("⌘↩ 保存 · esc 取消")
                         .font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
@@ -661,15 +668,23 @@ private struct ClipboardCard: View {
 
 /// 话术卡片：纯文本卡，与剪贴板文本卡同款尺寸/选中态，右下角标「话术」
 private struct SnippetCard: View {
+    let title: String?
     let content: String
     let selected: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let hasTitle = !(title ?? "").isEmpty
+        return VStack(alignment: .leading, spacing: 8) {
+            if hasTitle {
+                Text(title ?? "")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.95))
+                    .lineLimit(1)
+            }
             Text(content.trimmingCharacters(in: .whitespacesAndNewlines))
                 .font(.system(size: 12))
                 .foregroundColor(.white.opacity(0.9))
-                .lineLimit(11)
+                .lineLimit(hasTitle ? 9 : 11)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             HStack(spacing: 5) {
@@ -692,6 +707,21 @@ private struct SnippetCard: View {
                               lineWidth: selected ? 2 : 0.5))
         .scaleEffect(selected ? 1.0 : 0.97)
         .animation(.easeOut(duration: 0.15), value: selected)
+    }
+}
+
+/// 话术标题输入：单行、可选填。不自动聚焦（内容框保持默认焦点），点击即可编辑
+private struct SnippetTitleField: View {
+    @Binding var text: String
+
+    var body: some View {
+        TextField("标题（可选，便于识别）", text: $text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 13))
+            .foregroundColor(.white)
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color.white.opacity(0.08)))
     }
 }
 
