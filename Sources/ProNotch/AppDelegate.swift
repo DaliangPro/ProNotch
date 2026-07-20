@@ -831,7 +831,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     /// 用 NSStatusItem.isVisible 显隐额度栏（不销毁重建，避开「关掉再打开消失」的重建坑）：
-    /// 首次开启才真正创建 item，此后只切 isVisible + 启停 60 秒定时刷新
+    /// 首次开启才真正创建 item，此后只切 isVisible + 启停 5 分钟兜底刷新
     private func applyUsageVisibility() {
         if settingsStore.showUsageInMenuBar {
             if usageStatusItem == nil { createUsageStatusItem() }
@@ -912,10 +912,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    /// 定时刷新只在额度栏显示时运行——隐藏即停，不再无谓访问 Claude / ChatGPT 接口
+    /// 定时刷新只在额度栏显示时运行——隐藏即停，不再无谓访问 Claude / ChatGPT 接口。
+    /// 5 分钟只是兜底：真正的刷新时机是用户主动看的那一刻（额度页 onAppear、点开菜单栏
+    /// 额度面板、各处刷新按钮）。原先 60 秒一轮属实过密——额度是分钟级都不会变的数字，
+    /// 却让 Kimi/Grok 每分钟各挨一次 token 交换，既白耗配额又平添被限流的机会
     private func startUsageTimer() {
         guard usageTimer == nil else { return }
-        usageTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        usageTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.usageStore.refresh() }
         }
     }
@@ -1109,7 +1112,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 }
 
 extension AppDelegate: NSMenuDelegate {
-    /// 打开菜单栏下拉时强制拉一次最新额度（比 90 秒定时更即时）
+    /// 打开菜单栏下拉时强制拉一次最新额度（不等 5 分钟兜底）
     func menuWillOpen(_ menu: NSMenu) {
         usageStore.refresh(force: true)
     }

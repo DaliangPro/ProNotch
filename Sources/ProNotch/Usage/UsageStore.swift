@@ -72,6 +72,14 @@ final class UsageStore: ObservableObject {
         refresh(force: true)
     }
 
+    /// 顺带刷新（Agent 页心跳专用，5 分钟节流）：那边 8 秒一跳只为拿每会话 token 消耗，
+    /// 走 refresh() 会被 30 秒节流放行，等于停在 Agent 页就每 30 秒给 Kimi/Grok 各来一次
+    /// token 交换——比额度栏自己的定时还密。token 消耗是慢变量，跟兜底同频足够
+    func refreshIncidental() {
+        guard Date().timeIntervalSince(lastRefresh) > 300 else { return }
+        refresh()
+    }
+
     /// 刷新（30 秒节流，force 忽略节流）。文件扫描在后台线程，主线程只收结果。
     /// 只处理勾选的 Agent（每家总开关）：未勾选家不发请求、不扫它的任何文件
     func refresh(force: Bool = false) {

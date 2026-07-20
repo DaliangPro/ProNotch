@@ -38,7 +38,9 @@ struct AgentSessionsView: View {
         .pageEntrance($entrancePlayed)
         .onAppear { store.refresh(); usageStore.refresh() }   // 顺带刷额度：拿每会话 token 消耗
         .onReceive(ticker) { _ in
-            if vm.isExpanded, vm.activeTab == .agent { store.refresh(force: true); usageStore.refresh() }
+            // 会话列表 8 秒一刷（本地文件，随便刷）；额度走 5 分钟节流的顺带通道，
+            // 免得停在这一页就把 Kimi/Grok 的 token 接口按 30 秒一轮薅着
+            if vm.isExpanded, vm.activeTab == .agent { store.refresh(force: true); usageStore.refreshIncidental() }
         }
     }
 
