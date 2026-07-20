@@ -136,8 +136,14 @@ struct SettingsView: View {
             SettingsCard {
                 toggleRow("开机自动启动", isOn: $settings.launchAtLogin)
                 CardDivider()
+                screenModeRow
+                CardDivider()
                 updateRow
             }
+            Text("多显示器时刘海出现在哪几块屏。主屏 = 菜单栏所在那块（在「系统设置 → 显示器」里指定）；选了「仅副屏幕」但当前只有一块屏时，仍显示在主屏。")
+                .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 2)
             if let hint = settings.loginItemHint {
                 noteText(hint, color: .orange)
             }
@@ -273,6 +279,28 @@ struct SettingsView: View {
     }
 
     /// 功能区内容选择行（左/右侧共用）：菜单列出全部可选组件
+    /// 通用区「显示屏幕」：多显示器下刘海出现在哪几块屏
+    private var screenModeRow: some View {
+        HStack {
+            Text("显示屏幕").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+            Spacer()
+            Menu {
+                ForEach(NotchScreenMode.allCases, id: \.self) { mode in
+                    Button(mode.title) { settings.notchScreenMode = mode }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(settings.notchScreenMode.title).font(.system(size: 12))
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 9))
+                }
+                .foregroundColor(.white.opacity(0.85))
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.12)))
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        }
+    }
+
     private func slotRow(_ label: String, selection: Binding<NotchSlot>) -> some View {
         HStack {
             Text(label).font(.system(size: 13)).foregroundColor(.white.opacity(0.9))

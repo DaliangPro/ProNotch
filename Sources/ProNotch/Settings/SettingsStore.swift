@@ -29,6 +29,16 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    /// 刘海显示在哪些屏幕（默认全部屏幕）
+    @Published var notchScreenMode: NotchScreenMode {
+        didSet {
+            UserDefaults.standard.set(notchScreenMode.rawValue, forKey: "notchScreenMode")
+            // 通知 AppDelegate 按新设置重建刘海窗口
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ProNotchScreenModeChanged"), object: nil)
+        }
+    }
+
     private static var serviceStatus: SMAppService.Status {
         SMAppService.mainApp.status
     }
@@ -309,6 +319,8 @@ final class SettingsStore: ObservableObject {
             "translateUseChatAPI": true,
         ])
         hideNotchInFullscreen = UserDefaults.standard.bool(forKey: "hideNotchInFullscreen")
+        notchScreenMode = UserDefaults.standard.string(forKey: "notchScreenMode")
+            .flatMap(NotchScreenMode.init(rawValue:)) ?? .all
         weatherAlertsEnabled = UserDefaults.standard.object(forKey: WeatherAlertType.masterKey) as? Bool ?? true
         // 类型多选：有存值用存值（空数组 = 用户主动全清，尊重）；无存值默认全选
         weatherAlertTypes = UserDefaults.standard.stringArray(forKey: WeatherAlertType.typesKey)

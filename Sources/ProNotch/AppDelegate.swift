@@ -199,6 +199,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             self, selector: #selector(screenParametersChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil)
 
+        // 「显示屏幕」设置变更：立即按新范围重建（不必等下一次屏幕配置变化）
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(screenModeChanged),
+            name: NSNotification.Name("ProNotchScreenModeChanged"), object: nil)
+
         // 调试通道仅存在于开发构建：正式版不暴露任何可被本机其他进程
         // 远程触发的接口
         #if DEBUG
@@ -619,6 +624,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.orderFrontStandardAboutPanel(options: [.credits: credits])
     }
 
+    @objc private func screenModeChanged() {
+        setupNotchWindow()
+    }
+
     @objc private func screenParametersChanged() {
         // 显示器排列 / 分辨率变化时，系统会成批发送通知，且触发瞬间
         // NSScreen.screens 可能是中间态（坐标尚未稳定）——立即重建会把面板
@@ -626,7 +635,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         pendingScreenRebuild?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            let rects = NSScreen.screens.map { NotchGeometry.notchRect(on: $0) }
+            let mode = self.settingsStore.notchScreenMode
+            let rects = NotchGeometry.screens(for: mode).map { NotchGeometry.notchRect(on: $0) }
             if rects == self.windowControllers.map(\.viewModel.notchRect) { return }
             self.setupNotchWindow()
         }
@@ -638,11 +648,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         windowControllers.first?.viewModel.debugToggle()
     }
 
-    /// 为每块在线屏幕各建一个刘海面板：有物理刘海的贴刘海，没有的
+    /// 按「显示屏幕」设置为选中的屏各建一个刘海面板：有物理刘海的贴刘海，没有的
     /// （外接屏 / 扩展屏）在顶部正中模拟热区。数据层共享，展开状态各自独立。
     private func setupNotchWindow() {
         windowControllers.forEach { $0.close() }
-        windowControllers = NSScreen.screens.map { screen in
+        windowControllers = NotchGeometry.screens(for: settingsStore.notchScreenMode).map { screen in
             NotchWindowController(
                 screen: screen,
                 launcherStore: launcherStore,
