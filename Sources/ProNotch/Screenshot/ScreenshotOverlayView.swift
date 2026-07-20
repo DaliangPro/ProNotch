@@ -110,9 +110,13 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var hintLabel: NSTextField?        // 气泡内文字（原位更新进度，不重建视图）
     private var hintSpinning = false           // 气泡当前是否带转圈
 
-    private var phase: Phase = .selecting
+    private var phase: Phase = .selecting {
+        didSet { if phase != oldValue { window?.invalidateCursorRects(for: self) } }
+    }
     private var tool: Tool = .none
-    private var selection: NSRect?
+    private var selection: NSRect? {
+        didSet { if selection != oldValue { window?.invalidateCursorRects(for: self) } }
+    }
     private var dragOrigin: NSPoint?
     // 窗口吸附：框选阶段悬停自动高亮光标下的窗口，单击即整窗选中
     private var snapWindows: [(rect: NSRect, id: CGWindowID)]?   // 吸附候选：截图冻结时刻的普通窗口（边框 + 窗口 ID，视图坐标、Z 序前→后）；nil=未加载
@@ -284,7 +288,48 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     required init?(coder: NSCoder) { fatalError() }
 
     override var acceptsFirstResponder: Bool { true }
-    override func resetCursorRects() { addCursorRect(bounds, cursor: .crosshair) }
+    /// 光标反馈：默认十字准星；编辑态在选区四边/四角覆盖对应的调整光标——
+    /// 只画手柄用户看不出「能拖」，鼠标一靠近就变形才有感知。命中带宽与 selectionGrabMode 一致（±7pt）
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: .crosshair)
+        guard phase == .editing, let sel = selection else { return }
+        let t: CGFloat = 7
+        if sel.height > 2 * t {   // 左右边：去掉两端 t，让角优先
+            addCursorRect(NSRect(x: sel.minX - t, y: sel.minY + t, width: 2 * t, height: sel.height - 2 * t),
+                          cursor: .resizeLeftRight)
+            addCursorRect(NSRect(x: sel.maxX - t, y: sel.minY + t, width: 2 * t, height: sel.height - 2 * t),
+                          cursor: .resizeLeftRight)
+        }
+        if sel.width > 2 * t {    // 上下边
+            addCursorRect(NSRect(x: sel.minX + t, y: sel.maxY - t, width: sel.width - 2 * t, height: 2 * t),
+                          cursor: .resizeUpDown)
+            addCursorRect(NSRect(x: sel.minX + t, y: sel.minY - t, width: sel.width - 2 * t, height: 2 * t),
+                          cursor: .resizeUpDown)
+        }
+        // 四角（非翻转坐标系：minY 是底边）
+        let nwse = Self.diagonalResizeCursor(nwse: true)
+        let nesw = Self.diagonalResizeCursor(nwse: false)
+        func cornerRect(_ x: CGFloat, _ y: CGFloat) -> NSRect {
+            NSRect(x: x - t, y: y - t, width: 2 * t, height: 2 * t)
+        }
+        addCursorRect(cornerRect(sel.minX, sel.minY), cursor: nesw)   // 左下 ↙↗
+        addCursorRect(cornerRect(sel.maxX, sel.maxY), cursor: nesw)   // 右上
+        addCursorRect(cornerRect(sel.minX, sel.maxY), cursor: nwse)   // 左上 ↖↘
+        addCursorRect(cornerRect(sel.maxX, sel.minY), cursor: nwse)   // 右下
+    }
+
+    /// 对角调整光标：系统到 macOS 15 才开放 NSCursor.frameResize，本项目部署到 14，
+    /// 故走私有 selector；取不到就回退成上下调整光标（仍有「可拖」反馈，不影响功能）
+    private static func diagonalResizeCursor(nwse: Bool) -> NSCursor {
+        let name = nwse ? "_windowResizeNorthWestSouthEastCursor"
+                        : "_windowResizeNorthEastSouthWestCursor"
+        let sel = NSSelectorFromString(name)
+        if NSCursor.responds(to: sel),
+           let cursor = NSCursor.perform(sel)?.takeUnretainedValue() as? NSCursor {
+            return cursor
+        }
+        return .resizeUpDown
+    }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach { removeTrackingArea($0) }
