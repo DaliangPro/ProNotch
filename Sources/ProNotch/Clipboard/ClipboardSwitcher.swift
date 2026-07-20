@@ -2,7 +2,6 @@ import AppKit
 import SwiftUI
 import Carbon.HIToolbox
 import ApplicationServices
-import UniformTypeIdentifiers
 
 /// 可成为 key 的无边框面板（无边框 NSPanel 默认不能接收键盘，覆写打开）
 private final class ClipboardSwitcherPanel: NSPanel {
@@ -214,7 +213,8 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
         anchorIndex = selectedIndex
     }
 
-    /// 话术拖拽重排：把 from 处的话术移到 to 处，选中跟到新位置
+    /// 话术拖拽重排：把 from 处的话术移到 to 处，选中跟到新位置。
+    /// 刻意不动 keyboardScrollTick——拖动中滚动居中会让卡片在手底下乱跑（同「鼠标操作不滚动」的原则）
     func moveSnippet(from: Int, to: Int) {
         guard mode == .snippet, let snippets else { return }
         snippets.move(from: from, to: to)
@@ -222,7 +222,6 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
         selectedIndex = min(max(to, 0), count - 1)
         selectedSet = [selectedIndex]
         anchorIndex = selectedIndex
-        keyboardScrollTick += 1
     }
 
     /// ⌘C：当前选中复制到剪贴板并收起，不自动粘贴（历史=单条或多条合并；话术=单条）
@@ -411,6 +410,10 @@ struct ClipboardSwitcherView: View {
     @ObservedObject var snippets: SnippetStore
     @ObservedObject var controller: ClipboardSwitcherController
 
+    // 话术拖动重排态（手势自绘，见 SnippetDragContainer）
+    @State private var draggingSnippetID: UUID?
+    @State private var snippetDragOffset: CGSize = .zero
+
     private var isSnippet: Bool { controller.mode == .snippet }
 
     var body: some View {
@@ -489,22 +492,23 @@ struct ClipboardSwitcherView: View {
                 LazyHStack(spacing: 12) {
                     if isSnippet {
                         ForEach(Array(snippets.snippets.enumerated()), id: \.element.id) { idx, snippet in
-                            cardCell(idx: idx) {
-                                SnippetCard(title: snippet.title,
-                                            content: snippet.content,
-                                            selected: controller.selectedSet.contains(idx))
-                            } menu: {
-                                Button { controller.beginEditSnippet(at: idx) } label: {
-                                    Label("编辑", systemImage: "pencil")
+                            SnippetDragContainer(id: snippet.id,
+                                                 controller: controller,
+                                                 snippets: snippets,
+                                                 dragging: $draggingSnippetID,
+                                                 dragOffset: $snippetDragOffset) {
+                                cardCell(idx: idx) {
+                                    SnippetCard(title: snippet.title,
+                                                content: snippet.content,
+                                                selected: controller.selectedSet.contains(idx))
+                                } menu: {
+                                    Button { controller.beginEditSnippet(at: idx) } label: {
+                                        Label("编辑", systemImage: "pencil")
+                                    }
+                                    Button(role: .destructive) { controller.delete(at: idx) } label: {
+                                        Label("删除", systemImage: "trash")
+                                    }
                                 }
-                                Button(role: .destructive) { controller.delete(at: idx) } label: {
-                                    Label("删除", systemImage: "trash")
-                                }
-                            }
-                            // 按住卡片拖到目标位置放下即改顺序（单击选中 / 双击粘贴 / 右键菜单均不受影响）
-                            .onDrag { NSItemProvider(object: String(idx) as NSString) }
-                            .onDrop(of: [.text], isTargeted: nil) { providers in
-                                handleSnippetDrop(providers, to: idx)
                             }
                         }
                     } else {
@@ -559,6 +563,7 @@ struct ClipboardSwitcherView: View {
                 .onTapGesture {
                     // 单击即时选中（不用 count:2 手势，避免单击等双击判定的延迟）；
                     // 双击由 handleTap 内部按「快速二次点击同卡」检测 → 粘贴
+                    guard draggingSnippetID == nil else { return }   // 刚拖完的松手不当点击
                     let mods = NSEvent.modifierFlags
                     controller.handleTap(at: idx,
                                          command: mods.contains(.command),
@@ -580,18 +585,6 @@ struct ClipboardSwitcherView: View {
             .buttonStyle(.plain)
         }
         .id(idx)
-    }
-
-    /// 话术卡拖放：从 provider 读回源索引 → 移到目标位置
-    /// （loadObject 回调在后台线程，只捕获 @MainActor 的 controller 与 Int，再回主线程改数据）
-    private func handleSnippetDrop(_ providers: [NSItemProvider], to idx: Int) -> Bool {
-        guard let provider = providers.first else { return false }
-        let c = controller
-        provider.loadObject(ofClass: NSString.self) { obj, _ in
-            guard let s = obj as? String, let from = Int(s) else { return }
-            Task { @MainActor in c.moveSnippet(from: from, to: idx) }
-        }
-        return true
     }
 
     // MARK: 话术编辑浮层
@@ -692,6 +685,60 @@ private struct ClipboardCard: View {
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
+    }
+}
+
+/// 话术卡拖动重排：与刘海启动器的置顶图标同一套模型——手势自绘，卡片跟手移动、
+/// 其它卡实时让位（弹簧动画）、松手弹簧归位。不用系统拖放：那个只有半透明预览 +
+/// 落点才生效，既不跟手也不让位，手感对不上（大梁老师点名要与图标拖动一致）。
+private struct SnippetDragContainer<Content: View>: View {
+    let id: UUID
+    @ObservedObject var controller: ClipboardSwitcherController
+    @ObservedObject var snippets: SnippetStore
+    @Binding var dragging: UUID?
+    @Binding var dragOffset: CGSize
+    @ViewBuilder var content: Content
+
+    @State private var startIndex = 0
+
+    /// 相邻卡片中心间距 = 卡宽 200 + LazyHStack 间距 12（改卡片尺寸要同步这里）
+    private let stride: CGFloat = 212
+    private var isDragging: Bool { dragging == id }
+
+    var body: some View {
+        content
+            .offset(isDragging ? dragOffset : .zero)
+            .zIndex(isDragging ? 1 : 0)
+            .simultaneousGesture(   // 叠在卡片既有点击/右键之上：移动超 6px 才算拖动
+                DragGesture(minimumDistance: 6, coordinateSpace: .global)
+                    .onChanged { value in
+                        guard let current = snippets.snippets.firstIndex(where: { $0.id == id }) else { return }
+                        if dragging == nil {
+                            dragging = id
+                            startIndex = current
+                        }
+                        // 目标位 = 起始位 + 累计位移格数（基于起点算，不逐帧漂移）
+                        let target = min(max(startIndex + Int((value.translation.width / stride).rounded()), 0),
+                                         snippets.snippets.count - 1)
+                        if target != current {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.72)) {
+                                controller.moveSnippet(from: current, to: target)
+                            }
+                        }
+                        // 视觉偏移每帧重算 = 跟手位移 − 已让位的布局位移（卡片始终贴着鼠标）
+                        let nowIndex = snippets.snippets.firstIndex(where: { $0.id == id }) ?? target
+                        dragOffset = CGSize(
+                            width: value.translation.width - CGFloat(nowIndex - startIndex) * stride,
+                            height: value.translation.height)
+                    }
+                    .onEnded { _ in
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) { dragOffset = .zero }
+                        // 延后清拖动态：覆盖松手瞬间的 tap 窗口，避免拖完被当成单击
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            if dragging == id { dragging = nil }
+                        }
+                    }
+            )
     }
 }
 
