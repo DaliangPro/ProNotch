@@ -81,6 +81,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             debugSnapshotPanel()
             return   // 渲染实例不装菜单/状态栏/热键/监控，渲完 terminate
         }
+        // 对齐核查：离屏渲染设置窗口 PNG 后退出（-snapshotSettings）。
+        // 与 -snapshotPanel 同理不放 #if DEBUG——须用 /Applications 正式签名实例跑
+        if CommandLine.arguments.contains("-snapshotSettings") {
+            chatStore = ChatStore()
+            settingsStore = SettingsStore()
+            weatherStore = WeatherStore()
+            weatherStore.loadDemoWeather()   // 渲染实例不定位不联网，也不弹授权框
+            glowController = GlowController(settings: settingsStore)
+            snapshotSettings()
+            return
+        }
         chatStore = ChatStore()
         usageStore = UsageStore()
         agentSessionsStore = AgentSessionsStore()
@@ -258,9 +269,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugTestFullscreen),
             name: NSNotification.Name("com.daliangpro.ProNotch.testfullscreen"), object: nil)
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugSnapshotSettings),
-            name: NSNotification.Name("com.daliangpro.ProNotch.snapsettings"), object: nil)
         DistributedNotificationCenter.default().addObserver(
             self, selector: #selector(debugSnapshotSwitcher),
             name: NSNotification.Name("com.daliangpro.ProNotch.snapswitcher"), object: nil)
@@ -484,21 +492,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         renderNext()
     }
 
-    /// 调试用：离屏渲染设置界面到 PNG（无需打开窗口与屏幕录制权限）
-    @objc private func debugSnapshotSettings() {
-        let root = SettingsView()
+    /// 对齐核查：把设置窗口按真实尺寸离屏渲染成 PNG（不打开窗口、不需屏幕录制权限）。
+    /// 分区由 -section 指定（如 -section 刘海面板），默认「通用」；
+    /// 尺寸取 SwiftUI 自算值，跟着 SettingsView 的 frame 走，不写死
+    private func snapshotSettings() {
+        let args = CommandLine.arguments
+        let section = args.firstIndex(of: "-section")
+            .flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
+            .flatMap(SettingsView.Section.init(rawValue:)) ?? .general
+        let root = SettingsView(initialSection: section)
             .environmentObject(settingsStore!)
             .environmentObject(chatStore!)
+            .environmentObject(glowController!)
+            .environmentObject(updateChecker)
+            .environmentObject(weatherStore!)
             .environmentObject(snippetStore!)
         let hosting = NSHostingView(rootView: root)
         hosting.appearance = NSAppearance(named: .darkAqua)
-        hosting.frame = NSRect(x: 0, y: 0, width: 500, height: 524)
+        hosting.frame = NSRect(origin: .zero, size: hosting.fittingSize)
+        // 挂进离屏窗口：onAppear 与入场动画要有 window 才跑，否则渲出来是初始态
+        let win = NSWindow(contentRect: hosting.frame, styleMask: .borderless,
+                           backing: .buffered, defer: false)
+        win.isReleasedWhenClosed = false
+        win.contentView = hosting
         hosting.layoutSubtreeIfNeeded()
-        guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { return }
-        hosting.cacheDisplay(in: hosting.bounds, to: rep)
-        if let data = rep.representation(using: .png, properties: [:]) {
-            try? data.write(to: URL(fileURLWithPath: "/tmp/notchhub-settings-snapshot.png"))
-            print("[ProNotch] 设置界面快照已保存")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            if let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
+                hosting.cacheDisplay(in: hosting.bounds, to: rep)
+                if let data = rep.representation(using: .png, properties: [:]) {
+                    let out = "/tmp/pronotch-settings-\(section.rawValue).png"
+                    try? data.write(to: URL(fileURLWithPath: out))
+                    print("[ProNotch] 设置窗口快照已保存: \(out)")
+                }
+            }
+            NSApp.terminate(nil)
         }
     }
 

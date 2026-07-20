@@ -34,7 +34,13 @@ struct SettingsView: View {
         var id: String { rawValue }
     }
 
-    @State private var selected: Section = .general
+    @State private var selected: Section
+
+    /// 默认开在「通用」；离屏核查（-snapshotSettings）用它逐页渲染对照
+    init(initialSection: Section = .general) {
+        _selected = State(initialValue: initialSection)
+    }
+
     @State private var glowConnected: [AgentKind: Bool] = [:]   // 各家完成钩子接入态（supportsGlow 的家）
     @State private var probeResults: [AgentProbeResult] = []   // 本地 Agent 检测结果（打开 Agent 页 / 点扫描时刷新）
     @State private var discoveredTools: [DiscoveredTool] = []  // 认识但暂无监控能力的工具（仅展示）
