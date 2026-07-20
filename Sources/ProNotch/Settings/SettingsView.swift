@@ -153,14 +153,7 @@ struct SettingsView: View {
                 CardDivider()
                 slotRow("右侧显示", selection: $settings.rightSlot)
             }
-            Text("收起状态的刘海两侧常驻显示所选内容；两侧都关闭时，刘海恢复原始宽度。天气需要定位权限（系统设置 → 隐私与安全性 → 定位服务）。")
-                .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.leading, 2)
-
-            Text("展开面板页面").font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.white.opacity(0.85)).padding(.top, 4)
-            Text("刘海展开后的功能页可在面板内左右拖动调整顺序，排在最前的是每次展开的默认页。「额度」「Agent」页会跟随你在 Agent 区的勾选自动显隐，没有可展示的内容时不出现，勾选回来后仍回到原来的位置。")
+            Text("收起状态的刘海两侧常驻显示所选内容；两侧都关闭时，刘海恢复原始宽度。\n天气需要定位权限（系统设置 → 隐私与安全性 → 定位服务）。")
                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 2)
@@ -170,7 +163,7 @@ struct SettingsView: View {
     // MARK: - 组件
     private var widgetsContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            pageTitle("组件", subtitle: "控制展开面板里显示哪些卡片；收起时刘海两侧的常驻显示在「刘海面板」页单独设置。")
+            pageTitle("组件")
 
             sectionLabel("内存")
             SettingsCard {
@@ -219,10 +212,6 @@ struct SettingsView: View {
                 }
                 .padding(.horizontal, 14).padding(.vertical, 10)
             }
-            Text("勾选的天气类型在未来 3 小时内出现时，刘海弹出预警大卡，点击可看详情；关闭预警即停掉后台的定期天气刷新。")
-                .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.leading, 2)
         }
     }
 
@@ -541,14 +530,10 @@ struct SettingsView: View {
                     agentRow(r)
                 }
             }
-            noteText("每家一个总开关：关闭即不再读取它的额度、会话与任何本地文件，额度页 / 菜单栏 / 监控台同步隐藏。各家能力不同——Claude Code / Codex / Kimi Code 额度 / 监控台 / 完成提醒齐全，Grok 额度 + 完成提醒。", color: .white.opacity(0.4))
-
-            sectionLabel("菜单栏额度")
             SettingsCard {
                 // 与菜单栏主菜单「Agent 额度」同一份状态；关 = 图标移除 + 60 秒定时刷新停
-                toggleRow("在菜单栏显示额度", isOn: $settings.showUsageInMenuBar)
+                toggleRow("菜单栏显示额度", isOn: $settings.showUsageInMenuBar)
             }
-            noteText("开启后菜单栏常驻各家用量百分比。点开面板能看到全部接入的家，每家页面里各有一个「在顶部菜单栏显示」开关，决定收起后标题里露出谁。", color: .white.opacity(0.4))
 
             // 认识但暂无监控能力的工具：只报告「已发现」，不给开关、不假装能监控
             if !discoveredTools.isEmpty {
@@ -562,7 +547,6 @@ struct SettingsView: View {
                 noteText("这些 AI 工具已检测到，但暂无可接入的额度或会话数据，后续版本按需支持。", color: .white.opacity(0.4))
             }
 
-            sectionLabel("光晕提醒")
             if glowKinds.isEmpty {
                 // 与上方本地 Agent 勾选联动（大梁老师定）：一家都没接入就不留没对象可设的开关
                 SettingsCard {
@@ -576,7 +560,7 @@ struct SettingsView: View {
                 SettingsCard {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("启用 Agent 提醒")
+                            Text("启用 Agent 光晕提醒")
                                 .font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
                             Text("总开关，与刘海面板上的按钮联动")
                                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
@@ -766,9 +750,6 @@ struct SettingsView: View {
                 }
                 .padding(.horizontal, 14).padding(.vertical, 10)
             }
-            Text("设定后，在任意位置按下即从刘海弹出这个对话页并聚焦输入框；已停在闪问页时再按收起。")
-                .font(.system(size: 11)).foregroundColor(.white.opacity(0.35))
-                .fixedSize(horizontal: false, vertical: true).padding(.leading, 2)
 
             sectionLabel("配置（可保存多套，如 DeepSeek / Claude，点胶囊切换）")
             chatProviderBar
