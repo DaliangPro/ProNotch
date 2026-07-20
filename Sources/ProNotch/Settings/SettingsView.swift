@@ -20,13 +20,14 @@ struct SettingsView: View {
     @EnvironmentObject var glow: GlowController
     @EnvironmentObject var updates: UpdateChecker
     @EnvironmentObject var weather: WeatherStore
+    @EnvironmentObject var snippets: SnippetStore
 
     enum Section: String, CaseIterable, Identifiable {
         case general = "通用"
         case notch = "刘海面板"
         case glow = "Agent"
         case widgets = "组件"
-        case clipboard = "剪贴板"
+        case clipboard = "剪贴板 & 常用话术"
         case screenshot = "超级截图"
         case chat = "AI 闪问"
         case about = "关于"
@@ -41,6 +42,10 @@ struct SettingsView: View {
     @State private var confirmingClipboardClear = false   // 清空历史两步确认（3 秒不点自动还原）
     @State private var translateKey = ""   // 翻译独立接口的 API key 草稿（惰性从钥匙串载入）
     @State private var packRequest: [String]?          // [源语言码, 目标语言码]：置值触发系统语言包下载确认
+    @State private var snippetEditorShown = false           // 话术新增 / 编辑弹层
+    @State private var editingSnippetID: UUID?              // nil=新增，非 nil=编辑既有话术
+    @State private var snippetDraftTitle = ""
+    @State private var snippetDraftContent = ""
 
     private var canSave: Bool {
         !chatStore.draftBaseURL.trimmingCharacters(in: .whitespaces).isEmpty
@@ -103,6 +108,7 @@ struct SettingsView: View {
                     HStack {
                         Text(sec.rawValue).font(.system(size: 13))
                             .foregroundColor(selected == sec ? .white : .white.opacity(0.6))
+                            .lineLimit(1).minimumScaleFactor(0.8)
                         Spacer()
                     }
                     .padding(.horizontal, 10).padding(.vertical, 7)
@@ -218,7 +224,7 @@ struct SettingsView: View {
     // MARK: - 剪贴板
     private var clipboardContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            pageTitle("剪贴板")
+            pageTitle("剪贴板 & 常用话术")
             SettingsCard {
                 // 关 = 停 0.5 秒轮询（真停机）；历史保留，清空是下面按钮的独立职责
                 toggleRow("记录剪贴板历史", isOn: $settings.clipboardEnabled)
@@ -233,7 +239,10 @@ struct SettingsView: View {
                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 2)
+
+            snippetsSection
         }
+        .sheet(isPresented: $snippetEditorShown) { snippetEditorSheet }
     }
 
     /// 预警类型多选（五类胶囊）：总开关关闭时整行淡化禁用
@@ -346,6 +355,127 @@ struct SettingsView: View {
             ShortcutRecorderField(shortcut: $settings.clipboardShortcut)
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    // MARK: - 常用话术
+
+    /// 常用话术功能区：设置页直接增删改；与呼出面板共用同一话术库（SnippetStore 单一实例）
+    private var snippetsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                sectionLabel("常用话术")
+                Spacer()
+                Button { beginAddSnippet() } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus").font(.system(size: 10, weight: .bold))
+                        Text("新增").font(.system(size: 12, weight: .medium))
+                    }
+                    .foregroundColor(.white.opacity(0.9))
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Capsule().fill(Color.white.opacity(0.12)))
+                }
+                .buttonStyle(.plain)
+            }
+
+            if snippets.snippets.isEmpty {
+                Text("还没有常用话术。点「新增」保存常回复的文案，呼出面板即可一键粘贴。")
+                    .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
+                    .fixedSize(horizontal: false, vertical: true).padding(.leading, 2)
+            } else {
+                SettingsCard {
+                    ForEach(Array(snippets.snippets.enumerated()), id: \.element.id) { idx, s in
+                        if idx > 0 { CardDivider() }
+                        snippetRow(s)
+                    }
+                }
+            }
+
+            Text("呼出剪贴板面板后按 Tab（或点顶部「话术」）切到常用话术；双击卡片即可把内容粘贴到当前输入框。")
+                .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
+                .fixedSize(horizontal: false, vertical: true).padding(.leading, 2)
+        }
+    }
+
+    private func snippetRow(_ s: Snippet) -> some View {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                if let t = s.title, !t.isEmpty {
+                    Text(t).font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white.opacity(0.9)).lineLimit(1)
+                    Text(s.content).font(.system(size: 11))
+                        .foregroundColor(.white.opacity(0.45)).lineLimit(1)
+                } else {
+                    Text(s.content).font(.system(size: 13))
+                        .foregroundColor(.white.opacity(0.9)).lineLimit(2)
+                }
+            }
+            Spacer(minLength: 8)
+            Button { beginEditSnippet(s) } label: {
+                Image(systemName: "pencil").font(.system(size: 12)).foregroundColor(.white.opacity(0.6))
+            }.buttonStyle(.plain).help("编辑")
+            Button { snippets.delete(s) } label: {
+                Image(systemName: "trash").font(.system(size: 12))
+                    .foregroundColor(Color(hex: "#FF453A").opacity(0.8))
+            }.buttonStyle(.plain).help("删除")
+        }
+        .padding(.horizontal, 14).padding(.vertical, 10)
+    }
+
+    /// 话术新增 / 编辑弹层（设置窗口是常规 activating 窗口，输入无 keyMonitor 拦截顾虑）
+    private var snippetEditorSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(editingSnippetID == nil ? "新增话术" : "编辑话术")
+                .font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
+            TextField("", text: $snippetDraftTitle,
+                      prompt: Text("标题（可选，便于识别）").foregroundColor(.white.opacity(0.3)))
+                .textFieldStyle(.plain).font(.system(size: 13)).foregroundColor(.white)
+                .padding(.horizontal, 10).padding(.vertical, 8)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.08)))
+            TextEditor(text: $snippetDraftContent)
+                .font(.system(size: 13)).foregroundColor(.white)
+                .scrollContentBackground(.hidden).padding(8).frame(height: 150)
+                .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.08)))
+            HStack(spacing: 10) {
+                Spacer()
+                Button("取消") { snippetEditorShown = false }
+                    .buttonStyle(.plain).font(.system(size: 13)).foregroundColor(.white.opacity(0.6))
+                Button { commitSnippet() } label: {
+                    Text("保存").font(.system(size: 13, weight: .semibold)).foregroundColor(.black)
+                        .padding(.horizontal, 16).padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.92)))
+                }
+                .buttonStyle(.plain)
+                .disabled(snippetDraftContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20).frame(width: 420)
+        .background(VisualEffectBackground().overlay(Color.black.opacity(0.5)).ignoresSafeArea())
+        .preferredColorScheme(.dark)
+    }
+
+    private func beginAddSnippet() {
+        editingSnippetID = nil
+        snippetDraftTitle = ""
+        snippetDraftContent = ""
+        snippetEditorShown = true
+    }
+
+    private func beginEditSnippet(_ s: Snippet) {
+        editingSnippetID = s.id
+        snippetDraftTitle = s.title ?? ""
+        snippetDraftContent = s.content
+        snippetEditorShown = true
+    }
+
+    private func commitSnippet() {
+        let content = snippetDraftContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty else { return }
+        if let id = editingSnippetID {
+            snippets.update(id: id, title: snippetDraftTitle, content: content)
+        } else {
+            snippets.add(title: snippetDraftTitle, content: content)
+        }
+        snippetEditorShown = false
     }
 
     // MARK: - 超级截图

@@ -7,7 +7,7 @@ final class SettingsWindowController {
     private var window: NSWindow?
 
     func show(settings: SettingsStore, chatStore: ChatStore, glow: GlowController,
-              updates: UpdateChecker, weather: WeatherStore) {
+              updates: UpdateChecker, weather: WeatherStore, snippets: SnippetStore) {
         if window == nil {
             let root = SettingsView()
                 .environmentObject(settings)
@@ -15,6 +15,7 @@ final class SettingsWindowController {
                 .environmentObject(glow)
                 .environmentObject(updates)
                 .environmentObject(weather)
+                .environmentObject(snippets)
             let hosting = NSHostingController(rootView: root)
             let newWindow = NSWindow(contentViewController: hosting)
             newWindow.title = "ProNotch 设置"

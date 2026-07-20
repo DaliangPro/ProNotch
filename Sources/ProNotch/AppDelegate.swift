@@ -484,6 +484,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let root = SettingsView()
             .environmentObject(settingsStore!)
             .environmentObject(chatStore!)
+            .environmentObject(snippetStore!)
         let hosting = NSHostingView(rootView: root)
         hosting.appearance = NSAppearance(named: .darkAqua)
         hosting.frame = NSRect(x: 0, y: 0, width: 500, height: 524)
@@ -580,7 +581,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func openSettings() {
         guard let glowController else { return }
         settingsWindow.show(settings: settingsStore, chatStore: chatStore, glow: glowController,
-                            updates: updateChecker, weather: weatherStore)
+                            updates: updateChecker, weather: weatherStore, snippets: snippetStore)
     }
 
     /// AI 闪问快捷键：未展开→展开到闪问并聚焦输入框；已展开在别的页→切到闪问；已在闪问→收起
