@@ -146,7 +146,7 @@ struct SettingsView: View {
                 CardDivider()
                 updateRow
             }
-            Text("多显示器时刘海出现在哪几块屏。主屏 = 菜单栏所在那块（在「系统设置 → 显示器」里指定）；选了「仅副屏幕」但当前只有一块屏时，仍显示在主屏。")
+            Text("显示屏幕：主屏指菜单栏所在那块；只有一块屏时选「仅副屏幕」仍显示在主屏。")
                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 2)
@@ -300,11 +300,15 @@ struct SettingsView: View {
                     Image(systemName: "chevron.up.chevron.down").font(.system(size: 9))
                 }
                 .foregroundColor(.white.opacity(0.85))
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.12)))
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            // 背景挂在 Menu 外层而非 label 内——borderlessButton 会吞掉 label 里的
+            // background，只剩那 10pt 内边距撑着，下拉右缘就比同卡的开关/按钮缩进一截。
+            // 刘海面板区两行都是下拉、一起缩进看不出来，这里与开关、按钮同卡才暴露
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.12)))
         }
+        .padding(.horizontal, 14).padding(.vertical, 10)
     }
 
     private func slotRow(_ label: String, selection: Binding<NotchSlot>) -> some View {
