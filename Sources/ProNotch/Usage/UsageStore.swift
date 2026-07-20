@@ -88,18 +88,27 @@ final class UsageStore: ObservableObject {
             // 每会话 token 统计（与额度数据源解耦）；Top 5 占比锚定周额度已用%（无周窗则退 5 小时窗）
             let claudeSessions = enabled.contains(.claude) ? SessionUsage.scanClaude() : []
             let codexSessions = enabled.contains(.codex) ? SessionUsage.scanCodex() : []
+            let kimiSessions = enabled.contains(.kimi) ? SessionUsage.scanKimi() : []
+            let grokSessions = enabled.contains(.grok) ? SessionUsage.scanGrok() : []
             let claudeTop = SessionUsage.top(claudeSessions,
                 weekUsedPercent: cl?.secondary?.usedPercent ?? cl?.primary?.usedPercent, source: .claude)
             let codexTop = SessionUsage.top(codexSessions,
                 weekUsedPercent: cx?.secondary?.usedPercent ?? cx?.primary?.usedPercent, source: .codex)
-            let tokens = Dictionary((claudeSessions + codexSessions).map { ($0.id, $0.tokens) }) { a, _ in a }
+            let kimiTop = SessionUsage.top(kimiSessions,
+                weekUsedPercent: km?.secondary?.usedPercent ?? km?.primary?.usedPercent, source: .kimi)
+            let grokTop = SessionUsage.top(grokSessions,
+                weekUsedPercent: gr?.secondary?.usedPercent ?? gr?.primary?.usedPercent, source: .grok)
+            let tokens = Dictionary((claudeSessions + codexSessions + kimiSessions + grokSessions)
+                .map { ($0.id, $0.tokens) }) { a, _ in a }
             let claudeQuota = cl.map { q in var q = q; q.topTasks = claudeTop; return q }
             let codexQuota = cx.map { q in var q = q; q.topTasks = codexTop; return q }
+            let kimiQuota = km.map { q in var q = q; q.topTasks = kimiTop; return q }
+            let grokQuota = gr.map { q in var q = q; q.topTasks = grokTop; return q }
             await MainActor.run { [weak self] in
                 self?.codex = codexQuota
                 self?.claude = claudeQuota
-                self?.grok = gr
-                self?.kimi = km
+                self?.grok = grokQuota
+                self?.kimi = kimiQuota
                 self?.sessionTokens = tokens
                 self?.refreshing = false
                 // 扫描是全 App 最大的瞬时分配源（transcript 全库 GB 级），
@@ -113,13 +122,65 @@ final class UsageStore: ObservableObject {
 // MARK: - Grok：读 ~/.grok CLI 日志里的 creditUsagePercent（周额度）
 
 enum GrokQuotaLoader {
-    /// grok CLI 把用量记在 ~/.grok/logs/unified.jsonl：每次刷新写一条含
-    /// creditUsagePercent / billingPeriodEnd / subscriptionTier。读尾部取最新一条即可，不必调 API。
+    /// 额度获取两条路，主路调接口、兜底读日志：
+    /// ① 读 ~/.grok/auth.json 的 access token 调 /v1/billing?format=credits——grok CLI 自己就是
+    ///    这么拿的，实时准确。这是「刷新」按钮真正生效的前提。
+    /// ② token 过期（有效期 6 小时）或网络不通 → 退回读 ~/.grok/logs/unified.jsonl 的最新快照。
+    ///
+    /// 曾经只有 ②，于是「刷新额度」实为空操作：日志只在用户跑 grok 时才写，不用 grok 点多少次
+    /// 数字都不动。实测抓到过日志停在 46%、接口实为 50% 的偏差。
+    /// 套餐名（subscriptionTier）接口不返回，仍从日志取——它极少变，日志里的够用。
     static func load() async -> ServiceQuota {
+        let fromLog = loadFromLog()
+        guard var live = await fetchLive() else { return fromLog }
+        live.plan = live.plan ?? fromLog.plan
+        return live
+    }
+
+    /// 调 /v1/billing 拿实时额度；无凭证/已过期/请求失败一律返回 nil 交给日志兜底
+    private static func fetchLive() async -> ServiceQuota? {
+        guard let token = accessToken(),
+              let url = URL(string: "https://cli-chat-proxy.grok.com/v1/billing?format=credits")
+        else { return nil }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 10
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data),
+              let used = firstDouble(key: "creditUsagePercent", in: obj),
+              let end = firstString(key: "billingPeriodEnd", in: obj).flatMap({ ISO8601Flex.parse($0) })
+        else { return nil }
+        var q = ServiceQuota()
+        q.dataAt = Date()   // 接口现取现用，就是「刚刚」
+        q.primary = QuotaWindow(usedPercent: used, usedTokens: nil, resetsAt: end,
+                                windowMinutes: 10080, isEstimate: false)
+        return q
+    }
+
+    /// 从 auth.json 取未过期的 access token。顶层键形如 "https://auth.x.ai::<client_id>"（含账号 uuid，
+    /// 不可写死）→ 遍历取第一个有效的。过期的直接跳过，省一次注定 401 的请求
+    private static func accessToken() -> String? {
+        let path = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".grok/auth.json")
+        guard let data = try? Data(contentsOf: path),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        for (_, v) in obj {
+            guard let entry = v as? [String: Any],
+                  let key = entry["key"] as? String, !key.isEmpty else { continue }
+            if let exp = entry["expires_at"] as? String,
+               let d = ISO8601Flex.parse(exp), d <= Date() { continue }   // 已过期，跳过
+            return key
+        }
+        return nil
+    }
+
+    /// 兜底：读日志最新快照（原逻辑）
+    private static func loadFromLog() -> ServiceQuota {
         let log = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".grok/logs/unified.jsonl")
         guard let tail = readTail(log, bytes: 1_500_000) else {
-            return ServiceQuota(error: "未找到 Grok 日志（~/.grok/logs）")
+            return ServiceQuota(error: "未取到 Grok 额度（接口未通，本地也无日志）")
         }
         // 找最新一条「billing: fetched credits config」(含 billingPeriodEnd)。
         // 关键坑：新计费周期额度充足时，config 里【没有】creditUsagePercent 字段——grok 只在消耗到
@@ -135,9 +196,10 @@ enum GrokQuotaLoader {
             break
         }
         guard resetAt != nil else { return ServiceQuota(error: "Grok 暂无额度记录，用一次 grok 即可") }
-        // 万一最新一条仍是上一周期的旧快照(新周期还没拉过 config)→ 明确提示刷新，不展示过期数据
+        // 日志是上一周期的旧快照，且接口也没拿到（多半登录过期）→ 宁可报错也不展示过期数据。
+        // 跑一次 grok 两件事一起解决：刷新登录态、写入新周期日志
         if let r = resetAt, r <= Date() {
-            return ServiceQuota(plan: tier, error: "计费周期已重置，用一次 grok 刷新额度")
+            return ServiceQuota(plan: tier, error: "登录可能已过期，用一次 grok 即可刷新")
         }
         var q = ServiceQuota()
         q.plan = tier

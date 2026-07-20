@@ -228,24 +228,27 @@ enum SessionUsage {
         let newline = UInt8(ascii: "\n")
         var buckets: [String: Int] = [:]
         var remainder = Data()
+        func consume(_ line: Data) {
+            guard line.range(of: needle) != nil,
+                  let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                  let last = findDict(key: "last_token_usage", in: obj) else { return }
+            let input = (last["input_tokens"] as? NSNumber)?.intValue ?? 0
+            let cachedIn = (last["cached_input_tokens"] as? NSNumber)?.intValue ?? 0
+            let output = (last["output_tokens"] as? NSNumber)?.intValue ?? 0
+            let eff = max(0, input - cachedIn) + output
+            guard eff > 0, let ts = obj["timestamp"] as? String, ts.count >= 10 else { return }
+            buckets[String(ts.prefix(10)), default: 0] += eff
+        }
         while let chunk = try? fh.read(upToCount: 8 * 1024 * 1024), !chunk.isEmpty {
             var data = remainder; data.append(chunk)
             var start = data.startIndex
             while let nl = data[start...].firstIndex(of: newline) {
-                let line = data[start..<nl]
+                consume(data[start..<nl])
                 start = data.index(after: nl)
-                guard line.range(of: needle) != nil,
-                      let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-                      let last = findDict(key: "last_token_usage", in: obj) else { continue }
-                let input = (last["input_tokens"] as? NSNumber)?.intValue ?? 0
-                let cachedIn = (last["cached_input_tokens"] as? NSNumber)?.intValue ?? 0
-                let output = (last["output_tokens"] as? NSNumber)?.intValue ?? 0
-                let eff = max(0, input - cachedIn) + output
-                guard eff > 0, let ts = obj["timestamp"] as? String, ts.count >= 10 else { continue }
-                buckets[String(ts.prefix(10)), default: 0] += eff
             }
             remainder = Data(data[start...])
         }
+        consume(remainder)   // 末行无换行结尾时最后一条只在这里；活跃会话最新那笔正是末行
         return buckets
     }
 
@@ -260,6 +263,137 @@ enum SessionUsage {
         return nil
     }
 
+    // MARK: - Kimi(~/.kimi-code/sessions/<工作区>/session_<uuid>/agents/<agent>/wire.jsonl)
+
+    static var defaultKimiRoot: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".kimi-code/sessions")
+    }
+
+    /// 逐条 usage.record 求和，口径与 Claude/Codex 一致：只算非缓存 input + output。
+    /// 缓存读必须扣——实测一个 323 条记录的会话含缓存 5636 万、扣掉才 86 万，
+    /// 不扣的话单个对话在榜上能显示成几千万 token，整个榜失真。
+    /// 文件小（实测最大 1.9MB）故整读，不像 Codex/Grok 那样需要流式
+    static func scanKimi(root: URL = defaultKimiRoot) -> [Scanned] {
+        let fm = FileManager.default
+        let cutoff = Date().addingTimeInterval(-window)
+        guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else { return [] }
+        // 主代理 agents/main 与子代理 agents/agent-N 各写各的 wire.jsonl，按 session_ 目录归并：
+        // 同一任务的并行子代理不该在榜上占成多行（与 Codex 侧 parent_thread_id 归并同一诉求，
+        // 这里天然同目录，不必上溯）
+        var tokensBySession: [String: Int] = [:]
+        var urlBySession: [String: URL] = [:]
+        for case let url as URL in en where url.lastPathComponent == "wire.jsonl" {
+            guard let m = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+                  m > cutoff,
+                  let sid = url.pathComponents.last(where: { $0.hasPrefix("session_") }) else { continue }
+            let sum = kimiFileTokens(url, cutoff: cutoff)
+            guard sum > 0 else { continue }
+            tokensBySession[sid, default: 0] += sum
+            // 代表文件优先取主代理的（拿标题/项目名时更靠谱）
+            if urlBySession[sid] == nil || url.pathComponents.contains("main") { urlBySession[sid] = url }
+        }
+        return tokensBySession.compactMap { sid, tok in
+            urlBySession[sid].map { Scanned(id: sid, tokens: tok, url: $0) }
+        }
+    }
+
+    private static func kimiFileTokens(_ url: URL, cutoff: Date) -> Int {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return 0 }
+        var sum = 0
+        for line in text.split(separator: "\n") where line.contains("usage.record") {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
+                  obj["type"] as? String == "usage.record",
+                  let u = obj["usage"] as? [String: Any] else { continue }
+            // time 为毫秒时间戳；缺失视为在窗内（沿 Claude 侧口径）
+            if let ms = (obj["time"] as? NSNumber)?.doubleValue,
+               Date(timeIntervalSince1970: ms / 1000) < cutoff { continue }
+            let inOther = (u["inputOther"] as? NSNumber)?.intValue ?? 0
+            let out = (u["output"] as? NSNumber)?.intValue ?? 0
+            sum += inOther + out
+        }
+        return sum
+    }
+
+    // MARK: - Grok(~/.grok/sessions/<项目>/<会话 uuid>/updates.jsonl)
+
+    static var defaultGrokRoot: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".grok/sessions")
+    }
+
+    /// turn_completed 事件带整轮 usage 汇总（numTurns/modelCalls 随之给出），逐条求和。
+    /// 踩过两个坑，都会算出看着「合理」实则错的数：
+    /// ① 不能用 _meta.totalTokens——那是上下文窗口占用（同一会话实测 55049），
+    ///    turn_completed.usage 才是真实消耗（901657），差 16 倍且低估方向不易察觉；
+    /// ② 同一会话 uuid 会出现在多个项目目录下（实测有），按目录累加等于同一笔算两次，
+    ///    故按 uuid 取记录最全的一份而非求和。
+    /// 单文件实测可达 56MB，必须流式分块读（整读会成为 App 最大瞬时分配源）
+    static func scanGrok(root: URL = defaultGrokRoot) -> [Scanned] {
+        let fm = FileManager.default
+        let cutoff = Date().addingTimeInterval(-window)
+        guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]) else { return [] }
+        var best: [String: (tokens: Int, url: URL)] = [:]
+        for case let url as URL in en where url.lastPathComponent == "updates.jsonl" {
+            guard let rv = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
+                  let m = rv.contentModificationDate, m > cutoff else { continue }
+            let sid = url.deletingLastPathComponent().lastPathComponent
+            let sum = grokFileTokens(url, mtime: m, size: rv.fileSize ?? 0, cutoff: cutoff)
+            guard sum > 0, best[sid]?.tokens ?? -1 < sum else { continue }
+            best[sid] = (sum, url)
+        }
+        return best.map { Scanned(id: $0.key, tokens: $0.value.tokens, url: $0.value.url) }
+    }
+
+    private struct GrokScanCache { let mtime: Date; let size: Int; let tokens: Int }
+    nonisolated(unsafe) private static var grokCache: [String: GrokScanCache] = [:]
+    private static let grokCacheLock = NSLock()
+
+    /// 流式扫描单个 updates.jsonl（照 Codex 侧同款：分块读 + 只对含关键词的行做 JSON 解析），
+    /// 结果按 mtime+size 缓存——历史会话写完就不再变，每轮真正要重读的只有活跃那一两个
+    private static func grokFileTokens(_ url: URL, mtime: Date, size: Int, cutoff: Date) -> Int {
+        grokCacheLock.lock()
+        let cached = grokCache[url.path]
+        grokCacheLock.unlock()
+        if let cached, cached.mtime == mtime, cached.size == size { return cached.tokens }
+
+        var sum = 0
+        if let fh = try? FileHandle(forReadingFrom: url) {
+            defer { try? fh.close() }
+            let needle = Data("turn_completed".utf8)
+            let newline = UInt8(ascii: "\n")
+            var remainder = Data()
+            func consume(_ line: Data) {
+                guard line.range(of: needle) != nil,
+                      let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
+                      let update = (obj["params"] as? [String: Any])?["update"] as? [String: Any],
+                      update["sessionUpdate"] as? String == "turn_completed",
+                      let u = update["usage"] as? [String: Any] else { return }
+                // 外层 timestamp 为秒级；缺失视为在窗内
+                if let ts = (obj["timestamp"] as? NSNumber)?.doubleValue,
+                   Date(timeIntervalSince1970: ts) < cutoff { return }
+                let input = (u["inputTokens"] as? NSNumber)?.intValue ?? 0
+                let cachedRead = (u["cachedReadTokens"] as? NSNumber)?.intValue ?? 0
+                let out = (u["outputTokens"] as? NSNumber)?.intValue ?? 0
+                sum += max(0, input - cachedRead) + out
+            }
+            while let chunk = try? fh.read(upToCount: 8 * 1024 * 1024), !chunk.isEmpty {
+                autoreleasepool {
+                    var data = remainder; data.append(chunk)
+                    var start = data.startIndex
+                    while let nl = data[start...].firstIndex(of: newline) {
+                        consume(data[start..<nl])
+                        start = data.index(after: nl)
+                    }
+                    remainder = Data(data[start...])
+                }
+            }
+            consume(remainder)   // 末行没有换行结尾时，最后一条记录只在这里——漏掉的正是最新那笔
+        }
+        grokCacheLock.lock()
+        grokCache[url.path] = GrokScanCache(mtime: mtime, size: size, tokens: sum)
+        grokCacheLock.unlock()
+        return sum
+    }
+
     // MARK: - 缓存释放
 
     /// 勾选变更时释放未勾选家的解析缓存（几 MB 级的条目数组即刻归还，
@@ -270,6 +404,9 @@ enum SessionUsage {
         }
         if !enabled.contains(.codex) {
             codexCacheLock.lock(); codexCache = [:]; codexCacheLock.unlock()
+        }
+        if !enabled.contains(.grok) {
+            grokCacheLock.lock(); grokCache = [:]; grokCacheLock.unlock()
         }
     }
 
@@ -289,8 +426,10 @@ enum SessionUsage {
                 name = item.claudeTitle ?? titleize(firstUserPrompt(item.url)) ?? "Claude 会话"
             case .codex:
                 name = threadNames[String(item.id.suffix(36))] ?? codexProjectName(item.url) ?? "Codex 会话"
-            default:
-                name = "\(source.shortName) 会话"   // 目前只有 Claude/Codex 参与耗额榜
+            case .kimi:
+                name = titleize(kimiFirstPrompt(item.url)) ?? "Kimi 会话"
+            case .grok:
+                name = titleize(grokTitle(item.url)) ?? "Grok 会话"
             }
             return TaskUsage(id: item.id, name: name, tokens: item.tokens,
                              percentOfTotal: Double(item.tokens) / Double(total) * used)
@@ -298,6 +437,40 @@ enum SessionUsage {
     }
 
     // MARK: - 对话名读取
+
+    /// Kimi 对话名：首条 turn.prompt 的文本（input 是 [{type,text}] 数组，结构同 Grok 的 user）。
+    /// 读 256KB 而非 64KB——首条 prompt 前面压着 llm.tools_snapshot（全量工具定义，几十 KB）
+    private static func kimiFirstPrompt(_ url: URL) -> String? {
+        guard let head = readHead(url, bytes: 256 * 1024) else { return nil }
+        for raw in head.split(separator: "\n") where raw.contains("turn.prompt") {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+                  obj["type"] as? String == "turn.prompt",
+                  let input = obj["input"] as? [[String: Any]],
+                  let text = input.first(where: { ($0["type"] as? String) == "text" })?["text"] as? String
+            else { continue }
+            if let clean = cleanUserPrompt(text) { return clean }
+        }
+        return nil
+    }
+
+    /// Grok 对话名：同目录 summary.json 的 session_summary；实测 Grok 不自动命名、该字段多为空，
+    /// 故回退 chat_history 首句 prompt（与监控台同口径）
+    private static func grokTitle(_ updatesURL: URL) -> String? {
+        let dir = updatesURL.deletingLastPathComponent()
+        if let data = try? Data(contentsOf: dir.appendingPathComponent("summary.json")),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let s = obj["session_summary"] as? String, !s.isEmpty { return s }
+        guard let head = readHead(dir.appendingPathComponent("chat_history.jsonl"), bytes: 16 * 1024) else { return nil }
+        for raw in head.split(separator: "\n") {
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any],
+                  obj["type"] as? String == "user",
+                  let content = obj["content"] as? [[String: Any]],
+                  let text = content.first(where: { ($0["type"] as? String) == "text" })?["text"] as? String
+            else { continue }
+            if let clean = cleanUserPrompt(text) { return clean }
+        }
+        return nil
+    }
 
     private static func firstUserPrompt(_ url: URL) -> String? {
         guard let head = readHead(url, bytes: 16 * 1024) else { return nil }
