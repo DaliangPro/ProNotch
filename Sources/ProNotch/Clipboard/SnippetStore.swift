@@ -53,6 +53,14 @@ final class SnippetStore: ObservableObject {
         save()
     }
 
+    /// 拖拽重排：把 from 处的话术移到 to 处。顺序即用户手排的优先级，立即落盘
+    func move(from: Int, to: Int) {
+        guard snippets.indices.contains(from), snippets.indices.contains(to), from != to else { return }
+        let item = snippets.remove(at: from)
+        snippets.insert(item, at: to)
+        save()
+    }
+
     private func load() {
         guard let data = try? Data(contentsOf: fileURL),
               let decoded = try? JSONDecoder().decode([Snippet].self, from: data) else {

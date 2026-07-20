@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import Carbon.HIToolbox
 import ApplicationServices
+import UniformTypeIdentifiers
 
 /// 可成为 key 的无边框面板（无边框 NSPanel 默认不能接收键盘，覆写打开）
 private final class ClipboardSwitcherPanel: NSPanel {
@@ -211,6 +212,17 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
         selectedIndex = min(selectedIndex, count - 1)
         selectedSet = [selectedIndex]
         anchorIndex = selectedIndex
+    }
+
+    /// 话术拖拽重排：把 from 处的话术移到 to 处，选中跟到新位置
+    func moveSnippet(from: Int, to: Int) {
+        guard mode == .snippet, let snippets else { return }
+        snippets.move(from: from, to: to)
+        guard count > 0 else { return }
+        selectedIndex = min(max(to, 0), count - 1)
+        selectedSet = [selectedIndex]
+        anchorIndex = selectedIndex
+        keyboardScrollTick += 1
     }
 
     /// ⌘C：当前选中复制到剪贴板并收起，不自动粘贴（历史=单条或多条合并；话术=单条）
@@ -489,6 +501,11 @@ struct ClipboardSwitcherView: View {
                                     Label("删除", systemImage: "trash")
                                 }
                             }
+                            // 按住卡片拖到目标位置放下即改顺序（单击选中 / 双击粘贴 / 右键菜单均不受影响）
+                            .onDrag { NSItemProvider(object: String(idx) as NSString) }
+                            .onDrop(of: [.text], isTargeted: nil) { providers in
+                                handleSnippetDrop(providers, to: idx)
+                            }
                         }
                     } else {
                         ForEach(Array(store.items.enumerated()), id: \.element.id) { idx, item in
@@ -563,6 +580,18 @@ struct ClipboardSwitcherView: View {
             .buttonStyle(.plain)
         }
         .id(idx)
+    }
+
+    /// 话术卡拖放：从 provider 读回源索引 → 移到目标位置
+    /// （loadObject 回调在后台线程，只捕获 @MainActor 的 controller 与 Int，再回主线程改数据）
+    private func handleSnippetDrop(_ providers: [NSItemProvider], to idx: Int) -> Bool {
+        guard let provider = providers.first else { return false }
+        let c = controller
+        provider.loadObject(ofClass: NSString.self) { obj, _ in
+            guard let s = obj as? String, let from = Int(s) else { return }
+            Task { @MainActor in c.moveSnippet(from: from, to: idx) }
+        }
+        return true
     }
 
     // MARK: 话术编辑浮层
