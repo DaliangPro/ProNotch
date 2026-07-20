@@ -14,6 +14,7 @@ struct WidgetsView: View {
     @EnvironmentObject var memory: MemoryStore
     @EnvironmentObject var weather: WeatherStore
     @EnvironmentObject var vm: NotchViewModel
+    @EnvironmentObject var settings: SettingsStore
     /// 看着页面时数据自己动：内存与排行 3 秒一刷；天气走 store 内置 15 分钟节流
     private let ticker = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
     /// 出场动画开关：两卡错落浮入（额度页同款节奏）
@@ -22,30 +23,41 @@ struct WidgetsView: View {
     var body: some View {
         HStack(spacing: 12) {
             // 只淡入、不上浮：进度条出场只保留从左往右充能，去掉跟随卡片的竖直位移
-            MemoryCard(snapshot: memory.snapshot, top: memory.topProcesses,
-                       entrancePlayed: entrancePlayed)
-                .opacity(entrancePlayed ? 1 : 0)
-                .animation(.easeOut(duration: 0.3), value: entrancePlayed)
-            WeatherCard(now: weather.now, error: weather.error,
-                        entrancePlayed: entrancePlayed)
-                .opacity(entrancePlayed ? 1 : 0)
-                .animation(.easeOut(duration: 0.3).delay(0.07), value: entrancePlayed)
+            // 卡片按各自「内部开关」显隐；关掉的卡不上树也不刷新（真停机）
+            if settings.memoryWidgetEnabled {
+                MemoryCard(snapshot: memory.snapshot, top: memory.topProcesses,
+                           entrancePlayed: entrancePlayed)
+                    .opacity(entrancePlayed ? 1 : 0)
+                    .animation(.easeOut(duration: 0.3), value: entrancePlayed)
+            }
+            if settings.weatherWidgetEnabled {
+                WeatherCard(now: weather.now, error: weather.error,
+                            entrancePlayed: entrancePlayed)
+                    .opacity(entrancePlayed ? 1 : 0)
+                    .animation(.easeOut(duration: 0.3).delay(0.07), value: entrancePlayed)
+            }
         }
         .padding(.vertical, 14)
         .padding(.horizontal, ExpandedContentView.pageHInset)   // 左右留白对齐全局基准线
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear {
-            memory.refresh()
-            memory.refreshTopProcesses()
-            weather.refresh()
-        }
+        .onAppear { refreshVisible() }
         .onReceive(ticker) { _ in
             guard vm.isExpanded, vm.activeTab == .widgets else { return }
-            memory.refresh()
-            memory.refreshTopProcesses()
-            weather.refresh()
+            refreshVisible()
         }
         .pageEntrance($entrancePlayed)
+    }
+
+    /// 只刷新正在显示的卡（内部开关关掉的卡不采样，真停机）：内存 refresh 走 host_statistics
+    /// ＋进程枚举，天气 refresh 可能走网络，都不该为一张隐藏的卡付出
+    private func refreshVisible() {
+        if settings.memoryWidgetEnabled {
+            memory.refresh()
+            memory.refreshTopProcesses()
+        }
+        if settings.weatherWidgetEnabled {
+            weather.refresh()
+        }
     }
 }
 

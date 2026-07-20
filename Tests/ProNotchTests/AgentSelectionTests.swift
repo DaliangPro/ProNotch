@@ -125,39 +125,40 @@ final class KimiQuotaParseTests: XCTestCase {
     }
 }
 
-/// 面板页签跟随内容自动显隐 + 拖拽稳定合并（2.0 设置重构 S3 的核心口径）
+/// 面板页签跟随内容自动显隐 + 拖拽稳定合并（2.0 设置重构 S3 的核心口径）。
+/// widgetsVisible 参数：组件页内存/天气内部开关任一开为 true（2.0 组件内部开关引入）
 final class NotchTabVisibilityTests: XCTestCase {
     typealias Tab = NotchViewModel.Tab
     /// 默认顺序，与 Tab.allCases 一致
     private let fullOrder: [Tab] = [.launcher, .chat, .usage, .agent, .widgets]
 
-    // MARK: - ① visibleTabs 过滤（各勾选组合）
+    // MARK: - ① visibleTabs 过滤（各勾选组合；组件页此组恒开）
 
     func test全不勾时只剩常显三页() {
-        XCTAssertEqual(NotchViewModel.visibleTabs(order: fullOrder, enabled: []),
+        XCTAssertEqual(NotchViewModel.visibleTabs(order: fullOrder, enabled: [], widgetsVisible: true),
                        [.launcher, .chat, .widgets],
                        "usage 需能查额度的家、agent 需能看会话的家，空集都不满足")
     }
 
     func test只勾Grok时额度页在Agent页隐() {
-        XCTAssertEqual(NotchViewModel.visibleTabs(order: fullOrder, enabled: [.grok]),
+        XCTAssertEqual(NotchViewModel.visibleTabs(order: fullOrder, enabled: [.grok], widgetsVisible: true),
                        [.launcher, .chat, .usage, .widgets],
                        "Grok 支持额度不支持本地会话：额度页显示、Agent 页隐藏")
     }
 
     func test勾Claude时五页全显() {
-        XCTAssertEqual(NotchViewModel.visibleTabs(order: fullOrder, enabled: [.claude]),
+        XCTAssertEqual(NotchViewModel.visibleTabs(order: fullOrder, enabled: [.claude], widgetsVisible: true),
                        fullOrder, "Claude 额度、会话都支持，两页都显示")
     }
 
     func test勾Kimi时五页全显() {
-        XCTAssertEqual(NotchViewModel.visibleTabs(order: fullOrder, enabled: [.kimi]),
+        XCTAssertEqual(NotchViewModel.visibleTabs(order: fullOrder, enabled: [.kimi], widgetsVisible: true),
                        fullOrder, "Kimi 额度、会话都支持")
     }
 
     func test显隐只过滤不改相对顺序() {
         let custom: [Tab] = [.widgets, .agent, .launcher, .usage, .chat]
-        XCTAssertEqual(NotchViewModel.visibleTabs(order: custom, enabled: [.grok]),
+        XCTAssertEqual(NotchViewModel.visibleTabs(order: custom, enabled: [.grok], widgetsVisible: true),
                        [.widgets, .launcher, .usage, .chat],
                        "沿用 tabOrder 相对顺序，只把隐藏页就地抽走")
     }
@@ -192,18 +193,38 @@ final class NotchTabVisibilityTests: XCTestCase {
     // MARK: - ③ activeTab 兜底（当前页被隐则落第一个可见页）
 
     func test当前页仍可见时保持不变() {
-        XCTAssertEqual(NotchViewModel.resolvedActive(.usage, order: fullOrder, enabled: [.claude]),
+        XCTAssertEqual(NotchViewModel.resolvedActive(.usage, order: fullOrder, enabled: [.claude], widgetsVisible: true),
                        .usage, "usage 仍可见，停在原页")
     }
 
     func test当前页被隐时落到第一个可见页() {
-        XCTAssertEqual(NotchViewModel.resolvedActive(.agent, order: fullOrder, enabled: []),
+        XCTAssertEqual(NotchViewModel.resolvedActive(.agent, order: fullOrder, enabled: [], widgetsVisible: true),
                        .launcher, "Agent 页被隐，落到第一个可见页 launcher")
     }
 
     func test当前页与首位同时被隐仍落可见首页() {
         let order: [Tab] = [.usage, .agent, .launcher, .chat, .widgets]
-        XCTAssertEqual(NotchViewModel.resolvedActive(.agent, order: order, enabled: []),
+        XCTAssertEqual(NotchViewModel.resolvedActive(.agent, order: order, enabled: [], widgetsVisible: true),
                        .launcher, "order 首位 usage 也被隐，兜到第一个真正可见的 launcher")
+    }
+
+    // MARK: - ④ 组件页显隐（内存/天气内部开关任一开才显示）
+
+    func test组件页两卡全关时隐藏() {
+        // widgetsVisible=false 模拟内存、天气内部开关都关：组件页从可见列表消失
+        XCTAssertEqual(NotchViewModel.visibleTabs(order: fullOrder, enabled: [.claude], widgetsVisible: false),
+                       [.launcher, .chat, .usage, .agent],
+                       "两张卡都关掉，组件页无内容可展示，跟随隐藏")
+    }
+
+    func test组件页任一卡开时显示() {
+        XCTAssertEqual(NotchViewModel.visibleTabs(order: fullOrder, enabled: [], widgetsVisible: true),
+                       [.launcher, .chat, .widgets],
+                       "内存/天气任一开，组件页保留在常显之列")
+    }
+
+    func test停在组件页两卡全关落回可见首页() {
+        XCTAssertEqual(NotchViewModel.resolvedActive(.widgets, order: fullOrder, enabled: [], widgetsVisible: false),
+                       .launcher, "当前停在组件页但两卡全关，落到第一个可见页 launcher")
     }
 }

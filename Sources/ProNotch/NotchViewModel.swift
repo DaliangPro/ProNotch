@@ -61,18 +61,24 @@ final class NotchViewModel: ObservableObject {
     /// 各家 Agent 勾选快照（与数据层同口径 enabledSet）；由 ProNotchAgentSelectionChanged 驱动刷新，
     /// 唯一用途是推导 visibleTabs——不额外持久化
     @Published private var enabledAgentsSnapshot: Set<AgentKind> = AgentKind.enabledSet()
+    /// 组件页是否有可见卡片的快照（内存/天气内部开关任一开）；由 ProNotchWidgetVisibilityChanged 驱动刷新，
+    /// 两卡全关 → 组件页跟随隐藏（与额度/Agent 页同一显隐哲学）
+    @Published private var widgetsVisibleSnapshot: Bool = SettingsStore.anyWidgetVisible()
 
     /// 当前应显示的页签（面板跟随内容自动显隐）：顺序沿用 tabOrder，隐藏项就地跳过（不改持久化顺序）
     var visibleTabs: [Tab] {
-        Self.visibleTabs(order: tabOrder, enabled: enabledAgentsSnapshot)
+        Self.visibleTabs(order: tabOrder, enabled: enabledAgentsSnapshot,
+                         widgetsVisible: widgetsVisibleSnapshot)
     }
 
-    /// 页签可见性纯函数（可单测）：launcher/chat/widgets 常显；
+    /// 页签可见性纯函数（可单测）：launcher/chat 常显；组件页要求内存/天气内部开关任一开；
     /// 额度页要求勾选集里有能查额度的家，Agent 页要求有能看本地会话的家（只勾 Grok 时额度在、Agent 隐）
-    nonisolated static func visibleTabs(order: [Tab], enabled: Set<AgentKind>) -> [Tab] {
+    nonisolated static func visibleTabs(order: [Tab], enabled: Set<AgentKind>,
+                                        widgetsVisible: Bool) -> [Tab] {
         order.filter { tab in
             switch tab {
-            case .launcher, .chat, .widgets: return true
+            case .launcher, .chat: return true
+            case .widgets: return widgetsVisible
             case .usage: return enabled.contains { $0.supportsQuota }
             case .agent: return enabled.contains { $0.supportsSessions }
             }
@@ -80,8 +86,9 @@ final class NotchViewModel: ObservableObject {
     }
 
     /// 当前页仍可见就保持，否则落到第一个可见页（launcher 常显，兜底非空）
-    nonisolated static func resolvedActive(_ current: Tab, order: [Tab], enabled: Set<AgentKind>) -> Tab {
-        let vis = visibleTabs(order: order, enabled: enabled)
+    nonisolated static func resolvedActive(_ current: Tab, order: [Tab], enabled: Set<AgentKind>,
+                                           widgetsVisible: Bool) -> Tab {
+        let vis = visibleTabs(order: order, enabled: enabled, widgetsVisible: widgetsVisible)
         return vis.contains(current) ? current : (vis.first ?? .launcher)
     }
 
@@ -130,6 +137,7 @@ final class NotchViewModel: ObservableObject {
     private var spaceObserver: Any?
     private var settingObserver: Any?
     private var agentSelectionObserver: Any?
+    private var widgetVisibilityObserver: Any?
 
     weak var panel: NSPanel?
 
@@ -159,7 +167,8 @@ final class NotchViewModel: ObservableObject {
         tabOrder = order
         // 落到第一个可见页：默认页（首位）若因未勾选对应 Agent 而隐藏，不空展示
         activeTab = Self.resolvedActive(order.first ?? .launcher, order: order,
-                                        enabled: AgentKind.enabledSet())
+                                        enabled: AgentKind.enabledSet(),
+                                        widgetsVisible: SettingsStore.anyWidgetVisible())
     }
 
     // MARK: - 几何
@@ -264,7 +273,20 @@ final class NotchViewModel: ObservableObject {
                 guard let self else { return }
                 self.enabledAgentsSnapshot = AgentKind.enabledSet()
                 self.activeTab = Self.resolvedActive(self.activeTab, order: self.tabOrder,
-                                                     enabled: self.enabledAgentsSnapshot)
+                                                     enabled: self.enabledAgentsSnapshot,
+                                                     widgetsVisible: self.widgetsVisibleSnapshot)
+            }
+        }
+        // 组件页内部开关变化：刷新组件页可见快照，两卡全关时当前页若停在组件页则落到第一个可见页
+        widgetVisibilityObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ProNotchWidgetVisibilityChanged"),
+            object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.widgetsVisibleSnapshot = SettingsStore.anyWidgetVisible()
+                self.activeTab = Self.resolvedActive(self.activeTab, order: self.tabOrder,
+                                                     enabled: self.enabledAgentsSnapshot,
+                                                     widgetsVisible: self.widgetsVisibleSnapshot)
             }
         }
         updateFullscreenHiding()
@@ -311,6 +333,10 @@ final class NotchViewModel: ObservableObject {
         if let observer = agentSelectionObserver {
             NotificationCenter.default.removeObserver(observer)
             agentSelectionObserver = nil
+        }
+        if let observer = widgetVisibilityObserver {
+            NotificationCenter.default.removeObserver(observer)
+            widgetVisibilityObserver = nil
         }
         pendingExpand?.cancel()
         pendingExpand = nil

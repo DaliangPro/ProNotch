@@ -170,11 +170,18 @@ struct SettingsView: View {
     // MARK: - 组件
     private var widgetsContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            pageTitle("组件")
+            pageTitle("组件", subtitle: "控制展开面板里显示哪些卡片；收起时刘海两侧的常驻显示在「刘海面板」页单独设置。")
+
+            sectionLabel("内存")
+            SettingsCard {
+                toggleRow("在组件页显示内存卡", isOn: $settings.memoryWidgetEnabled)
+            }
 
             sectionLabel("天气")
             SettingsCard {
-                // 总开关：关掉即停 900 秒兜底刷新（真停机），不影响天气大卡与槽位
+                toggleRow("在组件页显示天气卡", isOn: $settings.weatherWidgetEnabled)
+                CardDivider()
+                // 预警独立于天气卡显示：关掉天气卡仍按下面设置弹预警；关此总开关才停 900 秒兜底刷新
                 toggleRow("未来 3 小时预警", isOn: $settings.weatherAlertsEnabled)
                 CardDivider()
                 alertTypesRow

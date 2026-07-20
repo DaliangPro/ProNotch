@@ -73,6 +73,35 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    // MARK: - 组件页卡片显示（内部开关，独立于收起态两侧槽位「外面」）
+    /// 展开面板「组件」页是否显示内存卡（默认开）。这是「内部开关」——只管展开面板里
+    /// 那张卡显不显示，与收起态刘海两侧槽位（leftSlot/rightSlot）完全独立（大梁老师定）。
+    /// 关 = 组件页不渲染内存卡、停其定时刷新（真停机）
+    @Published var memoryWidgetEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(memoryWidgetEnabled, forKey: "memoryWidgetEnabled")
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ProNotchWidgetVisibilityChanged"), object: nil)
+        }
+    }
+    /// 展开面板「组件」页是否显示天气卡（默认开）。同为「内部开关」，与预警（弹出式）、
+    /// 收起态槽位各自独立
+    @Published var weatherWidgetEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(weatherWidgetEnabled, forKey: "weatherWidgetEnabled")
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ProNotchWidgetVisibilityChanged"), object: nil)
+        }
+    }
+    /// 组件页是否还有可见卡片（供 NotchViewModel 判「组件」页显隐，静态读避免耦合实例）。
+    /// 无存值兜底 true——新键未注册时保守显示，不让首帧误判成隐藏
+    nonisolated static func anyWidgetVisible() -> Bool {
+        let d = UserDefaults.standard
+        let mem = d.object(forKey: "memoryWidgetEnabled") as? Bool ?? true
+        let wea = d.object(forKey: "weatherWidgetEnabled") as? Bool ?? true
+        return mem || wea
+    }
+
     /// 剪贴板历史记录开关（默认开）。关 = 停 0.5 秒轮询（真停机），已有历史保留可看；
     /// 清历史是独立按钮的职责——误关开关不丢数据（大梁老师定）
     @Published var clipboardEnabled: Bool {
@@ -264,6 +293,8 @@ final class SettingsStore: ObservableObject {
         launchAtLogin = Self.serviceStatus == .enabled
         UserDefaults.standard.register(defaults: [
             "hideNotchInFullscreen": true,
+            "memoryWidgetEnabled": true,
+            "weatherWidgetEnabled": true,
             "clipboardEnabled": true,
             "clipboardLimit": 200,
             "glowEnabled": true,
@@ -283,6 +314,8 @@ final class SettingsStore: ObservableObject {
         weatherAlertTypes = UserDefaults.standard.stringArray(forKey: WeatherAlertType.typesKey)
             .map { Set($0.compactMap(WeatherAlertType.init(rawValue:))) }
             ?? Set(WeatherAlertType.allCases)
+        memoryWidgetEnabled = UserDefaults.standard.bool(forKey: "memoryWidgetEnabled")
+        weatherWidgetEnabled = UserDefaults.standard.bool(forKey: "weatherWidgetEnabled")
         clipboardEnabled = UserDefaults.standard.bool(forKey: "clipboardEnabled")
         clipboardLimit = UserDefaults.standard.integer(forKey: "clipboardLimit")
         // 菜单栏额度：沿用旧键（老用户开关状态原样保留，默认关）；家勾选无存值默认全家
