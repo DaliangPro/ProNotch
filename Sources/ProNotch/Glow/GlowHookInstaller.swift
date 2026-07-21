@@ -204,6 +204,18 @@ enum GlowHookInstaller {
     }
     private static var kimiScriptMarker: String { (kimiScript as NSString).lastPathComponent }
 
+    /// 写进 config.toml 的整行 command（纯函数，可单测）。路径必须再套一层 shell 引号：
+    /// Kimi 用 `spawn(command, [], { shell: true })` 执行，整串交给 shell 解析，而脚本躺在
+    /// 「Application Support」里——裸路径会被空格切断成两截（sh: /Users/…/Library/Application:
+    /// No such file），hook 静默失败、完成提醒就此失灵，且日志里什么都不留。
+    /// 外层用 TOML 单引号（literal 串，不做转义），内层双引号原样落到 shell 手里。
+    /// Claude / Codex / Grok 三家的 command 早已带引号，只有这里漏了
+    nonisolated static func kimiHookCommandLine(for script: String) -> String {
+        "command = '\"\(script)\"'"
+    }
+
+    private static var kimiCommandLine: String { kimiHookCommandLine(for: kimiScript) }
+
     /// Kimi 转发脚本：与 Claude 同构（Stop 事件 stdin JSON 带 session_id）
     @discardableResult
     private static func writeKimiScript() -> Bool {
@@ -241,22 +253,25 @@ enum GlowHookInstaller {
         let installed = toml.contains(kimiScriptMarker)
 
         if on {
-            // 幂等：已接入且脚本最新 → 不动文件
-            if installed, fm.fileExists(atPath: kimiScript), scriptIsCurrent(kimiScript) { return true }
+            // 幂等：已接入、脚本最新、且配置行已是当前格式 → 不动文件。
+            // 必须连配置行一起验——只验脚本的话，早期写成裸路径的用户永远修不好
+            if installed, fm.fileExists(atPath: kimiScript), scriptIsCurrent(kimiScript),
+               toml.contains(kimiCommandLine) { return true }
             guard writeKimiScript() else { return false }
-            if installed { return true }   // 配置已有引用，只需刷新脚本
             backup(kimiConfig)
+            // 已有引用但不是当前格式（早期的裸路径）→ 整段删掉重写；全新安装则直接追加。
             // [[hooks]] 数组表追加到文件尾：不影响既有段落，TOML 语义安全
+            let base = installed ? removeKimiHookBlock(toml) : toml
             let block = """
 
 
             # ProNotch 完成提醒（自动生成，卸载请在 ProNotch 设置里取消勾选）
             [[hooks]]
             event = "Stop"
-            command = "\(kimiScript)"
+            \(kimiCommandLine)
             timeout = 15
             """
-            let newToml = toml.hasSuffix("\n") ? toml + block.dropFirst() : toml + block
+            let newToml = base.hasSuffix("\n") ? base + block.dropFirst() : base + block
             return (try? newToml.write(toFile: kimiConfig, atomically: true, encoding: .utf8)) != nil
         } else {
             if !installed {
