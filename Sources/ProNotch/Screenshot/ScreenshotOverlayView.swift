@@ -123,8 +123,11 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var hoverWindowRect: NSRect?    // 光标当前所在窗口的吸附框
     private var hoverWindowID: CGWindowID?  // 光标当前所在窗口的 ID（供单击吸附时记录）
     private var snappedWindowRect: NSRect?  // 单击整窗吸附选中的窗口框——导出时据此裁成窗口真实形状
-    private var snappedWindowID: CGWindowID?      // 吸附窗口的 ID
-    private var snappedWindowImage: CGImage?      // 该窗口真实形状图（带真圆角 alpha），异步截得；导出时用它精确裁边，曲率与窗口一致
+    /// 吸附窗口的形状图与其身份（窗口 ID + 代际）。异步截图迟到时按身份丢弃，
+    /// 避免上一个窗口的图覆盖当前窗口、导出错内容
+    private let windowShapes = WindowShapeCoordinator()
+    private var snappedWindowID: CGWindowID? { windowShapes.windowID }
+    private var snappedWindowImage: CGImage? { windowShapes.currentShapeImage }
 
     private var boxes: [Box] = []
     private var boxShape: BoxShape = .rect   // 框选样式：矩形 / 椭圆
@@ -390,10 +393,17 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     /// 用窗口自己的真实形状，曲率与该窗口完全一致，避免固定圆角在不同软件上留背景/切边
     private func captureWindowShape(id: CGWindowID) {
         let scale = screen.backingScaleFactor
-        Task { [weak self] in
+        let generation = windowShapes.beginSnap(windowID: id)
+        let task = Task { [weak self] in
             let img = await Self.captureWindow(id: id, scale: scale)
-            await MainActor.run { self?.snappedWindowImage = img }
+            await MainActor.run {
+                // 期间改吸附了别的窗口、或 overlay 已关 → 这份结果作废，
+                // 否则会把当前窗口的形状图换成上一个窗口的，导出即错内容
+                self?.windowShapes.accept(img, windowID: id, generation: generation)
+                self?.needsDisplay = true
+            }
         }
+        windowShapes.track(task)
     }
 
     private static func captureWindow(id: CGWindowID, scale: CGFloat) async -> CGImage? {
@@ -1184,6 +1194,9 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             phase = .selecting
             removeToolbar()
             commitEditing()
+            // 重新框选：上一次吸附的窗口形状与在途任务全部作废
+            snappedWindowRect = nil
+            windowShapes.invalidate()
             boxes.removeAll(); markers.removeAll(); steps.removeAll(); penStrokes.removeAll(); arrows.removeAll(); texts.removeAll(); mosaicStrokes.removeAll(); mosaicRects.removeAll(); shapes.removeAll()
             activeMarker = nil; selected = nil; undoStack.removeAll()
             dragOrigin = pt
@@ -1340,9 +1353,9 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                 // 没拖开 = 单击吸附窗口 → 整窗选中，直接进编辑态
                 selection = hw
                 snappedWindowRect = hw            // 记为整窗吸附：导出时裁成窗口真实形状
-                snappedWindowID = hoverWindowID
-                snappedWindowImage = nil
-                if let id = hoverWindowID { captureWindowShape(id: id) }   // 异步截该窗口真实圆角形状
+                // 异步截该窗口真实圆角形状；beginSnap 在 captureWindowShape 里递增代际、
+                // 取消上一次在途任务并清掉旧形状
+                if let id = hoverWindowID { captureWindowShape(id: id) } else { windowShapes.invalidate() }
                 hoverWindowRect = nil
                 phase = .editing; showToolbar(for: hw)
             } else { selection = nil }
@@ -2153,10 +2166,15 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         }
     }
 
-    /// 导出前确保窗口真实形状已就绪：吸附后立刻导出时，异步截图可能还没返回，这里同步补截一次
+    /// 导出前确保窗口真实形状已就绪：吸附后立刻导出时，异步截图可能还没返回，这里同步补截一次。
+    /// 判据不是"图非空"而是"图的 ID 与代际对得上当前吸附"——对不上说明手上那张属于别的窗口，
+    /// 宁可重截也不能拿它导出
     private func ensureWindowShape() async {
-        guard snappedWindowRect != nil, snappedWindowImage == nil, let id = snappedWindowID else { return }
-        snappedWindowImage = await Self.captureWindow(id: id, scale: screen.backingScaleFactor)
+        guard snappedWindowRect != nil, let id = windowShapes.windowID,
+              windowShapes.shapeImage(for: id) == nil else { return }
+        let generation = windowShapes.generation
+        let img = await Self.captureWindow(id: id, scale: screen.backingScaleFactor)
+        windowShapes.accept(img, windowID: id, generation: generation)
     }
 
     private func saveToDesktop() {
@@ -2968,7 +2986,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     }
 
 
-    private func close() { removeHint(); removeToolbar(); onClose() }
+    private func close() { windowShapes.close(); removeHint(); removeToolbar(); onClose() }
 }
 
 /// 标注说明的多行输入框（NSTextView）：原生 textContainerInset 内边距、layoutManager 多行排版，
