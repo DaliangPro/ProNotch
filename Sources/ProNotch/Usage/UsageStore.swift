@@ -34,7 +34,8 @@ struct UsageSnapshot: Sendable {
     var claude: ServiceQuota?
     var grok: ServiceQuota?
     var kimi: ServiceQuota?
-    var sessionTokens: [String: Int] = [:]
+    /// 键含来源：四家的 UUID 空间彼此独立，裸 ID 作键会让撞上同一 UUID 的两家互相覆盖
+    var sessionTokens: [AgentSessionKey: Int] = [:]
 }
 
 /// 额度数据的来源。抽成协议是为了让"迟到结果"可测：
@@ -68,8 +69,22 @@ struct ProductionUsageLoader: UsageLoading {
             claude: cl.map { q in var q = q; q.topTasks = claudeTop; return q },
             grok: gr.map { q in var q = q; q.topTasks = grokTop; return q },
             kimi: km.map { q in var q = q; q.topTasks = kimiTop; return q },
-            sessionTokens: Dictionary((claudeSessions + codexSessions + kimiSessions + grokSessions)
-                .map { ($0.id, $0.tokens) }) { a, _ in a })
+            sessionTokens: Self.tokenTable([
+                (.claude, claudeSessions), (.codex, codexSessions),
+                (.kimi, kimiSessions), (.grok, grokSessions),
+            ]))
+    }
+
+    /// 归并四家的每会话 token。同一家内同键重复（Codex 子代理聚合后可能出现）取和，
+    /// 跨家因为键含来源不会相遇
+    static func tokenTable(_ groups: [(AgentKind, [SessionUsage.Scanned])]) -> [AgentSessionKey: Int] {
+        var table: [AgentSessionKey: Int] = [:]
+        for (source, scanned) in groups {
+            for item in scanned {
+                table[AgentSessionKey(source: source, rawID: item.id), default: 0] += item.tokens
+            }
+        }
+        return table
     }
 }
 
@@ -82,7 +97,8 @@ final class UsageStore: ObservableObject {
     @Published private(set) var claude: ServiceQuota?
     @Published private(set) var grok: ServiceQuota?
     @Published private(set) var kimi: ServiceQuota?
-    @Published private(set) var sessionTokens: [String: Int] = [:]   // sessionId → 有效 token（Agent 会话页用）
+    /// 会话键 → 有效 token（Agent 会话页用）。键含来源，两家撞上同一 UUID 也不会互相覆盖
+    @Published private(set) var sessionTokens: [AgentSessionKey: Int] = [:]
     @Published private(set) var refreshing = false
     private var lastRefresh: Date = .distantPast
     private let loader: UsageLoading

@@ -133,7 +133,7 @@ private struct SessionCard: View {
                 Text(Self.ago(session.lastActivity))
                     .font(.system(size: 9.5)).foregroundColor(.white.opacity(0.35))
                 Spacer()
-                if let tok = usageStore.sessionTokens[session.id], tok > 0 {
+                if let tok = usageStore.sessionTokens[session.key], tok > 0 {
                     Text(Self.tokenText(tok))
                         .font(.system(size: 9.5, weight: .medium, design: .rounded))
                         .foregroundColor(.white.opacity(0.5))

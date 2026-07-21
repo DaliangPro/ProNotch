@@ -22,6 +22,8 @@ struct AgentSession: Identifiable, Sendable {
     var state: State       // 文件扫描给初值,hook 事件在 rebuild 时可覆盖为 .waiting
     var hostBundleID: String? = nil   // hook 带来的宿主 App bundle id,点卡跳转用;nil=还没收到过 hook
     var projectName: String { (projectPath as NSString).lastPathComponent }
+    /// 跨模块查表的唯一身份：hook 事件、宿主映射、每会话 token 都认它
+    var key: AgentSessionKey { AgentSessionKey(source: source, rawID: id) }
 }
 
 /// 会话扫描的来源。抽成协议是为了让"迟到结果"可测：
@@ -60,8 +62,12 @@ final class AgentSessionsStore: ObservableObject {
     /// 在途扫描期间又来了强制刷新（hook 事件是高频来源）：记下来，这轮结束立刻补跑
     private var pendingForce = false
     private var rawSessions: [AgentSession] = []       // 文件扫描原始结果(带文件推断态),hook 事件在其上叠加
-    private var turnEndedAt: [String: Date] = [:]       // hook 推送的「轮结束」事件:session_id / thread-id → 时间(30 分钟过期,for「该你了」)
-    private var hostBySession: [String: String] = [:]   // 同键 → 宿主 App bundle id;持久化、跨重启保留,覆盖率随使用累积,点卡跳转用
+    // hook 事件与宿主映射一律以 AgentSessionKey(来源 + 规范化 ID) 为键。
+    // 原先是裸字符串键 + `id == key || id.hasSuffix(key)` 模糊比对：Codex 的 hook 只报
+    // 裸 thread-id、文件名却是 `rollout-<日期>-<uuid>`，才不得不后缀匹配——
+    // 而后缀匹配跨不了来源，Claude 的 uuid 完全可能命中 Codex 的文件名。规范化后是精确相等
+    private var turnEndedAt: [AgentSessionKey: Date] = [:]       // 「轮结束」事件时间(30 分钟过期,for「该你了」)
+    private var hostBySession: [AgentSessionKey: String] = [:]   // 宿主 App bundle id;持久化、跨重启保留,点卡跳转用
     private static let hostStoreKey = "agentHostBySession"
 
     nonisolated static let recentWindow: TimeInterval = 48 * 3600   // 只列 48 小时内活动过的会话
@@ -70,7 +76,7 @@ final class AgentSessionsStore: ObservableObject {
     init(scanner: AgentSessionScanning = ProductionAgentSessionScanner()) {
         self.scanner = scanner
         // 恢复持久化的宿主映射:上次运行采集到的 host 仍可用于跳转,不必等本次再轮结束一次
-        hostBySession = (UserDefaults.standard.dictionary(forKey: Self.hostStoreKey) as? [String: String]) ?? [:]
+        hostBySession = Self.decodeHosts(UserDefaults.standard.dictionary(forKey: Self.hostStoreKey) as? [String: String])
         // 设置页 Agent 勾选变更 → 立即重扫,取消家的卡片马上从监控台消失
         NotificationCenter.default.addObserver(
             forName: .proNotchAgentSelectionChanged,
@@ -143,10 +149,11 @@ final class AgentSessionsStore: ObservableObject {
     /// 不等文件扫描那 ~2 分钟。session = Claude 的 session_id 或 Codex 的 thread-id
     func markTurnEnded(session: String, source: AgentKind, host: String?) {
         guard !session.isEmpty else { return }
-        turnEndedAt[session] = Date()
+        let key = AgentSessionKey(source: source, rawID: session)
+        turnEndedAt[key] = Date()
         if let host, !host.isEmpty {
-            hostBySession[session] = host
-            UserDefaults.standard.set(hostBySession, forKey: Self.hostStoreKey)   // 持久化,下次启动仍能跳
+            hostBySession[key] = host
+            UserDefaults.standard.set(Self.encodeHosts(hostBySession), forKey: Self.hostStoreKey)   // 持久化,下次启动仍能跳
         }
         rebuild()              // 会话已在列表 → 即时点亮
         refresh(force: true)   // 顺带重扫,拿最新摘要 / 新会话
@@ -155,7 +162,7 @@ final class AgentSessionsStore: ObservableObject {
     /// 点卡跳转:切到该会话所在的宿主 App(终端/IDE);没有 hook 报过宿主则回退到该 Agent 桌面版
     func activate(_ session: AgentSession) {
         // 点卡即已读:清掉这张卡的「该你了」事件、橙灯立刻灭（你点它 = 去处理了）
-        turnEndedAt = turnEndedAt.filter { key, _ in !(session.id == key || session.id.hasSuffix(key)) }
+        turnEndedAt[session.key] = nil
         rebuild()
         let host = session.hostBundleID
         let desktop = session.source.appBundleID   // 无桌面版的家（Kimi）为 nil，只靠 hook 报的宿主
@@ -200,22 +207,31 @@ final class AgentSessionsStore: ObservableObject {
         }
     }
 
-    /// 匹配 hook 事件:Claude 用 session_id 精确相等;Codex 文件名以 thread-id 结尾
-    private func hookTime(for s: AgentSession) -> Date? {
-        for (key, t) in turnEndedAt where s.id == key || s.id.hasSuffix(key) { return t }
-        return nil
-    }
-    private func hookHost(for s: AgentSession) -> String? {
-        for (key, h) in hostBySession where s.id == key || s.id.hasSuffix(key) { return h }
-        return nil
-    }
+    /// 匹配 hook 事件：规范化之后是精确相等，不再做后缀猜测
+    private func hookTime(for s: AgentSession) -> Date? { turnEndedAt[s.key] }
+    private func hookHost(for s: AgentSession) -> String? { hostBySession[s.key] }
 
     /// 该会话已知的宿主 App bundle id（hook 曾抓对并持久化过的）——供 host 偶发抓空时复用，
     /// 不盲目回退桌面版：Claudian/SDK 起的 claude 进程有时没挂在 Obsidian 进程链下、detect_host 抓空
-    func knownHost(for session: String) -> String? {
+    func knownHost(for session: String, source: AgentKind) -> String? {
         guard !session.isEmpty else { return nil }
-        for (key, h) in hostBySession where session == key || session.hasSuffix(key) { return h }
-        return nil
+        return hostBySession[AgentSessionKey(source: source, rawID: session)]
+    }
+
+    // MARK: - 宿主映射的持久化编码
+
+    nonisolated static func encodeHosts(_ hosts: [AgentSessionKey: String]) -> [String: String] {
+        Dictionary(uniqueKeysWithValues: hosts.map { ($0.key.storageKey, $0.value) })
+    }
+
+    /// 旧版本存的是不带来源的裸 ID，认不出来就丢：这张表只是跳转用的便利缓存，
+    /// 下次 hook 事件就能补回来，不值得为它猜来源、猜错反而把跳转指到别家 App
+    nonisolated static func decodeHosts(_ raw: [String: String]?) -> [AgentSessionKey: String] {
+        var out: [AgentSessionKey: String] = [:]
+        for (k, v) in raw ?? [:] {
+            if let key = AgentSessionKey(storageKey: k) { out[key] = v }
+        }
+        return out
     }
 
     // MARK: - Claude Code(~/.claude/projects/<项目>/<sessionId>.jsonl)

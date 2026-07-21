@@ -196,9 +196,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let session = items?.first(where: { $0.name == "session" })?.value ?? ""
         // host 偶发抓空（Claudian 的 claude 有时没挂在 Obsidian 进程链下）→ 复用该会话之前抓对过的宿主，
         // 不回退桌面版；否则光晕的 activeHosts 记成桌面版，切回 Obsidian 匹配不上、熄不掉
-        let effectiveHost = (host?.isEmpty == false) ? host : env?.agentSessions.knownHost(for: session)
         // source 参数即 AgentKind 的 rawValue（claude/codex/kimi/grok），支持光晕的家统一走这一条路
         guard let kind = source.flatMap(AgentKind.init(rawValue:)), kind.supportsGlow else { return }
+        let effectiveHost = (host?.isEmpty == false) ? host
+            : env?.agentSessions.knownHost(for: session, source: kind)
         glowController?.notifyCompletion(kind, host: effectiveHost)
         env?.agentSessions.markTurnEnded(session: session, source: kind, host: host)
     }
