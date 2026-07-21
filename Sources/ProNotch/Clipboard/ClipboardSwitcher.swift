@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 import Carbon.HIToolbox
 import ApplicationServices
 
@@ -19,9 +20,15 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
     enum Mode { case history, snippet }
     @Published var mode: Mode = .history
 
-    @Published var selectedIndex = 0            // 键盘焦点（← → 移动）
-    @Published var selectedSet: Set<Int> = []   // 选中集合（单击=单选，⇧单击=多选）
-    @Published var copiedFlash: Int?            // 正在闪「已复制 ✓」的卡片索引
+    // 选择状态以**条目 ID** 为准，下面三个索引只是给视图看的投影。
+    //
+    // 病灶：原先选中集合直接存下标。面板开着的时候剪贴板仍在轮询，
+    // 新内容一进来就插到 items[0]，后面全体下标平移一位——
+    // 用户看着的还是原来那张卡，回车粘出来的却是隔壁那条。
+    // 删除、话术拖拽重排同理。ID 不随位置变，才是选择该锚在的东西
+    @Published private(set) var selectedIndex = 0            // 键盘焦点（← → 移动）
+    @Published private(set) var selectedSet: Set<Int> = []   // 选中集合（单击=单选，⇧单击=多选）
+    @Published private(set) var copiedFlash: Int?            // 正在闪「已复制 ✓」的卡片索引
     @Published var keyboardScrollTick = 0       // 仅键盘移动时滚动居中（鼠标点击不动卡片，避免落点错位）
 
     // 话术编辑器（面板自管编辑态：无边框面板键盘被全局拦，编辑时放行键入）
@@ -31,9 +38,14 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
     @Published private(set) var editingExisting = false   // true=改已有，false=新增（决定标题/按钮文案）
     private var editingSnippetID: UUID?
 
-    private var anchorIndex = 0                 // 连选锚点（最近一次非 ⇧ 点击的位置）
-    private var lastTapIndex: Int?              // 上次单击的卡片索引（手动检测双击用）
+    /// 选择的事实来源（全部按 ID）
+    private(set) var selectedIDs: Set<SwitcherItemID> = []
+    private var focusID: SwitcherItemID?        // 键盘焦点
+    private var anchorID: SwitcherItemID?       // 连选锚点（最近一次非 ⇧ 点击的条目）
+    private var copiedFlashID: SwitcherItemID?  // 正在闪「已复制 ✓」的条目
+    private var lastTapID: SwitcherItemID?      // 上次单击的卡片（手动检测双击用）
     private var lastTapAt = Date.distantPast    // 上次单击时间
+    private var listWatchers: Set<AnyCancellable> = []
 
     private var store: ClipboardStore?
     private var snippets: SnippetStore?
@@ -44,10 +56,62 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
 
     private let panelSize = NSSize(width: 980, height: 368)
 
-    /// 注入数据源（AppDelegate 启动时调用）
+    /// 注入数据源（AppDelegate 启动时调用）。
+    /// 顺带盯住两个列表：面板开着时剪贴板还在轮询、话术还能被拖动重排，
+    /// 列表一变就重算投影并剔除已消失的选择
     func configure(store: ClipboardStore, snippets: SnippetStore) {
         self.store = store
         self.snippets = snippets
+        listWatchers.removeAll()
+        // @Published 在赋值**前**发信号，推迟一轮才读得到新列表
+        store.$items.sink { [weak self] _ in
+            Task { @MainActor in self?.syncSelection() }
+        }.store(in: &listWatchers)
+        snippets.$snippets.sink { [weak self] _ in
+            Task { @MainActor in self?.syncSelection() }
+        }.store(in: &listWatchers)
+    }
+
+    // MARK: - ID 与索引的换算
+
+    /// 当前态的条目 ID，顺序即屏幕顺序
+    private var itemIDs: [SwitcherItemID] {
+        switch mode {
+        case .history: return store?.items.map { SwitcherItemID.history($0.id) } ?? []
+        case .snippet: return snippets?.snippets.map { SwitcherItemID.snippet($0.id) } ?? []
+        }
+    }
+
+    private func id(at idx: Int) -> SwitcherItemID? {
+        let ids = itemIDs
+        return ids.indices.contains(idx) ? ids[idx] : nil
+    }
+
+    /// 把 ID 状态重新投影成视图要的下标；顺带剔除已经不存在的选择。
+    /// 列表增删改、模式切换之后都要走一遍
+    private func syncSelection() {
+        let ids = itemIDs
+        let alive = Set(ids)
+        selectedIDs = selectedIDs.filter { alive.contains($0) }
+        if let f = focusID, !alive.contains(f) { focusID = nil }
+        if let a = anchorID, !alive.contains(a) { anchorID = nil }
+        if let c = copiedFlashID, !alive.contains(c) { copiedFlashID = nil }
+        if focusID == nil { focusID = ids.first }                  // 焦点必须落在某处
+        if selectedIDs.isEmpty, let f = focusID { selectedIDs = [f] }
+        if anchorID == nil { anchorID = focusID }
+        selectedIndex = focusID.flatMap { ids.firstIndex(of: $0) } ?? 0
+        selectedSet = Set(selectedIDs.compactMap { ids.firstIndex(of: $0) })
+        copiedFlash = copiedFlashID.flatMap { ids.firstIndex(of: $0) }
+    }
+
+    /// 复位到第一条（唤出、切态、删空后用）
+    private func resetSelection() {
+        let ids = itemIDs
+        focusID = ids.first
+        anchorID = ids.first
+        selectedIDs = ids.first.map { [$0] } ?? []
+        copiedFlashID = nil
+        syncSelection()
     }
 
     /// 当前态条目数（键盘导航 / 索引钳制统一走它）
@@ -73,9 +137,7 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
         previousApp = NSWorkspace.shared.frontmostApplication      // 记住原前台 App，用于回填焦点 + 粘贴
         mode = hasHistory ? .history : .snippet                    // 历史空但话术非空则直接进话术态
         cancelEditor()
-        selectedIndex = 0
-        selectedSet = count > 0 ? [0] : []
-        anchorIndex = 0
+        resetSelection()
 
         let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main ?? NSScreen.screens.first
         let frame = screen.map { s -> NSRect in
@@ -121,11 +183,16 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
 
     // MARK: - 选择 / 复制
 
+    /// 键盘导航允许临时按下标算，但算完立刻落回 ID——存下来的只有 ID
     private func move(_ delta: Int) {
-        guard count > 0 else { return }
-        selectedIndex = min(max(selectedIndex + delta, 0), count - 1)
-        selectedSet = [selectedIndex]                              // 键盘移动回到单选
-        anchorIndex = selectedIndex
+        let ids = itemIDs
+        guard !ids.isEmpty else { return }
+        let current = focusID.flatMap { ids.firstIndex(of: $0) } ?? 0
+        let target = min(max(current + delta, 0), ids.count - 1)
+        focusID = ids[target]
+        anchorID = ids[target]
+        selectedIDs = [ids[target]]                                // 键盘移动回到单选
+        syncSelection()
         keyboardScrollTick += 1                                    // 只有键盘移动才滚动居中
     }
 
@@ -134,9 +201,8 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
         guard m != mode else { return }
         cancelEditor()
         mode = m
-        selectedIndex = 0
-        selectedSet = count > 0 ? [0] : []
-        anchorIndex = 0
+        // 两态是两批完全不同的内容，选择明确复位，不做跨态记忆
+        resetSelection()
         keyboardScrollTick += 1
     }
 
@@ -145,21 +211,26 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
     /// 标准图标选择语义（同 Finder）：单击=单选；⌘单击=逐个加选/减选；⇧单击=锚点到当前的整段连选。
     /// 话术态是独立文案，不做多选合并，恒定单选
     func select(at idx: Int, command: Bool, shift: Bool) {
-        guard idx >= 0, idx < count else { return }
+        let ids = itemIDs
+        guard ids.indices.contains(idx) else { return }
+        let target = ids[idx]
         if mode == .snippet {
-            selectedSet = [idx]; anchorIndex = idx; selectedIndex = idx; return
+            selectedIDs = [target]; anchorID = target; focusID = target; syncSelection(); return
         }
         if shift {
-            selectedSet = Set(min(anchorIndex, idx)...max(anchorIndex, idx))   // 连选：锚点不动
+            // 连选：锚点不动。这里按下标取区间，取完立刻转成 ID 存
+            let from = anchorID.flatMap { ids.firstIndex(of: $0) } ?? idx
+            selectedIDs = Set(ids[min(from, idx)...max(from, idx)])
         } else if command {
-            if selectedSet.contains(idx) { selectedSet.remove(idx) } else { selectedSet.insert(idx) }
-            if selectedSet.isEmpty { selectedSet = [idx] }         // 至少保留一个选中
-            anchorIndex = idx
+            if selectedIDs.contains(target) { selectedIDs.remove(target) } else { selectedIDs.insert(target) }
+            if selectedIDs.isEmpty { selectedIDs = [target] }      // 至少保留一个选中
+            anchorID = target
         } else {
-            selectedSet = [idx]
-            anchorIndex = idx
+            selectedIDs = [target]
+            anchorID = target
         }
-        selectedIndex = idx
+        focusID = target
+        syncSelection()
     }
 
     /// 回车：当前选中粘贴回原 App（历史=单条或多条合并；话术=单条文案）
@@ -178,13 +249,15 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
     /// 单击/双击分发：单击即时选中（不再用 count:2 手势，消除单击等双击判定的 0.25s 延迟）；
     /// 0.35s 内二次点击同一卡片（无修饰键）视为双击 → 粘贴回原 App
     func handleTap(at idx: Int, command: Bool, shift: Bool) {
-        if !command, !shift, idx == lastTapIndex, Date().timeIntervalSince(lastTapAt) < 0.35 {
-            lastTapIndex = nil
+        guard let tapped = id(at: idx) else { return }
+        // 双击目标认 ID：两次点击之间列表可能已经被新剪贴板内容推移过位置
+        if !command, !shift, tapped == lastTapID, Date().timeIntervalSince(lastTapAt) < 0.35 {
+            lastTapID = nil
             lastTapAt = .distantPast
             activate(at: idx)
             return
         }
-        lastTapIndex = idx
+        lastTapID = tapped
         lastTapAt = Date()
         select(at: idx, command: command, shift: shift)
     }
@@ -201,27 +274,32 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
         }
         if count == 0 {                                            // 当前态空了
             mode = (mode == .history) ? .snippet : .history
-            selectedIndex = 0
             if count == 0 { dismiss(copying: nil); return }        // 另一态也空 → 收起
-            selectedSet = [0]
-            anchorIndex = 0
+            resetSelection()
             keyboardScrollTick += 1
             return
         }
-        selectedIndex = min(selectedIndex, count - 1)
-        selectedSet = [selectedIndex]
-        anchorIndex = selectedIndex
+        // 焦点落到原位置那一条（删的是末条就退一格），选择随之复位为单选
+        let ids = itemIDs
+        focusID = ids[min(idx, ids.count - 1)]
+        anchorID = focusID
+        selectedIDs = focusID.map { [$0] } ?? []
+        syncSelection()
     }
 
     /// 话术拖拽重排：把 from 处的话术移到 to 处，选中跟到新位置。
     /// 刻意不动 keyboardScrollTick——拖动中滚动居中会让卡片在手底下乱跑（同「鼠标操作不滚动」的原则）
     func moveSnippet(from: Int, to: Int) {
         guard mode == .snippet, let snippets else { return }
+        // 先记住被拖的那条是谁：重排后它的下标变了，但 ID 没变，选择自然跟着走
+        let dragged = id(at: from)
         snippets.move(from: from, to: to)
-        guard count > 0 else { return }
-        selectedIndex = min(max(to, 0), count - 1)
-        selectedSet = [selectedIndex]
-        anchorIndex = selectedIndex
+        if let dragged {
+            focusID = dragged
+            anchorID = dragged
+            selectedIDs = [dragged]
+        }
+        syncSelection()
     }
 
     /// ⌘C：当前选中复制到剪贴板并收起，不自动粘贴（历史=单条或多条合并；话术=单条）
@@ -234,12 +312,12 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
     /// 卡片下的「复制」按钮：历史态多选则复制整个多选，否则复制这一条；话术态复制该条文案。
     /// 先原地亮「已复制 ✓」再收起——不无声关面板，用户明确知道复制发生了
     func copyButtonTapped(at idx: Int) {
-        guard idx >= 0, idx < count, copiedFlash == nil else { return }
+        guard let tapped = id(at: idx), copiedFlashID == nil else { return }
         let action: (() -> Void)?
         switch mode {
         case .history:
             guard let store, store.items.indices.contains(idx) else { return }
-            if selectedSet.count >= 2, selectedSet.contains(idx) {
+            if selectedIDs.count >= 2, selectedIDs.contains(tapped) {
                 action = makeCopyAction()
             } else {
                 let item = store.items[idx]
@@ -252,10 +330,12 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
         }
         guard let action else { return }
         action()                                   // copyToPasteboard/copyExternal 会同步 changeCount，不会自捕获
-        copiedFlash = idx
+        copiedFlashID = tapped
+        syncSelection()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             guard let self, self.panel != nil else { return }
-            self.copiedFlash = nil
+            self.copiedFlashID = nil
+            self.syncSelection()
             self.dismiss(copying: nil)             // 已复制完，纯收起
         }
     }
@@ -264,21 +344,29 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
     /// 全部进剪贴板——文本合并为一段，图片作为独立对象一并写入
     private func makeCopyAction() -> (() -> Void)? {
         guard let store else { return nil }
-        let valid = (selectedSet.isEmpty ? [selectedIndex] : Array(selectedSet))
-            .filter { store.items.indices.contains($0) }
-        guard !valid.isEmpty else { return nil }
-        if valid.count == 1, let i = valid.first {
-            let item = store.items[i]
+        let ordered = selectedHistoryItems
+        guard !ordered.isEmpty else { return nil }
+        if ordered.count == 1, let item = ordered.first {
             return { [weak store] in store?.copyToPasteboard(item) }
         }
-        let ordered = valid.sorted(by: >).map { store.items[$0] } // items[0] 最新 → 索引降序 = 时间旧→新
         return { [weak store] in store?.copyMerged(ordered) }
+    }
+
+    /// 当前选择对应的历史条目，按剪贴板时间旧→新排序。
+    /// 按 ID 反查条目本身：面板开着期间列表可能已经平移，下标早就不指着当初那张卡了
+    var selectedHistoryItems: [ClipboardItem] {
+        guard let store else { return [] }
+        let chosen = selectedIDs.isEmpty ? Set(focusID.map { [$0] } ?? []) : selectedIDs
+        return store.items.enumerated()
+            .filter { chosen.contains(.history($0.element.id)) }
+            .sorted { $0.offset > $1.offset }   // items[0] 最新 → 下标降序 = 时间旧→新
+            .map(\.element)
     }
 
     /// 话术态：当前选中话术 → 写剪贴板动作（回车/⌘C/复制按钮共用），文案走剪贴板
     private func snippetCopyAction() -> (() -> Void)? {
-        guard let snippets, snippets.snippets.indices.contains(selectedIndex) else { return nil }
-        let text = snippets.snippets[selectedIndex].content
+        guard let snippets, case .snippet(let id)? = focusID,
+              let text = snippets.snippets.first(where: { $0.id == id })?.content else { return nil }
         return { [weak store] in store?.copyExternal(text: text) }
     }
 
@@ -326,9 +414,7 @@ final class ClipboardSwitcherController: NSObject, ObservableObject {
             snippets.add(title: title, content: text)             // 新增插到最前
         }
         cancelEditor()
-        selectedIndex = 0
-        selectedSet = count > 0 ? [0] : []
-        anchorIndex = 0
+        resetSelection()                                          // 新增/改完聚焦到最前一条
         keyboardScrollTick += 1
     }
 
@@ -856,4 +942,13 @@ private struct SnippetEditor: View {
                 .fill(Color.white.opacity(0.08)))
             .onAppear { DispatchQueue.main.async { focused = true } }
     }
+}
+
+/// 切换器里一个条目的稳定身份。
+///
+/// 两态的 UUID 各自独立（历史条目与话术条目可能撞号），所以按态分成两个 case——
+/// 顺带让「话术态的选择」永远不会被误判成「历史态的选择」
+enum SwitcherItemID: Hashable {
+    case history(UUID)
+    case snippet(UUID)
 }

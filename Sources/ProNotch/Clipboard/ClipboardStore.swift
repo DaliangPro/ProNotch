@@ -244,7 +244,9 @@ final class ClipboardStore: ObservableObject {
         }
     }
 
-    private func capture(text: String) {
+    /// 记录一条文本（轮询捕获用）。非 private 是为了让测试能构造
+    /// 「切换器面板开着时来了新剪贴板内容」这个真实场景
+    func capture(text: String) {
         // 相同文本已存在则移到顶部，不重复记录
         if let index = items.firstIndex(where: { $0.kind == .text && $0.text == text }) {
             var item = items.remove(at: index)
