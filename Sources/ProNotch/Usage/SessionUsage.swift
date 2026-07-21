@@ -1,7 +1,7 @@
 import Foundation
 
 /// 一个任务（会话）的额度消耗快照，供额度页 Top 5 用
-struct TaskUsage: Identifiable {
+struct TaskUsage: Identifiable, Sendable {
     let id: String              // sessionId（文件名）
     let name: String            // 对话名（Claude 首句 / Codex thread_name）
     let tokens: Int             // 有效 token（已排除缓存读）
