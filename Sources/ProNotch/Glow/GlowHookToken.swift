@@ -41,7 +41,7 @@ enum GlowHookToken {
         let file = path(paths)
         guard fm.createFile(atPath: file, contents: Data(token.utf8),
                             attributes: [.posixPermissions: 0o600]) else {
-            print("[ProNotch] 无法写入 hook 令牌文件")
+            AppLog.glow.error("无法写入 hook 令牌文件")
             return nil
         }
         // createFile 的 attributes 在文件已存在时不生效，补一次

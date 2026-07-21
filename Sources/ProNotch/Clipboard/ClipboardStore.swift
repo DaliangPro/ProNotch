@@ -122,7 +122,7 @@ final class ClipboardStore: ObservableObject {
         // 同步 changeCount，避免把自己的写入再捕获一遍；
         // 面板保持展开时不调整列表顺序，避免条目在用户眼前跳动
         lastChangeCount = pb.changeCount
-        print("[ProNotch] 已复制回剪贴板: \(item.kind == .text ? "文本" : "图片")")
+        AppLog.clipboard.info("已复制回剪贴板: \(item.kind == .text ? "文本" : "图片", privacy: .public)")
     }
 
     /// 多选合并复制（切换器用）：选了什么就复制什么，按时间顺序全部进剪贴板。
@@ -144,7 +144,7 @@ final class ClipboardStore: ObservableObject {
             guard !images.isEmpty else { return }
             pb.writeObjects(images)
             lastChangeCount = pb.changeCount
-            print("[ProNotch] 多选合并复制：图片 \(images.count) 张")
+            AppLog.clipboard.info("多选合并复制：图片 \(images.count) 张")
             return
         }
 
@@ -171,7 +171,7 @@ final class ClipboardStore: ObservableObject {
         item.setString(texts.joined(separator: "\n"), forType: .string)   // 纯文本备选
         pb.writeObjects([item])
         lastChangeCount = pb.changeCount
-        print("[ProNotch] 多选合并复制：文本 \(texts.count) 条 + 图片 \(imageCount) 张（RTFD）")
+        AppLog.clipboard.info("多选合并复制：文本 \(texts.count) 条 + 图片 \(imageCount) 张（RTFD）")
     }
 
     /// 把任意文本写入剪贴板（话术库等外部来源用），同步 changeCount 不触发自捕获
@@ -180,7 +180,7 @@ final class ClipboardStore: ObservableObject {
         pb.clearContents()
         pb.setString(text, forType: .string)
         lastChangeCount = pb.changeCount
-        print("[ProNotch] 话术已复制到剪贴板")
+        AppLog.clipboard.info("话术已复制到剪贴板")
     }
 
     func delete(_ item: ClipboardItem) {
@@ -226,7 +226,7 @@ final class ClipboardStore: ObservableObject {
 
         let types = pb.types ?? []
         guard !Self.skippedTypes.contains(where: types.contains) else {
-            print("[ProNotch] 跳过敏感/临时剪贴板内容")
+            AppLog.clipboard.info("跳过敏感/临时剪贴板内容")
             return
         }
 
@@ -257,7 +257,7 @@ final class ClipboardStore: ObservableObject {
                                        imageFileName: nil, date: Date()), at: 0)
         }
         trimAndSave()
-        print("[ProNotch] 捕获文本（\(text.count) 字符）")
+        AppLog.clipboard.info("捕获文本（\(text.count) 字符）")
     }
 
     private func captureImage(from pb: NSPasteboard) {
@@ -265,7 +265,7 @@ final class ClipboardStore: ObservableObject {
             return
         }
         guard data.count <= maxImageBytes else {
-            print("[ProNotch] 图片超过 5MB，不入历史")
+            AppLog.clipboard.error("图片超过 5MB，不入历史")
             return
         }
         // 相同图片已存在则移到顶部，不重复记录——否则某些 App 周期性回写同一张图会堆满历史
@@ -281,13 +281,13 @@ final class ClipboardStore: ObservableObject {
         do {
             try data.write(to: directory.appendingPathComponent(name))
         } catch {
-            print("[ProNotch] 图片保存失败: \(error)")
+            AppLog.clipboard.error("图片保存失败: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             return
         }
         items.insert(ClipboardItem(id: UUID(), kind: .image, text: nil,
                                    imageFileName: name, imageHash: hash, date: Date()), at: 0)
         trimAndSave()
-        print("[ProNotch] 捕获图片（\(data.count / 1024) KB）")
+        AppLog.clipboard.info("捕获图片（\(data.count / 1024) KB）")
     }
 
     /// 图片内容指纹（SHA256，去重用）
@@ -331,7 +331,7 @@ final class ClipboardStore: ObservableObject {
         let loaded = AtomicFileStore.load([ClipboardItem].self, from: indexURL)
         if let error = loaded.error {
             storageError = error
-            print("[ProNotch] \(error)")
+            AppLog.clipboard.error("本地存档读取异常：\(error, privacy: .private)")
         }
         guard let decoded = loaded.value else { return }
         let fm = FileManager.default
@@ -354,7 +354,7 @@ final class ClipboardStore: ObservableObject {
         }
         items = result
         if changed { saveIndex() }   // 补过指纹 / 清过重复才回写
-        print("[ProNotch] 加载剪贴板历史 \(items.count) 条")
+        AppLog.clipboard.info("加载剪贴板历史 \(self.items.count, privacy: .public) 条")
     }
 
     private func saveIndex() {
@@ -370,7 +370,7 @@ final class ClipboardStore: ObservableObject {
                 self?.flushImageDeletions()
             } catch {
                 self?.storageError = "剪贴板索引落盘失败：\(error.localizedDescription)"
-                print("[ProNotch] 剪贴板索引落盘失败: \(error.localizedDescription)")
+                AppLog.clipboard.error("剪贴板索引落盘失败: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             }
         }
     }

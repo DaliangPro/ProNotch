@@ -401,10 +401,10 @@ final class SettingsStore: ObservableObject {
             loginItemHint = status == .requiresApproval
                 ? "需要在 系统设置 → 通用 → 登录项 中允许 ProNotch"
                 : nil
-            print("[ProNotch] 开机自启\(launchAtLogin ? "开启" : "关闭")，登录项状态: \(status.rawValue)")
+            AppLog.settings.info("开机自启\(self.launchAtLogin ? "开启" : "关闭", privacy: .public)，登录项状态: \(status.rawValue, privacy: .public)")
         } catch {
             loginItemHint = "设置失败: \(error.localizedDescription)"
-            print("[ProNotch] 开机自启设置失败: \(error.localizedDescription)")
+            AppLog.settings.error("开机自启设置失败: \(LogRedaction.code(error), privacy: .public)")
             launchAtLogin = Self.serviceStatus == .enabled
         }
     }

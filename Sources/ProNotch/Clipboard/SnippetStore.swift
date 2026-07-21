@@ -42,7 +42,7 @@ final class SnippetStore: ObservableObject {
         guard !text.isEmpty else { return }
         snippets.insert(Snippet(id: UUID(), title: Self.normalize(title), content: text, date: Date()), at: 0)
         save()
-        print("[ProNotch] 已存入话术库（共 \(snippets.count) 条）")
+        AppLog.clipboard.info("已存入话术库（共 \(self.snippets.count, privacy: .public) 条）")
     }
 
     /// 纯数据更新（切换器面板自管编辑态，不经内部 editor 状态）
@@ -72,11 +72,11 @@ final class SnippetStore: ObservableObject {
         let result = AtomicFileStore.load([Snippet].self, from: fileURL)
         if let error = result.error {
             storageError = error
-            print("[ProNotch] \(error)")
+            AppLog.clipboard.error("本地存档读取异常：\(error, privacy: .private)")
         }
         guard let decoded = result.value else { return }
         snippets = decoded
-        print("[ProNotch] 加载话术库 \(snippets.count) 条")
+        AppLog.clipboard.info("加载话术库 \(self.snippets.count, privacy: .public) 条")
     }
 
     /// 拖拽重排会连着触发多次保存，全走 AtomicFileStore：写入串行，
@@ -91,7 +91,7 @@ final class SnippetStore: ObservableObject {
                 self?.storageError = nil
             } catch {
                 self?.storageError = "话术库落盘失败：\(error.localizedDescription)"
-                print("[ProNotch] 话术库落盘失败: \(error.localizedDescription)")
+                AppLog.clipboard.error("话术库落盘失败: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             }
         }
     }

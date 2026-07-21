@@ -102,7 +102,7 @@ final class QuickActionsStore: ObservableObject {
             guard result.succeeded else {
                 let message = ProcessFailureMessage.text(action: action, result: result)
                 actionError = message
-                print("[ProNotch] \(message)")
+                AppLog.quickActions.error("\(message, privacy: .public)")
                 return false
             }
             return true
@@ -110,7 +110,7 @@ final class QuickActionsStore: ObservableObject {
             // 起都没起来（可执行文件缺失、沙箱拦截），同样不改状态
             let message = "\(action)失败：无法启动系统命令。"
             actionError = message
-            print("[ProNotch] \(message)")
+            AppLog.quickActions.error("\(message, privacy: .public)")
             return false
         }
     }
@@ -142,7 +142,7 @@ final class QuickActionsStore: ObservableObject {
             if let url = URL(string: "x-apple.systempreferences:com.apple.Appearance-Settings.extension") {
                 NSWorkspace.shared.open(url)
             }
-            print("[ProNotch] 跳转系统设置外观面板（系统未开放自动档接口）")
+            AppLog.quickActions.info("跳转系统设置外观面板（系统未开放自动档接口）")
         case .dark, .light:
             start { await $0.runAppearance(mode) }
         }
@@ -156,12 +156,12 @@ final class QuickActionsStore: ObservableObject {
         // 读系统真实状态，不写预设值：脚本返回 0 只说明 AppleEvent 送达没报错。
         // 若系统状态还没传播到（少见），DistributedNotification 观察者随后会补正
         appearanceMode = probe.appearanceMode()
-        print("[ProNotch] 外观切换为: \(appearanceMode.rawValue)")
+        AppLog.quickActions.info("外观切换为: \(self.appearanceMode.rawValue, privacy: .public)")
     }
 
     /// 调试用：打印当前外观状态
     func debugProbeAppearance() {
-        print("[ProNotch] 当前外观模式: \(appearanceMode.rawValue)，重新读取: \(Self.readAppearanceMode().rawValue)")
+        AppLog.quickActions.info("当前外观模式: \(self.appearanceMode.rawValue, privacy: .public)，重新读取: \(Self.readAppearanceMode().rawValue, privacy: .public)")
     }
 
     // MARK: - 其他快捷操作
@@ -170,7 +170,7 @@ final class QuickActionsStore: ObservableObject {
     func openAppSettings() {
         NotificationCenter.default.post(
             name: .proNotchOpenSettings, object: nil)
-        print("[ProNotch] 打开应用设置")
+        AppLog.quickActions.info("打开应用设置")
     }
 
     /// 净屏开关：隐藏/恢复桌面全部图标。走 Finder 的 CreateDesktop 偏好（标准做法，
@@ -187,7 +187,7 @@ final class QuickActionsStore: ObservableObject {
         guard await succeeded(action: "净屏切换",
                               executable: "/bin/sh", arguments: ["-c", command]) else { return }
         desktopIconsHidden = probe.desktopIconsHidden()
-        print("[ProNotch] 桌面图标已\(desktopIconsHidden ? "隐藏（净屏）" : "恢复显示")")
+        AppLog.quickActions.info("桌面图标已\(self.desktopIconsHidden ? "隐藏（净屏）" : "恢复显示", privacy: .public)")
     }
 
     /// 读 Finder 的 CreateDesktop 偏好：缺省 / true = 显示图标
@@ -215,7 +215,7 @@ final class QuickActionsStore: ObservableObject {
         caffeinateProcess = nil
         if caffeinateActive {
             caffeinateActive = false
-            print("[ProNotch] 防休眠已关闭")
+            AppLog.quickActions.info("防休眠已关闭")
         }
     }
 
@@ -230,9 +230,9 @@ final class QuickActionsStore: ObservableObject {
             try task.run()
             caffeinateProcess = task
             caffeinateActive = true
-            print("[ProNotch] 防休眠已开启")
+            AppLog.quickActions.info("防休眠已开启")
         } catch {
-            print("[ProNotch] 防休眠启动失败: \(error.localizedDescription)")
+            AppLog.quickActions.error("防休眠启动失败: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
         }
     }
 }

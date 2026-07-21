@@ -29,7 +29,7 @@ final class SuperScreenshotController {
         warmedUp = true
         Task.detached(priority: .utility) {
             _ = try? await SCShareableContent.current
-            print("[ProNotch] 截图子系统已预热")
+            AppLog.screenshot.info("截图子系统已预热")
         }
     }
 
@@ -71,7 +71,7 @@ final class SuperScreenshotController {
             let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
             return (image, screen)
         } catch {
-            print("[ProNotch] 超级截图捕获失败: \(error.localizedDescription)")
+            AppLog.screenshot.error("超级截图捕获失败: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             return nil
         }
     }

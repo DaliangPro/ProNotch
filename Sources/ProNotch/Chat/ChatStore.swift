@@ -356,7 +356,7 @@ final class ChatStore: ObservableObject {
         if let list = result.value { conversations = list }
         if let error = result.error {
             storageError = error
-            print("[ProNotch] \(error)")
+            AppLog.chat.error("本地存档读取异常：\(error, privacy: .private)")
         }
         currentID = sortedConversations.first?.id
         ensureCurrentConversation()
@@ -415,7 +415,7 @@ final class ChatStore: ObservableObject {
                 // 失败即丢会话不可接受：留住这份快照，等 retryPersist() 再送一次
                 self?.pendingConversations = list
                 self?.storageError = "会话历史落盘失败：\(error.localizedDescription)"
-                print("[ProNotch] 会话历史落盘失败（revision \(revision)）: \(error.localizedDescription)")
+                AppLog.chat.error("会话历史落盘失败（revision \(revision)）: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             }
         }
     }
@@ -466,10 +466,10 @@ final class ChatStore: ObservableObject {
         let report = KeychainMigrator(keychain: env.keychain, currentService: env.keychainService)
             .migratePlaintextKeys(KeychainStore.legacyAccounts, in: env.defaults, domain: domain)
         for account in report.migrated {
-            print("[ProNotch] \(account) 已从明文配置迁入钥匙串")
+            AppLog.chat.info("\(account, privacy: .public) 已从明文配置迁入钥匙串")
         }
         for (account, error) in report.failed {
-            print("[ProNotch] \(account) 迁入钥匙串失败（明文已保留，下次启动重试）: \(error)")
+            AppLog.chat.error("\(account, privacy: .public) 迁入钥匙串失败（明文已保留，下次启动重试）: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
         }
         return report
     }
@@ -508,7 +508,7 @@ final class ChatStore: ObservableObject {
         env.saveKey(apiKey, account: account)
         env.saveKey(tavilyKey, account: "chatTavilyKey")
         env.saveKey(braveKey, account: "chatBraveKey")
-        print("[ProNotch] 已保存 AI 设置，端点: \((try? currentRequestConfig().chatCompletionsURL())?.absoluteString ?? "无效")")
+        AppLog.chat.info("已保存 AI 设置，端点: \(LogRedaction.endpoint(try? self.currentRequestConfig().chatCompletionsURL()), privacy: .public)")
         checkConnectivity(force: true)
     }
 
@@ -534,11 +534,11 @@ final class ChatStore: ObservableObject {
                 guard let self, self.isStillCurrent(providerID, revision) else { return }
                 self.updateAvailableModels(models)   // 探测顺带刷新列表，切换器保持新鲜
                 self.connectivity = .ok
-                print("[ProNotch] API 连通检测: 正常")
+                AppLog.chat.info("API 连通检测: 正常")
             } catch {
                 guard let self, self.isStillCurrent(providerID, revision) else { return }
                 self.connectivity = .failed(error.localizedDescription)
-                print("[ProNotch] API 连通检测失败: \(error.localizedDescription)")
+                AppLog.chat.error("API 连通检测失败: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             }
         }
     }
@@ -558,10 +558,10 @@ final class ChatStore: ObservableObject {
             do {
                 let results = try await WebSearch.search(query: "OpenAI 最新消息", engine: engine, key: key)
                 self?.searchTest = .ok(results.count)
-                print("[ProNotch] 搜索测试: \(results.count) 条")
+                AppLog.chat.info("搜索测试: \(results.count) 条")
             } catch {
                 self?.searchTest = .failed(error.localizedDescription)
-                print("[ProNotch] 搜索测试失败: \(error.localizedDescription)")
+                AppLog.chat.error("搜索测试失败: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             }
         }
     }
@@ -588,7 +588,7 @@ final class ChatStore: ObservableObject {
                    let first = models.first {
                     self.draftModel = first
                 }
-                print("[ProNotch] 获取到 \(models.count) 个模型")
+                AppLog.chat.info("获取到 \(models.count) 个模型")
             } catch {
                 guard let self, self.isStillCurrent(providerID, revision) else { return }
                 self.fetchError = error.localizedDescription
@@ -606,7 +606,7 @@ final class ChatStore: ObservableObject {
         draftModel = trimmed
         env.defaults.set(trimmed, forKey: PrefKey.chatModel)
         syncCurrentProviderModels()
-        print("[ProNotch] 已切换模型: \(trimmed)")
+        AppLog.chat.info("已切换模型: \(trimmed, privacy: .private)")
     }
 
     /// 模型列表既供设置表单也供右上角切换器，持久化后重启即用
@@ -634,7 +634,7 @@ final class ChatStore: ObservableObject {
         customModels.append(trimmed)
         env.defaults.set(customModels, forKey: "chatCustomModels")
         syncCurrentProviderModels()
-        print("[ProNotch] 已添加模型到列表: \(trimmed)")
+        AppLog.chat.info("已添加模型到列表: \(trimmed, privacy: .private)")
     }
 
     /// 移除手动添加的模型；正在用的不强制切走（列表里仍会显示当前模型）
@@ -730,7 +730,7 @@ final class ChatStore: ObservableObject {
                         in: payload[payload.count - 1]["content"],
                         with: Self.augmentedPrompt(question: question, results: results))
                     setLastAssistantSearchCount(results.count)
-                    print("[ProNotch] 联网搜索返回 \(results.count) 条结果")
+                    AppLog.chat.info("联网搜索返回 \(results.count) 条结果")
                 }
             } catch is CancellationError {
                 isSearching = false
@@ -743,7 +743,7 @@ final class ChatStore: ObservableObject {
             } catch {
                 // 搜索失败不阻断对话，降级为直接回答
                 errorText = "联网搜索失败（已不带搜索结果直接回答）：\(error.localizedDescription)"
-                print("[ProNotch] 联网搜索失败: \(error.localizedDescription)")
+                AppLog.chat.error("联网搜索失败: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             }
             isSearching = false
             if Task.isCancelled {
@@ -762,7 +762,7 @@ final class ChatStore: ObservableObject {
             }
         }
         persistConversations()
-        print("[ProNotch] 已在搜索阶段停止")
+        AppLog.chat.info("已在搜索阶段停止")
     }
 
     private func setLastAssistantSearchCount(_ count: Int) {
@@ -850,10 +850,10 @@ final class ChatStore: ObservableObject {
             guard !cleaned.isEmpty, cleaned.count <= 60, !cleaned.contains("\n") else {
                 return nil
             }
-            print("[ProNotch] 搜索查询改写: \(cleaned)")
+            AppLog.chat.info("搜索查询已改写（\(cleaned.count, privacy: .public) 字）")
             return cleaned
         } catch {
-            print("[ProNotch] 查询改写失败，改用原话搜索: \(error.localizedDescription)")
+            AppLog.chat.error("查询改写失败，改用原话搜索: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             return nil
         }
     }
@@ -968,13 +968,13 @@ final class ChatStore: ObservableObject {
             }
             let chars = conversations.first(where: { $0.id == streamingConvID })?
                 .messages.last?.content.count ?? 0
-            print("[ProNotch] AI 回复完成（\(chars) 字符）")
+            AppLog.chat.info("AI 回复完成（\(chars) 字符）")
             // 真实对话成功是最可靠的连通证据，顺带刷新状态灯
             connectivity = .ok
         } catch is CancellationError {
-            print("[ProNotch] AI 回复已停止")
+            AppLog.chat.info("AI 回复已停止")
         } catch let error as URLError where error.code == .cancelled {
-            print("[ProNotch] AI 回复已停止")
+            AppLog.chat.info("AI 回复已停止")
         } catch {
             errorText = error.localizedDescription
             var imageStripped = false
@@ -993,7 +993,7 @@ final class ChatStore: ObservableObject {
             if imageStripped {
                 errorText = "图片发送失败，当前模型可能不支持图片：\(error.localizedDescription)"
             }
-            print("[ProNotch] AI 请求失败: \(error.localizedDescription)")
+            AppLog.chat.error("AI 请求失败: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             // 状态灯不因单次请求失败就常红——单次失败（尤其 400 请求内容问题，如图片不支持）不代表
             // 连接坏了。用轻量 GET /models 探测真实连通来定灯色：连接正常自动转绿，真断了才保持红。
             checkConnectivity(force: true)

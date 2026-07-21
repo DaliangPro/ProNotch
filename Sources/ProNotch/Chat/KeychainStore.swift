@@ -43,10 +43,10 @@ enum KeychainStore {
             .migrateLegacyService(accounts: legacyAccounts, from: legacyService)
         // 只记账户名与结果，绝不打印 Key 内容
         if !report.migrated.isEmpty {
-            print("[ProNotch] 钥匙串条目已迁移到新应用标识: \(report.migrated.joined(separator: ", "))")
+            AppLog.keychain.info("钥匙串条目已迁移到新应用标识: \(report.migrated.joined(separator: ", "), privacy: .public)")
         }
         for (account, error) in report.failed {
-            print("[ProNotch] 钥匙串条目 \(account) 迁移失败（旧值已保留，下次启动重试）: \(error)")
+            AppLog.keychain.error("钥匙串条目 \(account, privacy: .public) 迁移失败（旧值已保留，下次启动重试）: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
         }
         return report
     }

@@ -460,7 +460,7 @@ final class WeatherStore: NSObject, ObservableObject {
         } catch let failure as WeatherMapping.Failure {
             // 上游列长对不上时不崩也不显示半截数据：有旧数据就静默保留，等下个周期
             if now == nil { error = failure.message }
-            print("[ProNotch] \(failure.message)")
+            AppLog.widgets.info("\(failure.message, privacy: .public)")
             return
         } catch {
             if now == nil { self.error = "天气数据解析失败" }

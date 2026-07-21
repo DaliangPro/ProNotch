@@ -39,10 +39,10 @@ enum CCDCookieReader {
             rows = try withSnapshot(of: cookiesDB) { try readEncryptedCookies($0, host: "claude.ai") }
         } catch let failure as Failure {
             // 只记失败原因，绝不记 cookie 值
-            print("[ProNotch] \(failure.message)")
+            AppLog.usage.info("读取 Cookies 库：\(failure.message, privacy: .private)")
             return nil
         } catch {
-            print("[ProNotch] 读取 Cookies 库失败：\(error.localizedDescription)")
+            AppLog.usage.error("读取 Cookies 库失败：\(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             return nil
         }
         func value(_ name: String) -> String? {

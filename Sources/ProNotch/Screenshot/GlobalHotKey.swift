@@ -76,7 +76,7 @@ final class GlobalHotKey {
         if status == noErr {
             hotKeyRef = newRef
         } else {
-            print("[ProNotch] 快捷键注册失败（可能被占用）id=\(id): \(status)")
+            AppLog.screenshot.error("快捷键注册失败（可能被占用）id=\(self.id, privacy: .public): \(status, privacy: .public)")
         }
     }
 

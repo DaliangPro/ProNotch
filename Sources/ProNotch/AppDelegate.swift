@@ -206,7 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if case .reject(let reason) = GlowCallbackAuth.decide(
             token: token, expected: GlowHookToken.current(.production),
             allowUnsigned: Self.allowsUnsignedGlowCallback) {
-            print("[ProNotch] 已丢弃未通过认证的 pronotch://done 回调：\(reason)")
+            AppLog.app.error("已丢弃未通过认证的 pronotch://done 回调：\(reason, privacy: .public)")
             return
         }
         let source = items?.first(where: { $0.name == "source" })?.value
@@ -241,7 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 defaults.set(value, forKey: key)
                 copied += 1
             }
-            print("[ProNotch] 已从旧版配置迁移 \(copied) 项设置")
+            AppLog.app.info("已从旧版配置迁移 \(copied) 项设置")
         }
 
         // 2. 数据目录（剪贴板历史 / 话术库）随应用名改名。失败保留旧目录，不置完成标记
@@ -254,10 +254,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             if fm.fileExists(atPath: oldDir.path), !fm.fileExists(atPath: newDir.path) {
                 do {
                     try fm.moveItem(at: oldDir, to: newDir)
-                    print("[ProNotch] 数据目录已迁移")
+                    AppLog.app.info("数据目录已迁移")
                 } catch {
                     directoryOK = false
-                    print("[ProNotch] 数据目录迁移失败（旧目录已保留，下次启动重试）: \(error.localizedDescription)")
+                    AppLog.app.error("数据目录迁移失败（旧目录已保留，下次启动重试）: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
                 }
             }
         }
@@ -266,7 +266,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let keychainReport = KeychainStore.migrateLegacyService()
 
         guard directoryOK, keychainReport.isComplete else {
-            print("[ProNotch] 迁移未全部完成，保留重试标记，下次启动继续")
+            AppLog.app.info("迁移未全部完成，保留重试标记，下次启动继续")
             return
         }
         defaults.set(true, forKey: "didMigrateFromNotchHub")

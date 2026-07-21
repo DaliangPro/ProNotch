@@ -2302,7 +2302,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                 let expected = up ? -1 : 1
                 if moved == -expected {
                     scrollWheelFlipped = true
-                    print("[ProNotch] 检测到滚轮方向被反转（自然滚动/反转工具），已自动补偿")
+                    AppLog.screenshot.info("检测到滚轮方向被反转（自然滚动/反转工具），已自动补偿")
                 }
                 try? await Task.sleep(nanoseconds: 200_000_000)
             }

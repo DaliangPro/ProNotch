@@ -64,7 +64,7 @@ private struct LanguagePackDownloaderCore: View {
             .frame(width: 1, height: 1)
             .translationTask(config) { session in
                 do { try await session.prepareTranslation() }   // 弹系统下载确认；已装则直接返回
-                catch { print("[ProNotch] 语言包下载引导取消/失败: \(error.localizedDescription)") }
+                catch { AppLog.screenshot.error("语言包下载引导取消/失败: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)") }
                 config = nil
                 request = nil          // 复位，同时通知设置页刷新安装状态
             }
