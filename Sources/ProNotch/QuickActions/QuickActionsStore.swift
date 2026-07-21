@@ -1,6 +1,16 @@
 import AppKit
 import SwiftUI
 
+/// 系统真实状态的读取口。
+///
+/// 抽出来是为了让「成功之后重新读系统状态」这条规则能被测到——
+/// 而不是把预设值（`hide`、`mode`）直接写进 UI 当成事实
+@MainActor
+struct SystemStateProbe {
+    var desktopIconsHidden: () -> Bool = QuickActionsStore.readDesktopIconsHidden
+    var appearanceMode: () -> QuickActionsStore.AppearanceMode = QuickActionsStore.readAppearanceMode
+}
+
 /// 刘海两侧快捷操作：应用设置、防休眠、净屏、外观切换
 @MainActor
 final class QuickActionsStore: ObservableObject {
@@ -15,6 +25,8 @@ final class QuickActionsStore: ObservableObject {
     @Published private(set) var desktopIconsHidden: Bool
     /// 当前外观模式（跟随系统，外部切换也会同步）
     @Published private(set) var appearanceMode: AppearanceMode
+    /// 最近一次快捷操作的失败原因；成功即清空
+    @Published private(set) var actionError: String?
 
     /// 当前实际是否深色（自动档时按系统实际呈现判断），滑动开关用
     var isEffectivelyDark: Bool {
@@ -32,16 +44,28 @@ final class QuickActionsStore: ObservableObject {
     private var caffeinateProcess: Process?
     private var themeObserver: Any?
 
-    init() {
-        desktopIconsHidden = Self.readDesktopIconsHidden()
-        appearanceMode = Self.readAppearanceMode()
+    private let runner: ProcessRunning
+    private let probe: SystemStateProbe
+    /// 正在跑的那次快捷操作，用来防连点，也给测试一个等待点
+    private var pendingAction: Task<Void, Never>?
+
+    /// `probe` 的默认值必须在 init 里构造：`SystemStateProbe` 是 MainActor 隔离的，
+    /// 而默认参数在 nonisolated 上下文求值
+    init(runner: ProcessRunning = SystemProcessRunner(),
+         probe: SystemStateProbe? = nil) {
+        let probe = probe ?? SystemStateProbe()
+        self.runner = runner
+        self.probe = probe
+        desktopIconsHidden = probe.desktopIconsHidden()
+        appearanceMode = probe.appearanceMode()
         // 系统外观变化（无论谁触发）都同步分段控件状态
         themeObserver = DistributedNotificationCenter.default().addObserver(
             forName: NSNotification.Name("AppleInterfaceThemeChangedNotification"),
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
+                guard let self else { return }
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                    self?.appearanceMode = Self.readAppearanceMode()
+                    self.appearanceMode = self.probe.appearanceMode()
                 }
             }
         }
@@ -56,11 +80,51 @@ final class QuickActionsStore: ObservableObject {
         }
     }
 
+    // MARK: - 子进程动作
+
+    /// 排队跑一次快捷操作。同一时刻只允许一个：连点两下净屏会写两次相反的偏好，
+    /// 后一次读到的还是前一次没落地的状态
+    private func start(_ body: @escaping (QuickActionsStore) async -> Void) {
+        guard pendingAction == nil else { return }
+        actionError = nil
+        pendingAction = Task { [weak self] in
+            guard let self else { return }
+            await body(self)
+            self.pendingAction = nil
+        }
+    }
+
+    /// 跑子进程并判定成败。**只有退出码 0 才算成功**——
+    /// 失败一律保持旧状态，把原因发布到 `actionError`，绝不让 UI 替系统撒谎
+    private func succeeded(action: String, executable: String, arguments: [String]) async -> Bool {
+        do {
+            let result = try await runner.run(executable: executable, arguments: arguments)
+            guard result.succeeded else {
+                let message = ProcessFailureMessage.text(action: action, result: result)
+                actionError = message
+                print("[ProNotch] \(message)")
+                return false
+            }
+            return true
+        } catch {
+            // 起都没起来（可执行文件缺失、沙箱拦截），同样不改状态
+            let message = "\(action)失败：无法启动系统命令。"
+            actionError = message
+            print("[ProNotch] \(message)")
+            return false
+        }
+    }
+
+    /// 测试用等待点：等当前这次快捷操作跑完
+    func waitForPendingAction() async {
+        await pendingAction?.value
+    }
+
     // MARK: - 外观切换
 
     /// 自动档标志来自全局偏好；当前深/浅用 effectiveAppearance 判断
     /// （自动模式下系统不一定写 AppleInterfaceStyle，读偏好不可靠）
-    private static func readAppearanceMode() -> AppearanceMode {
+    static func readAppearanceMode() -> AppearanceMode {
         if UserDefaults.standard.bool(forKey: "AppleInterfaceStyleSwitchesAutomatically") {
             return .system
         }
@@ -80,18 +144,19 @@ final class QuickActionsStore: ObservableObject {
             }
             print("[ProNotch] 跳转系统设置外观面板（系统未开放自动档接口）")
         case .dark, .light:
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            task.arguments = ["-e",
-                "tell application \"System Events\" to tell appearance preferences to set dark mode to \(mode == .dark)"]
-            do {
-                try task.run()
-                appearanceMode = mode
-                print("[ProNotch] 外观切换为: \(mode.rawValue)")
-            } catch {
-                print("[ProNotch] 外观切换失败: \(error.localizedDescription)")
-            }
+            start { await $0.runAppearance(mode) }
         }
+    }
+
+    private func runAppearance(_ mode: AppearanceMode) async {
+        let script = "tell application \"System Events\" to tell appearance preferences "
+            + "to set dark mode to \(mode == .dark)"
+        guard await succeeded(action: "外观切换",
+                              executable: "/usr/bin/osascript", arguments: ["-e", script]) else { return }
+        // 读系统真实状态，不写预设值：脚本返回 0 只说明 AppleEvent 送达没报错。
+        // 若系统状态还没传播到（少见），DistributedNotification 观察者随后会补正
+        appearanceMode = probe.appearanceMode()
+        print("[ProNotch] 外观切换为: \(appearanceMode.rawValue)")
     }
 
     /// 调试用：打印当前外观状态
@@ -112,21 +177,23 @@ final class QuickActionsStore: ObservableObject {
     /// 完全可逆），改完重启 Finder 生效——副作用是已打开的访达窗口会关闭
     func toggleDesktopIcons() {
         let hide = !desktopIconsHidden
-        let task = Process()
-        task.executableURL = URL(fileURLWithPath: "/bin/sh")
-        task.arguments = ["-c",
-            "defaults write com.apple.finder CreateDesktop -bool \(hide ? "false" : "true") && killall Finder"]
-        do {
-            try task.run()
-            desktopIconsHidden = hide
-            print("[ProNotch] 桌面图标已\(hide ? "隐藏（净屏）" : "恢复显示")")
-        } catch {
-            print("[ProNotch] 净屏切换失败: \(error.localizedDescription)")
-        }
+        start { await $0.runDesktopToggle(hide: hide) }
+    }
+
+    private func runDesktopToggle(hide: Bool) async {
+        // `&&` 让 defaults 失败时不再 killall，sh 也会把非 0 退出码带出来
+        let command = "defaults write com.apple.finder CreateDesktop -bool "
+            + "\(hide ? "false" : "true") && killall Finder"
+        guard await succeeded(action: "净屏切换",
+                              executable: "/bin/sh", arguments: ["-c", command]) else { return }
+        desktopIconsHidden = probe.desktopIconsHidden()
+        print("[ProNotch] 桌面图标已\(desktopIconsHidden ? "隐藏（净屏）" : "恢复显示")")
     }
 
     /// 读 Finder 的 CreateDesktop 偏好：缺省 / true = 显示图标
-    private static func readDesktopIconsHidden() -> Bool {
+    static func readDesktopIconsHidden() -> Bool {
+        // defaults write 发生在别的进程，不同步就可能读到本进程缓存的旧值
+        CFPreferencesAppSynchronize("com.apple.finder" as CFString)
         guard let v = CFPreferencesCopyAppValue("CreateDesktop" as CFString,
                                                 "com.apple.finder" as CFString) else { return false }
         if let n = v as? NSNumber { return !n.boolValue }
