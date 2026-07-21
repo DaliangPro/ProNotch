@@ -36,7 +36,7 @@ final class UsageStatusItemController {
         applyVisibility()   // 按持久化开关状态显隐额度栏并启停定时刷新
         // 总开关状态归 SettingsStore：主菜单勾选与设置页开关改的是同一份，任一处动这里统一应用
         NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchUsageMenuBarChanged"),
+            forName: .proNotchUsageMenuBarChanged,
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -46,7 +46,7 @@ final class UsageStatusItemController {
         }
         // per-Agent 菜单栏勾选只影响标题渲染，不动数据层
         NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchMenuBarAgentsChanged"),
+            forName: .proNotchMenuBarAgentsChanged,
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.updateTitle() }
         }
@@ -80,7 +80,7 @@ final class UsageStatusItemController {
             onRefresh: { [weak self] in self?.env.usage.refresh(force: true) },
             onSettings: { [weak self] in
                 self?.dismissPanel()
-                NotificationCenter.default.post(name: NSNotification.Name("ProNotchOpenSettings"), object: nil)
+                NotificationCenter.default.post(name: .proNotchOpenSettings, object: nil)
             }))
         let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 380),
                         styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)

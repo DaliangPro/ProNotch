@@ -2017,7 +2017,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     /// 截图问 AI：把当前选区（含标注/译图）交给 AI 闪问作为附件，展开刘海等用户提问
     private func askAIWithSelection() {
         guard let img = compose() else { return }
-        NotificationCenter.default.post(name: NSNotification.Name("ProNotchAskAIWithImage"), object: img)
+        NotificationCenter.default.post(name: .proNotchAskAIWithImage, object: img)
         close()
     }
 

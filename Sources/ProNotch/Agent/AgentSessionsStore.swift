@@ -49,7 +49,7 @@ final class AgentSessionsStore: ObservableObject {
         hostBySession = (UserDefaults.standard.dictionary(forKey: Self.hostStoreKey) as? [String: String]) ?? [:]
         // 设置页 Agent 勾选变更 → 立即重扫,取消家的卡片马上从监控台消失
         NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchAgentSelectionChanged"),
+            forName: .proNotchAgentSelectionChanged,
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.refresh(force: true) }
         }

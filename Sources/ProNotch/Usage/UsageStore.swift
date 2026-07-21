@@ -44,7 +44,7 @@ final class UsageStore: ObservableObject {
     init() {
         // 设置页勾选变更 → 立即清掉取消家的数据与缓存、重拉新勾家；平时刷新自然按勾选走
         NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchAgentSelectionChanged"),
+            forName: .proNotchAgentSelectionChanged,
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.applyAgentSelection() }
         }

@@ -40,7 +40,7 @@ final class NotchWindowController {
         // 两侧功能区开关随设置联动：影响收起态黑条宽度与悬停热区
         viewModel.sideSlotsActive = settingsStore.sideSlotsActive
         slotObserver = NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchSlotSettingsChanged"),
+            forName: .proNotchSlotSettingsChanged,
             object: nil, queue: .main) { [weak viewModel, weak settingsStore] _ in
             Task { @MainActor in
                 guard let vm = viewModel, let settings = settingsStore else { return }

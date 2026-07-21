@@ -83,7 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             env.clipboard.loadHistoryOnly()
         }
         NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchClipboardEnabledChanged"),
+            forName: .proNotchClipboardEnabledChanged,
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -111,7 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // 设置页改动预警开关/类型时实时起停
         applyWeatherTimerState()
         NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchWeatherAlertSettingsChanged"),
+            forName: .proNotchWeatherAlertSettingsChanged,
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.applyWeatherTimerState() }
         }
@@ -146,7 +146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // 「显示屏幕」设置变更：立即按新范围重建（不必等下一次屏幕配置变化）
         NotificationCenter.default.addObserver(
             self, selector: #selector(screenModeChanged),
-            name: NSNotification.Name("ProNotchScreenModeChanged"), object: nil)
+            name: .proNotchScreenModeChanged, object: nil)
 
         // 跨进程调试入口，仅 DEBUG 构建注册（实现见 DebugChannels.swift）
         setupDebugChannels()
@@ -155,11 +155,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // 正式功能，必须在调试块之外
         NotificationCenter.default.addObserver(
             self, selector: #selector(openSettings),
-            name: NSNotification.Name("ProNotchOpenSettings"), object: nil)
+            name: .proNotchOpenSettings, object: nil)
 
         // 截图问 AI：截图工具栏发来图片 → 挂为闪问附件，展开刘海到闪问页等提问
         NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchAskAIWithImage"),
+            forName: .proNotchAskAIWithImage,
             object: nil, queue: .main) { [weak self] note in
             let img = note.object as? NSImage
             Task { @MainActor in

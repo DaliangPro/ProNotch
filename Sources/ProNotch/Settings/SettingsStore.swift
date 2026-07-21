@@ -25,7 +25,7 @@ final class SettingsStore: ObservableObject {
                                       forKey: "hideNotchInFullscreen")
             // 通知刘海窗口立即按新设置重判一次
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchFullscreenSettingChanged"), object: nil)
+                name: .proNotchFullscreenSettingChanged, object: nil)
         }
     }
 
@@ -35,7 +35,7 @@ final class SettingsStore: ObservableObject {
             UserDefaults.standard.set(notchScreenMode.rawValue, forKey: "notchScreenMode")
             // 通知 AppDelegate 按新设置重建刘海窗口
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchScreenModeChanged"), object: nil)
+                name: .proNotchScreenModeChanged, object: nil)
         }
     }
 
@@ -49,14 +49,14 @@ final class SettingsStore: ObservableObject {
         didSet {
             UserDefaults.standard.set(leftSlot.rawValue, forKey: "notchLeftSlot")
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchSlotSettingsChanged"), object: nil)
+                name: .proNotchSlotSettingsChanged, object: nil)
         }
     }
     @Published var rightSlot: NotchSlot {
         didSet {
             UserDefaults.standard.set(rightSlot.rawValue, forKey: "notchRightSlot")
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchSlotSettingsChanged"), object: nil)
+                name: .proNotchSlotSettingsChanged, object: nil)
         }
     }
     /// 任一侧开启即认为功能区激活（收起态黑条加宽保持左右对称，
@@ -70,7 +70,7 @@ final class SettingsStore: ObservableObject {
         didSet {
             UserDefaults.standard.set(weatherAlertsEnabled, forKey: WeatherAlertType.masterKey)
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchWeatherAlertSettingsChanged"), object: nil)
+                name: .proNotchWeatherAlertSettingsChanged, object: nil)
         }
     }
     /// 预警类型多选（默认五类全选）；清空等效关闭，但总开关状态各自保留
@@ -79,7 +79,7 @@ final class SettingsStore: ObservableObject {
             UserDefaults.standard.set(weatherAlertTypes.map(\.rawValue).sorted(),
                                       forKey: WeatherAlertType.typesKey)
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchWeatherAlertSettingsChanged"), object: nil)
+                name: .proNotchWeatherAlertSettingsChanged, object: nil)
         }
     }
 
@@ -91,7 +91,7 @@ final class SettingsStore: ObservableObject {
         didSet {
             UserDefaults.standard.set(memoryWidgetEnabled, forKey: "memoryWidgetEnabled")
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchWidgetVisibilityChanged"), object: nil)
+                name: .proNotchWidgetVisibilityChanged, object: nil)
         }
     }
     /// 展开面板「组件」页是否显示天气卡（默认开）。同为「内部开关」，与预警（弹出式）、
@@ -100,7 +100,7 @@ final class SettingsStore: ObservableObject {
         didSet {
             UserDefaults.standard.set(weatherWidgetEnabled, forKey: "weatherWidgetEnabled")
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchWidgetVisibilityChanged"), object: nil)
+                name: .proNotchWidgetVisibilityChanged, object: nil)
         }
     }
     /// 组件页是否还有可见卡片（供 NotchViewModel 判「组件」页显隐，静态读避免耦合实例）。
@@ -118,7 +118,7 @@ final class SettingsStore: ObservableObject {
         didSet {
             UserDefaults.standard.set(clipboardEnabled, forKey: "clipboardEnabled")
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchClipboardEnabledChanged"), object: nil)
+                name: .proNotchClipboardEnabledChanged, object: nil)
         }
     }
 
@@ -128,7 +128,7 @@ final class SettingsStore: ObservableObject {
             UserDefaults.standard.set(clipboardLimit, forKey: "clipboardLimit")
             // 通知剪贴板数据源立即按新上限裁剪
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchClipboardLimitChanged"), object: nil)
+                name: .proNotchClipboardLimitChanged, object: nil)
         }
     }
 
@@ -143,7 +143,7 @@ final class SettingsStore: ObservableObject {
                 UserDefaults.standard.removeObject(forKey: "screenshotShortcut")
             }
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchScreenshotShortcutChanged"), object: nil)
+                name: .proNotchScreenshotShortcutChanged, object: nil)
         }
     }
 
@@ -156,7 +156,7 @@ final class SettingsStore: ObservableObject {
                 UserDefaults.standard.removeObject(forKey: "clipboardShortcut")
             }
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchClipboardShortcutChanged"), object: nil)
+                name: .proNotchClipboardShortcutChanged, object: nil)
         }
     }
 
@@ -169,7 +169,7 @@ final class SettingsStore: ObservableObject {
                 UserDefaults.standard.removeObject(forKey: "chatShortcut")
             }
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchChatShortcutChanged"), object: nil)
+                name: .proNotchChatShortcutChanged, object: nil)
         }
     }
 
@@ -212,7 +212,7 @@ final class SettingsStore: ObservableObject {
             UserDefaults.standard.set(enabledAgents.map(\.rawValue).sorted(),
                                       forKey: AgentKind.selectionKey)
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchAgentSelectionChanged"), object: nil)
+                name: .proNotchAgentSelectionChanged, object: nil)
             // 与完成提醒联动（大梁老师定）：家关闭即卸它的钩子——设置里该家的提醒行随之
             // 隐藏，不能留一个没有界面可关的孤儿钩子继续点亮光晕；重新接入且光晕总开关
             // 开着则恢复。变更后广播一次，正亮着的光晕立即按新状态熄灭
@@ -224,7 +224,7 @@ final class SettingsStore: ObservableObject {
                 for kind in added { GlowHookInstaller.setInstalled(kind, true) }
             }
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchGlowSettingsChanged"), object: nil)
+                name: .proNotchGlowSettingsChanged, object: nil)
         }
     }
 
@@ -235,7 +235,7 @@ final class SettingsStore: ObservableObject {
         didSet {
             UserDefaults.standard.set(showUsageInMenuBar, forKey: "showUsageInMenuBar")
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchUsageMenuBarChanged"), object: nil)
+                name: .proNotchUsageMenuBarChanged, object: nil)
         }
     }
     /// 菜单栏标题露出哪些家（默认全家）：刘海里看全量、菜单栏只挑常用的——
@@ -245,7 +245,7 @@ final class SettingsStore: ObservableObject {
             UserDefaults.standard.set(menuBarAgents.map(\.rawValue).sorted(),
                                       forKey: "menuBarAgents")
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchMenuBarAgentsChanged"), object: nil)
+                name: .proNotchMenuBarAgentsChanged, object: nil)
         }
     }
 
@@ -296,7 +296,7 @@ final class SettingsStore: ObservableObject {
     private func persistGlow(_ value: Any, _ key: String) {
         UserDefaults.standard.set(value, forKey: key)
         NotificationCenter.default.post(
-            name: NSNotification.Name("ProNotchGlowSettingsChanged"), object: nil)
+            name: .proNotchGlowSettingsChanged, object: nil)
     }
 
     init() {

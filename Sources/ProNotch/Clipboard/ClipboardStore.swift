@@ -52,7 +52,7 @@ final class ClipboardStore: ObservableObject {
         // 设置页「清空历史」走通知触发（设置窗口不持有本 store，沿用全局通知风格）；
         // 与记录开关独立：关着也能清
         clearObserver = NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchClipboardClearRequested"),
+            forName: .proNotchClipboardClearRequested,
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in self?.clear() }
         }
@@ -77,7 +77,7 @@ final class ClipboardStore: ObservableObject {
         // 设置里调小上限时立即裁剪
         if limitObserver == nil {
             limitObserver = NotificationCenter.default.addObserver(
-                forName: NSNotification.Name("ProNotchClipboardLimitChanged"),
+                forName: .proNotchClipboardLimitChanged,
                 object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.trimAndSave() }
             }

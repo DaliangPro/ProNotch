@@ -342,7 +342,7 @@ struct SettingsView: View {
             Button {
                 if confirmingClipboardClear {
                     NotificationCenter.default.post(
-                        name: NSNotification.Name("ProNotchClipboardClearRequested"), object: nil)
+                        name: .proNotchClipboardClearRequested, object: nil)
                     confirmingClipboardClear = false
                 } else {
                     confirmingClipboardClear = true
@@ -864,7 +864,7 @@ struct SettingsView: View {
             glowConnected[source] = GlowHookInstaller.setInstalled(source, target) ? target : isOn
             // setInstalled 只动文件不广播：补发一次，取消勾选时这家正亮着的光晕立即熄灭
             NotificationCenter.default.post(
-                name: NSNotification.Name("ProNotchGlowSettingsChanged"), object: nil)
+                name: .proNotchGlowSettingsChanged, object: nil)
             // 勾选变化后总开关跟随「还有没有勾选」：全没勾就自动关
             let any = glowConnected.values.contains(true)
             if settings.glowEnabled != any { settings.glowEnabled = any }

@@ -263,13 +263,13 @@ final class NotchViewModel: ObservableObject {
         }
         // 设置开关变化时立即生效（否则关掉开关后要等下次切空间才恢复）
         settingObserver = NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchFullscreenSettingChanged"),
+            forName: .proNotchFullscreenSettingChanged,
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in self?.updateFullscreenHiding() }
         }
         // Agent 勾选变化：刷新可见页快照，当前页若被隐藏则落到第一个可见页
         agentSelectionObserver = NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchAgentSelectionChanged"),
+            forName: .proNotchAgentSelectionChanged,
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -281,7 +281,7 @@ final class NotchViewModel: ObservableObject {
         }
         // 组件页内部开关变化：刷新组件页可见快照，两卡全关时当前页若停在组件页则落到第一个可见页
         widgetVisibilityObserver = NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchWidgetVisibilityChanged"),
+            forName: .proNotchWidgetVisibilityChanged,
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }

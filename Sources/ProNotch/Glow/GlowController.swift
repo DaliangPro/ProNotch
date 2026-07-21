@@ -43,7 +43,7 @@ final class GlowController: ObservableObject {
         // 面板不在启动时创建：点亮才建、熄灭即拆（真停机——没在发光时零常驻窗口）
 
         NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchGlowSettingsChanged"),
+            forName: .proNotchGlowSettingsChanged,
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.syncAppearance() }
         }

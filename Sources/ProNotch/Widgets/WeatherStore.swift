@@ -249,7 +249,7 @@ final class WeatherStore: NSObject, ObservableObject {
         manager.desiredAccuracy = kCLLocationAccuracyKilometer   // 城市级精度足够，省电
         // 设置页改动预警开关/类型 → 立即按新口径清态或重扫
         NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchWeatherAlertSettingsChanged"),
+            forName: .proNotchWeatherAlertSettingsChanged,
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in self?.applyAlertSettingsChange() }
         }

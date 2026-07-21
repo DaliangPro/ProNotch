@@ -18,7 +18,7 @@ extension AppDelegate {
         }
         screenshotHotKey.update(env.settings.screenshotShortcut)
         NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchScreenshotShortcutChanged"),
+            forName: .proNotchScreenshotShortcutChanged,
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -32,7 +32,7 @@ extension AppDelegate {
         }
         clipboardHotKey.update(env.settings.clipboardShortcut)
         NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchClipboardShortcutChanged"),
+            forName: .proNotchClipboardShortcutChanged,
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -46,7 +46,7 @@ extension AppDelegate {
         }
         chatHotKey.update(env.settings.chatShortcut)
         NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchChatShortcutChanged"),
+            forName: .proNotchChatShortcutChanged,
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
