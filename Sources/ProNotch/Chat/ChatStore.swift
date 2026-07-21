@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-struct ChatMessage: Identifiable, Equatable, Codable {
+struct ChatMessage: Identifiable, Equatable, Codable, Sendable {
     enum Role: String, Codable {
         case user
         case assistant
@@ -22,7 +22,7 @@ struct ChatMessage: Identifiable, Equatable, Codable {
 }
 
 /// 一段对话（侧栏一行）：标题取首条用户消息开头，列表按最近更新排序
-struct ChatConversation: Identifiable, Codable {
+struct ChatConversation: Identifiable, Codable, Sendable {
     var id = UUID()
     var title = ""
     var messages: [ChatMessage] = []
@@ -61,6 +61,9 @@ final class ChatStore: ObservableObject {
     }
     @Published private(set) var isStreaming = false
     @Published var errorText: String?
+    /// 会话历史读写异常（损坏保全、落盘失败）。与 errorText 分开：它属于存储层，
+    /// 不该被下一次对话的错误顺手清掉
+    @Published private(set) var storageError: String?
 
     @Published private(set) var baseURL: String
     @Published private(set) var apiKey: String
@@ -121,6 +124,9 @@ final class ChatStore: ObservableObject {
     @Published private(set) var searchTest: SearchTestState = .unknown
 
     private var streamTask: Task<Void, Never>?
+    /// 最近一次落盘任务；落盘失败时留下的待重试快照
+    private var persistTask: Task<Void, Never>?
+    private var pendingConversations: [ChatConversation]?
 
     /// 系统依赖边界（配置存储、钥匙串、网络、落盘路径）。生产用 `.production`，测试注入内存实现
     let env: ChatEnvironment
@@ -343,11 +349,14 @@ final class ChatStore: ObservableObject {
         conversations.firstIndex(where: { $0.id == currentID })
     }
 
-    /// 启动加载历史会话；首次运行或文件损坏则从一个空会话开始
+    /// 启动加载历史会话。首次运行从空会话开始；文件损坏则保全原件、试备份恢复，
+    /// 并把原因写进 `storageError` ——过去这里是 `try?` 一吞了之，用户只看见历史凭空没了
     private func loadConversations() {
-        if let data = try? Data(contentsOf: env.conversationsURL),
-           let list = try? JSONDecoder().decode([ChatConversation].self, from: data) {
-            conversations = list
+        let result = AtomicFileStore.load([ChatConversation].self, from: env.conversationsURL)
+        if let list = result.value { conversations = list }
+        if let error = result.error {
+            storageError = error
+            print("[ProNotch] \(error)")
         }
         currentID = sortedConversations.first?.id
         ensureCurrentConversation()
@@ -385,19 +394,42 @@ final class ChatStore: ObservableObject {
         persistConversations()
     }
 
-    /// 落盘时机：发消息、流结束、建删会话——流式逐字阶段不写盘
+    /// 落盘时机：发消息、流结束、建删会话——流式逐字阶段不写盘。
+    ///
+    /// 每次带一个全局单调 revision 走 `AtomicFileStore`：写入在 actor 上串行，
+    /// 且比已落盘更旧的快照会被丢弃。过去这里是裸 `Task.detached`，两次保存
+    /// 谁先落地全看调度，慢的那次若携带旧内容就把新会话盖没了
     private func persistConversations() {
-        let list = conversations
+        schedulePersist(conversations)
+    }
+
+    private func schedulePersist(_ list: [ChatConversation]) {
         let url = env.conversationsURL
-        Task.detached(priority: .utility) {
+        let revision = PersistRevision.next()
+        persistTask = Task { [weak self] in
             do {
-                try FileManager.default.createDirectory(
-                    at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try JSONEncoder().encode(list).write(to: url, options: .atomic)
+                try await AtomicFileStore.shared.write(list, to: url, revision: revision)
+                self?.pendingConversations = nil
+                self?.storageError = nil
             } catch {
-                print("[ProNotch] 会话历史落盘失败: \(error.localizedDescription)")
+                // 失败即丢会话不可接受：留住这份快照，等 retryPersist() 再送一次
+                self?.pendingConversations = list
+                self?.storageError = "会话历史落盘失败：\(error.localizedDescription)"
+                print("[ProNotch] 会话历史落盘失败（revision \(revision)）: \(error.localizedDescription)")
             }
         }
+    }
+
+    /// 重试上次失败的落盘（磁盘满、权限临时丢失等恢复后触发）
+    func retryPersist() {
+        guard let list = pendingConversations else { return }
+        schedulePersist(list)
+    }
+
+    /// 等待在途落盘完成（测试用）。只等最后一次即可：更早的那些若晚到，
+    /// 会被 revision 判为过期直接丢弃，落不到文件上
+    func waitForPersist() async {
+        await persistTask?.value
     }
 
     /// 在流式写入目标会话上就地改动（用户可能已切去别的会话）

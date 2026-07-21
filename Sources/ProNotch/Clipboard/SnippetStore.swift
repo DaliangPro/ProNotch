@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-struct Snippet: Identifiable, Codable, Equatable {
+struct Snippet: Identifiable, Codable, Equatable, Sendable {
     let id: UUID
     var title: String?     // 可选标题，便于识别；旧数据无此字段，解码为 nil
     var content: String
@@ -12,14 +12,21 @@ struct Snippet: Identifiable, Codable, Equatable {
 @MainActor
 final class SnippetStore: ObservableObject {
     @Published private(set) var snippets: [Snippet] = []
+    /// 话术库读写异常（损坏保全、写盘失败），文案可直接展示
+    @Published private(set) var storageError: String?
 
-    private let fileURL: URL = {
+    /// 存档路径。生产固定在 App Support；测试注入临时文件，不碰真实话术库
+    private let fileURL: URL
+    private var saveTask: Task<Void, Never>?
+
+    nonisolated static var defaultFileURL: URL {
         let base = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask).first!
         return base.appendingPathComponent("ProNotch/snippets.json")
-    }()
+    }
 
-    init() {
+    init(fileURL: URL = SnippetStore.defaultFileURL) {
+        self.fileURL = fileURL
         load()
     }
 
@@ -62,19 +69,35 @@ final class SnippetStore: ObservableObject {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL),
-              let decoded = try? JSONDecoder().decode([Snippet].self, from: data) else {
-            return
+        let result = AtomicFileStore.load([Snippet].self, from: fileURL)
+        if let error = result.error {
+            storageError = error
+            print("[ProNotch] \(error)")
         }
+        guard let decoded = result.value else { return }
         snippets = decoded
         print("[ProNotch] 加载话术库 \(snippets.count) 条")
     }
 
+    /// 拖拽重排会连着触发多次保存，全走 AtomicFileStore：写入串行，
+    /// 且落后的快照会被 revision 判为过期丢弃，最终顺序一定是用户最后拖成的那个
     private func save() {
-        try? FileManager.default.createDirectory(
-            at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if let data = try? JSONEncoder().encode(snippets) {
-            try? data.write(to: fileURL)
+        let snapshot = snippets
+        let url = fileURL
+        let revision = PersistRevision.next()
+        saveTask = Task { [weak self] in
+            do {
+                try await AtomicFileStore.shared.write(snapshot, to: url, revision: revision)
+                self?.storageError = nil
+            } catch {
+                self?.storageError = "话术库落盘失败：\(error.localizedDescription)"
+                print("[ProNotch] 话术库落盘失败: \(error.localizedDescription)")
+            }
         }
+    }
+
+    /// 等待在途落盘完成（测试用）
+    func waitForSave() async {
+        await saveTask?.value
     }
 }

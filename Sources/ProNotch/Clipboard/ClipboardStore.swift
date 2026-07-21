@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 import CryptoKit
 
-struct ClipboardItem: Identifiable, Codable, Equatable {
-    enum Kind: String, Codable {
+struct ClipboardItem: Identifiable, Codable, Equatable, Sendable {
+    enum Kind: String, Codable, Sendable {
         case text
         case image
     }
@@ -20,6 +20,15 @@ struct ClipboardItem: Identifiable, Codable, Equatable {
 @MainActor
 final class ClipboardStore: ObservableObject {
     @Published private(set) var items: [ClipboardItem] = []
+    /// 索引读写异常（损坏保全、写盘失败），文案可直接展示
+    @Published private(set) var storageError: String?
+
+    /// 索引写成功之前不能删的图片文件名。
+    /// 顺序反过来的话——先删文件、索引写失败——重启后索引里还指着已被删掉的图，
+    /// 那些条目就成了点不开的空壳。所以淘汰的文件先记在这里，索引落盘成功才真删；
+    /// 中途失败也不丢：留到下一次成功写入时一并清理
+    private var pendingImageDeletions: [String] = []
+    private var indexTask: Task<Void, Never>?
 
     /// 保留条数上限（设置项 clipboardLimit，默认 200）
     private var maxItems: Int {
@@ -34,11 +43,15 @@ final class ClipboardStore: ObservableObject {
     private var timer: Timer?
     private var lastChangeCount = NSPasteboard.general.changeCount
 
-    private let directory: URL = {
+    /// 历史目录。生产用 App Support 下的固定路径；测试注入临时目录，
+    /// 免得跑一遍测试就把大梁老师真实的剪贴板历史改了
+    private let directory: URL
+
+    nonisolated static var defaultDirectory: URL {
         let base = FileManager.default.urls(
             for: .applicationSupportDirectory, in: .userDomainMask).first!
         return base.appendingPathComponent("ProNotch/Clipboard", isDirectory: true)
-    }()
+    }
 
     private var indexURL: URL { directory.appendingPathComponent("index.json") }
 
@@ -48,7 +61,8 @@ final class ClipboardStore: ObservableObject {
         .init("org.nspasteboard.TransientType"),
     ]
 
-    init() {
+    init(directory: URL = ClipboardStore.defaultDirectory) {
+        self.directory = directory
         // 设置页「清空历史」走通知触发（设置窗口不持有本 store，沿用全局通知风格）；
         // 与记录开关独立：关着也能清
         clearObserver = NotificationCenter.default.addObserver(
@@ -171,12 +185,12 @@ final class ClipboardStore: ObservableObject {
 
     func delete(_ item: ClipboardItem) {
         items.removeAll { $0.id == item.id }
-        removeImageFile(of: item)
+        enqueueImageDeletion(of: item)
         saveIndex()
     }
 
     func clear() {
-        for item in items { removeImageFile(of: item) }
+        for item in items { enqueueImageDeletion(of: item) }
         items.removeAll()
         saveIndex()
     }
@@ -288,22 +302,36 @@ final class ClipboardStore: ObservableObject {
 
     private func trimAndSave() {
         while items.count > maxItems {
-            removeImageFile(of: items.removeLast())
+            enqueueImageDeletion(of: items.removeLast())
         }
         saveIndex()
     }
 
-    /// 历史满额淘汰时清理应用自身缓存的图片文件
-    private func removeImageFile(of item: ClipboardItem) {
+    /// 登记一张待删的图片文件（淘汰、删除、去重都走这里），真正删除等索引落盘成功
+    private func enqueueImageDeletion(of item: ClipboardItem) {
         guard let name = item.imageFileName else { return }
-        try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+        pendingImageDeletions.append(name)
+    }
+
+    /// 索引写成功后执行的清理。按**当前**索引判断引用，不按发起写入时的快照：
+    /// 期间可能又有条目复用了同一张图，照旧快照删就把活数据删了
+    private func flushImageDeletions() {
+        let fm = FileManager.default
+        let referenced = Set(items.compactMap(\.imageFileName))
+        let doomed = pendingImageDeletions.filter { !referenced.contains($0) }
+        pendingImageDeletions.removeAll()
+        for name in doomed {
+            try? fm.removeItem(at: directory.appendingPathComponent(name))
+        }
     }
 
     private func loadIndex() {
-        guard let data = try? Data(contentsOf: indexURL),
-              let decoded = try? JSONDecoder().decode([ClipboardItem].self, from: data) else {
-            return
+        let loaded = AtomicFileStore.load([ClipboardItem].self, from: indexURL)
+        if let error = loaded.error {
+            storageError = error
+            print("[ProNotch] \(error)")
         }
+        guard let decoded = loaded.value else { return }
         let fm = FileManager.default
         var seenImageHashes = Set<String>()
         var result: [ClipboardItem] = []
@@ -317,7 +345,7 @@ final class ClipboardStore: ObservableObject {
                 item.imageHash = Self.imageHash(d); changed = true
             }
             if let h = item.imageHash {
-                if seenImageHashes.contains(h) { removeImageFile(of: item); changed = true; continue }
+                if seenImageHashes.contains(h) { enqueueImageDeletion(of: item); changed = true; continue }
                 seenImageHashes.insert(h)
             }
             result.append(item)
@@ -328,8 +356,26 @@ final class ClipboardStore: ObservableObject {
     }
 
     private func saveIndex() {
-        guard let data = try? JSONEncoder().encode(items) else { return }
-        try? data.write(to: indexURL)
+        let snapshot = items
+        let url = indexURL
+        let revision = PersistRevision.next()
+        indexTask = Task { [weak self] in
+            do {
+                let result = try await AtomicFileStore.shared.write(snapshot, to: url, revision: revision)
+                // 被更新的快照顶掉时不清理：那一轮会连着这批一起删
+                guard result.didWrite else { return }
+                self?.storageError = nil
+                self?.flushImageDeletions()
+            } catch {
+                self?.storageError = "剪贴板索引落盘失败：\(error.localizedDescription)"
+                print("[ProNotch] 剪贴板索引落盘失败: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// 等待在途索引落盘完成（测试用）
+    func waitForIndexWrite() async {
+        await indexTask?.value
     }
 }
 
