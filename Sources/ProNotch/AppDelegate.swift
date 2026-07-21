@@ -186,9 +186,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         for url in urls { handleGlowURL(url) }
     }
 
+    /// 调试旁路：仅 DEBUG 构建、且显式设置了环境变量时才放行无令牌回调。
+    /// 正式构建里这个常量恒为 false，编译期就没有旁路可走
+    private static var allowsUnsignedGlowCallback: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.environment["PRONOTCH_ALLOW_UNSIGNED_GLOW"] == "1"
+        #else
+        return false
+        #endif
+    }
+
     private func handleGlowURL(_ url: URL) {
         guard url.scheme == "pronotch", url.host == "done" else { return }
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        // 认证优先：这条 URL 谁都能调（本机任意进程、任意网页里的一个链接），
+        // 伪造的回调不仅能乱点光晕，还能往会话表里塞宿主映射、把用户点卡片时引向别的 App。
+        // 校验必须发生在动 host/session 映射与点亮光晕之前
+        let token = items?.first(where: { $0.name == "token" })?.value
+        if case .reject(let reason) = GlowCallbackAuth.decide(
+            token: token, expected: GlowHookToken.current(.production),
+            allowUnsigned: Self.allowsUnsignedGlowCallback) {
+            print("[ProNotch] 已丢弃未通过认证的 pronotch://done 回调：\(reason)")
+            return
+        }
         let source = items?.first(where: { $0.name == "source" })?.value
         // host：hook 探测到的「Agent 实际所在 App」bundle id（终端/IDE/桌面版通用）
         let host = items?.first(where: { $0.name == "host" })?.value

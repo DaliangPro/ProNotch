@@ -74,7 +74,8 @@ enum GlowHookInstaller {
 
     /// hook 脚本格式版本：升级时 +1，启动迁移据此把旧脚本刷新到新格式
     /// v4：URL 追加 session（Claude 读 stdin 的 session_id / Codex 读 payload 的 thread-id），供 Agent 页瞬时点亮
-    private static let scriptFormat = 4
+    /// v5：URL 追加 token，应用侧恒定时间校验；无令牌的回调一律丢弃
+    private static let scriptFormat = 5
 
     /// 沿进程链向上找到「Agent 实际所在的 GUI App」bundle id。只认 /Applications 下的 app
     /// （借此排除 claude-code 的 CLI 包装 app）；终端 / IDE / 桌面 App 通用，找不到回空。
@@ -96,14 +97,15 @@ enum GlowHookInstaller {
     }
     """
 
-    /// 脚本是否已是当前格式（含 host 探测）：据脚本头的 PRONOTCH_FMT 标记判断
-    private static func scriptIsCurrent(_ path: String) -> Bool {
+    /// 脚本是否已是当前格式（含 host 探测、且带当前令牌）：据脚本头的 PRONOTCH_FMT 标记判断。
+    /// 令牌也要验——令牌一旦轮换，旧脚本带的还是作废的那枚，必须重写才认得回来
+    private static func scriptIsCurrent(_ path: String, token: String) -> Bool {
         guard let s = try? String(contentsOfFile: path, encoding: .utf8) else { return false }
-        return s.contains("PRONOTCH_FMT=\(scriptFormat)")
+        return s.contains("PRONOTCH_FMT=\(scriptFormat)") && s.contains("token=\(token)")
     }
 
     /// stdin JSON 型转发脚本（Claude / Kimi / Grok 三家同构）
-    private static func stdinNotifyScript(source: String) -> String {
+    private static func stdinNotifyScript(source: String, token: String) -> String {
         """
         #!/bin/bash
         # ProNotch · \(source) 完成提醒（自动生成，勿手改）· PRONOTCH_FMT=\(scriptFormat)
@@ -111,7 +113,7 @@ enum GlowHookInstaller {
         payload=$(cat)
         host=$(detect_host)
         sid=$(printf '%s' "$payload" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
-        url="pronotch://done?source=\(source)"
+        url="pronotch://done?source=\(source)&token=\(token)"
         [ -n "$host" ] && url="$url&host=$host"
         [ -n "$sid" ] && url="$url&session=$sid"
         open -g "$url"
@@ -169,10 +171,12 @@ enum GlowHookInstaller {
 
         var staged: String?
         if on {
+            // 拿不到令牌就不装：装了也是一条谁都能伪造的回调，不如不装
+            guard let token = GlowHookToken.ensure(paths) else { return false }
             // 已是当前格式（脚本最新 + 仅一条指向脚本的 Stop 条目）→ 幂等跳过
-            if scriptIsCurrent(paths.claudeScript), oursEntries.count == 1,
+            if scriptIsCurrent(paths.claudeScript, token: token), oursEntries.count == 1,
                entryIsCurrentClaude(oursEntries[0]) { return true }
-            staged = AtomicConfigWriter.stageScript(stdinNotifyScript(source: "claude"),
+            staged = AtomicConfigWriter.stageScript(stdinNotifyScript(source: "claude", token: token),
                                                     finalPath: paths.claudeScript)
             guard staged != nil else { return false }
             stop.removeAll(where: entryIsOurs)   // 清掉旧内联 / 重复条目，再装新版
@@ -229,9 +233,11 @@ enum GlowHookInstaller {
         let installed = toml.contains(kimiScriptMarker(paths))
 
         if on {
+            guard let token = GlowHookToken.ensure(paths) else { return false }
             // 幂等：已接入、脚本最新、且配置已是当前格式（带边界标记的块）→ 不动文件。
             // 必须连配置行一起验——只验脚本的话，早期写成裸路径的用户永远修不好
-            if installed, fm.fileExists(atPath: paths.kimiScript), scriptIsCurrent(paths.kimiScript),
+            if installed, fm.fileExists(atPath: paths.kimiScript),
+               scriptIsCurrent(paths.kimiScript, token: token),
                toml.contains(commandLine), toml.contains(KimiHookBlock.beginMarker) { return true }
 
             // 已有引用但不是当前格式 → 先精确摘掉旧的，摘不干净就整笔放弃
@@ -243,8 +249,9 @@ enum GlowHookInstaller {
                 case .ambiguous:           return false
                 }
             }
-            guard let staged = AtomicConfigWriter.stageScript(stdinNotifyScript(source: "kimi"),
-                                                              finalPath: paths.kimiScript) else { return false }
+            guard let staged = AtomicConfigWriter.stageScript(
+                    stdinNotifyScript(source: "kimi", token: token),
+                    finalPath: paths.kimiScript) else { return false }
             AtomicConfigWriter.backup(paths.kimiConfig)
             let block = KimiHookBlock.render(commandLine: commandLine)
             let newToml = base.hasSuffix("\n") ? base + "\n" + block + "\n" : base + "\n\n" + block + "\n"
@@ -292,10 +299,12 @@ enum GlowHookInstaller {
         guard fm.fileExists(atPath: paths.grokHome) else { return false }
 
         if on {
+            guard let token = GlowHookToken.ensure(paths) else { return false }
             // 幂等：钩子文件在 + 脚本最新 → 不动文件
-            if isGrokInstalled(paths), scriptIsCurrent(paths.grokScript) { return true }
-            guard let staged = AtomicConfigWriter.stageScript(stdinNotifyScript(source: "grok"),
-                                                              finalPath: paths.grokScript) else { return false }
+            if isGrokInstalled(paths), scriptIsCurrent(paths.grokScript, token: token) { return true }
+            guard let staged = AtomicConfigWriter.stageScript(
+                    stdinNotifyScript(source: "grok", token: token),
+                    finalPath: paths.grokScript) else { return false }
             try? fm.createDirectory(atPath: paths.grokHooksDir, withIntermediateDirectories: true)
             // 路径含空格（Application Support），command 经 shell 解释，须引号包裹
             let root: [String: Any] = ["hooks": ["Stop": [
@@ -344,19 +353,21 @@ enum GlowHookInstaller {
         let inChain = raw?.contains(codexScriptMarker(paths)) == true
 
         if on {
+            guard let token = GlowHookToken.ensure(paths) else { return false }
             if inChain {
                 // 已在 notify 链中。被 computer-use 等套在外层时，我们是「下游」，本就不该再向下转发；
                 // 直接指向时，previous 取脚本自己记录的原值。绝不把「含我们自己的当前链」抓来当 previous，
                 // 否则 exec 回自己 → 无限循环（这正是闪烁 bug 的根源）。脚本缺失或格式过期才重写。
-                if !fm.fileExists(atPath: paths.codexScript) || !scriptIsCurrent(paths.codexScript) {
+                if !fm.fileExists(atPath: paths.codexScript)
+                    || !scriptIsCurrent(paths.codexScript, token: token) {
                     let prev = directlyOurs ? readPreviousFromForwarder(paths) : nil
-                    guard let staged = stageForwarder(previous: prev, paths) else { return false }
+                    guard let staged = stageForwarder(previous: prev, token: token, paths) else { return false }
                     return AtomicConfigWriter.commitScript(from: staged, to: paths.codexScript)
                 }
                 return true
             }
             // 全新接入：当前 notify（不含我们）整体作为 previous 透传
-            guard let staged = stageForwarder(previous: raw, paths) else { return false }
+            guard let staged = stageForwarder(previous: raw, token: token, paths) else { return false }
             AtomicConfigWriter.backup(paths.codexConfig)
             let newToml = CodexNotifyParser.upsert(toml, value: "[\"\(paths.codexScript)\"]")
             let result = AtomicConfigWriter.write(newToml, to: paths.codexConfig) { text in
@@ -395,7 +406,8 @@ enum GlowHookInstaller {
     // MARK: - 转发脚本生成 / 解析
 
     /// 生成转发脚本并暂存：点亮光晕 + 透传 previous；原 notify 以 base64 存进脚本头供还原
-    private static func stageForwarder(previous: String?, _ paths: GlowHookPaths) -> String? {
+    private static func stageForwarder(previous: String?, token: String,
+                                       _ paths: GlowHookPaths) -> String? {
         // 根部兜底防自引用死循环：previous 绝不能（间接）引用本脚本，否则 exec 回自己 → 无限循环。
         // 被 computer-use 套壳后原 notify 链里就含我们，这里统一剥掉，任何调用路径都断得了环。
         let previous = (previous?.contains(codexScriptMarker(paths)) == true) ? nil : previous
@@ -415,7 +427,7 @@ enum GlowHookInstaller {
               *)
                 host=$(detect_host)
                 tid=$(printf '%s' "$payload" | sed -n 's/.*"thread-id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
-                url="pronotch://done?source=codex"
+                url="pronotch://done?source=codex&token=\(token)"
                 [ -n "$host" ] && url="$url&host=$host"
                 [ -n "$tid" ] && url="$url&session=$tid"
                 open -g "$url" ;;
