@@ -36,89 +36,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// AI 闪问全局快捷键（弹出刘海对话页）
     private let chatHotKey = GlobalHotKey(id: 3)
 
-    // 数据层在应用级持有：换屏重建刘海窗口时状态不丢失
-    private var launcherStore: LauncherStore!
-    private var clipboardStore: ClipboardStore!
-    private var snippetStore: SnippetStore!
-    private var chatStore: ChatStore!
-    private var usageStore: UsageStore!
-    private var agentSessionsStore: AgentSessionsStore!
-    private var quickActions: QuickActionsStore!
-    private var settingsStore: SettingsStore!
-    private var memoryStore: MemoryStore!
-    private var weatherStore: WeatherStore!
+    /// 数据层在应用级持有：换屏重建刘海窗口时状态不丢失。
+    /// 离屏渲染设置窗那条路径（-snapshotSettings）只建它用得着的几个，不填这里，故为 nil
+    private var env: AppEnvironment!
     private let settingsWindow = SettingsWindowController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Self.migrateFromNotchHubIfNeeded()
-        launcherStore = LauncherStore()
-        clipboardStore = ClipboardStore()
-        snippetStore = SnippetStore()          // 提前初始化：DEBUG 配图分支与快捷键切换器都依赖它
+        let launcher = LauncherStore()
+        let clipboard = ClipboardStore()
+        let snippets = SnippetStore()          // 提前初始化：DEBUG 配图分支与快捷键切换器都依赖它
         #if DEBUG
         // 一次性生成 README 配图：早于 ChatStore（避免同步读钥匙串弹框阻塞主线程），渲染后退出
         if CommandLine.arguments.contains("-snapshotDocs") {
-            clipboardStore.loadDemoItems()                      // 演示数据，不暴露真实剪贴板
-            ClipboardSwitcherController.shared.configure(store: clipboardStore, snippets: snippetStore)
-            debugSnapshotSwitcher()
+            clipboard.loadDemoItems()                      // 演示数据，不暴露真实剪贴板
+            ClipboardSwitcherController.shared.configure(store: clipboard, snippets: snippets)
+            renderSwitcherSnapshot(clipboard: clipboard, snippets: snippets)
             debugSnapshotToolbar()
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { NSApp.terminate(nil) }
             return
         }
         #endif
-        // 对齐核查：离屏渲染展开面板四页 PNG 后退出（-snapshotPanel）。
+        // 对齐核查：离屏渲染设置窗口 PNG 后退出（-snapshotSettings）。
         // 不放 #if DEBUG——须用 /Applications 正式签名实例跑：钥匙串 ACL 已授权，
-        // ChatStore 的后台 Key 回填不会弹授权框（debug 裸二进制会弹）
+        // ChatStore 的后台 Key 回填不会弹授权框（debug 裸二进制会弹）。
+        // 排在建 env 之前，是因为这一屏只用得着这四个：一并建出 UsageStore
+        // 会让渲染实例白扫一遍 transcript 全库
+        if CommandLine.arguments.contains("-snapshotSettings") {
+            let settings = SettingsStore()
+            let chat = ChatStore()
+            let weather = WeatherStore()
+            weather.loadDemoWeather()   // 渲染实例不定位不联网，也不弹授权框
+            let glow = GlowController(settings: settings)
+            glowController = glow
+            snapshotSettings(settings: settings, chat: chat, glow: glow,
+                             weather: weather, snippets: snippets)
+            return
+        }
+        // 余下两条路径都要完整数据层。ChatStore 仍排在 SnippetStore 之后建，理由同上
+        env = AppEnvironment(
+            launcher: launcher, clipboard: clipboard, snippets: snippets,
+            chat: ChatStore(), usage: UsageStore(), agentSessions: AgentSessionsStore(),
+            quickActions: QuickActionsStore(), settings: SettingsStore(),
+            memory: MemoryStore(), weather: WeatherStore())
+        // 对齐核查：离屏渲染展开面板四页 PNG 后退出（-snapshotPanel）。同样须用正式签名实例跑
         if CommandLine.arguments.contains("-snapshotPanel") {
-            chatStore = ChatStore()
-            usageStore = UsageStore()
-            agentSessionsStore = AgentSessionsStore()
-            quickActions = QuickActionsStore()
-            settingsStore = SettingsStore()
-            memoryStore = MemoryStore()
-            weatherStore = WeatherStore()
-            weatherStore.loadDemoWeather()   // 渲染实例不定位不联网，也不弹授权框
-            launcherStore.refreshIfNeeded()
+            env.weather.loadDemoWeather()   // 渲染实例不定位不联网，也不弹授权框
+            env.launcher.refreshIfNeeded()
             debugSnapshotPanel()
             return   // 渲染实例不装菜单/状态栏/热键/监控，渲完 terminate
         }
-        // 对齐核查：离屏渲染设置窗口 PNG 后退出（-snapshotSettings）。
-        // 与 -snapshotPanel 同理不放 #if DEBUG——须用 /Applications 正式签名实例跑
-        if CommandLine.arguments.contains("-snapshotSettings") {
-            chatStore = ChatStore()
-            settingsStore = SettingsStore()
-            weatherStore = WeatherStore()
-            weatherStore.loadDemoWeather()   // 渲染实例不定位不联网，也不弹授权框
-            glowController = GlowController(settings: settingsStore)
-            snapshotSettings()
-            return
-        }
-        chatStore = ChatStore()
-        usageStore = UsageStore()
-        agentSessionsStore = AgentSessionsStore()
-        quickActions = QuickActionsStore()
-        settingsStore = SettingsStore()
-        memoryStore = MemoryStore()
-        weatherStore = WeatherStore()
-        launcherStore.refreshIfNeeded()
+        env.launcher.refreshIfNeeded()
         // 剪贴板历史：索引总是加载（记录关闭时历史仍可看），0.5 秒轮询按开关起停（真停机）
-        if settingsStore.clipboardEnabled {
-            clipboardStore.startMonitoring()
+        if env.settings.clipboardEnabled {
+            env.clipboard.startMonitoring()
         } else {
-            clipboardStore.loadHistoryOnly()
+            env.clipboard.loadHistoryOnly()
         }
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name("ProNotchClipboardEnabledChanged"),
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                if self.settingsStore.clipboardEnabled {
-                    self.clipboardStore.startMonitoring()
+                if self.env.settings.clipboardEnabled {
+                    self.env.clipboard.startMonitoring()
                 } else {
-                    self.clipboardStore.stop()
+                    self.env.clipboard.stop()
                 }
             }
         }
-        ClipboardSwitcherController.shared.configure(store: clipboardStore, snippets: snippetStore)
+        ClipboardSwitcherController.shared.configure(store: env.clipboard, snippets: env.snippets)
 
         setupMainMenu()
         setupStatusItem()
@@ -131,7 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         // 光晕提醒：控制器常驻（很轻），覆盖整屏的光晕窗点亮才建、熄灭即拆
-        glowController = GlowController(settings: settingsStore)
+        glowController = GlowController(settings: env.settings)
 
         // 恶劣天气预警兜底定时器：预警是它唯一的存在理由——预警关闭即不跑（真停机），
         // 设置页改动预警开关/类型时实时起停
@@ -162,18 +149,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         // 超级截图全局快捷键：按下即唤起区域截图；在设置里改快捷键后重新注册
-        SuperScreenshotController.shared.settings = settingsStore   // 翻译时惰性读配置
+        SuperScreenshotController.shared.settings = env.settings   // 翻译时惰性读配置
         SuperScreenshotController.shared.warmUp()   // 后台预热截图子系统，消除"截图第一下慢"
         screenshotHotKey.onTrigger = {
             Task { @MainActor in SuperScreenshotController.shared.capture() }
         }
-        screenshotHotKey.update(settingsStore.screenshotShortcut)
+        screenshotHotKey.update(env.settings.screenshotShortcut)
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name("ProNotchScreenshotShortcutChanged"),
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.screenshotHotKey.update(self.settingsStore.screenshotShortcut)
+                self.screenshotHotKey.update(self.env.settings.screenshotShortcut)
             }
         }
 
@@ -181,13 +168,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         clipboardHotKey.onTrigger = {
             Task { @MainActor in ClipboardSwitcherController.shared.toggle() }
         }
-        clipboardHotKey.update(settingsStore.clipboardShortcut)
+        clipboardHotKey.update(env.settings.clipboardShortcut)
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name("ProNotchClipboardShortcutChanged"),
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.clipboardHotKey.update(self.settingsStore.clipboardShortcut)
+                self.clipboardHotKey.update(self.env.settings.clipboardShortcut)
             }
         }
 
@@ -195,13 +182,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         chatHotKey.onTrigger = { [weak self] in
             Task { @MainActor in self?.toggleChatPanel() }
         }
-        chatHotKey.update(settingsStore.chatShortcut)
+        chatHotKey.update(env.settings.chatShortcut)
         NotificationCenter.default.addObserver(
             forName: NSNotification.Name("ProNotchChatShortcutChanged"),
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.chatHotKey.update(self.settingsStore.chatShortcut)
+                self.chatHotKey.update(self.env.settings.chatShortcut)
             }
         }
 
@@ -297,14 +284,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let img = note.object as? NSImage
             Task { @MainActor in
                 guard let self, let img else { return }
-                self.chatStore.attachScreenshot(img)
+                self.env.chat.attachScreenshot(img)
                 if let wc = self.windowControllers.first {
                     wc.viewModel.activeTab = .chat
                     wc.viewModel.expandProgrammatically()
                 }
                 // 展开动画落定、面板成为 key 后再补一次聚焦，保证光标真正落进输入框
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                    self?.chatStore.focusInputTick += 1
+                    self?.env.chat.focusInputTick += 1
                 }
             }
         }
@@ -329,11 +316,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let session = items?.first(where: { $0.name == "session" })?.value ?? ""
         // host 偶发抓空（Claudian 的 claude 有时没挂在 Obsidian 进程链下）→ 复用该会话之前抓对过的宿主，
         // 不回退桌面版；否则光晕的 activeHosts 记成桌面版，切回 Obsidian 匹配不上、熄不掉
-        let effectiveHost = (host?.isEmpty == false) ? host : agentSessionsStore?.knownHost(for: session)
+        let effectiveHost = (host?.isEmpty == false) ? host : env?.agentSessions.knownHost(for: session)
         // source 参数即 AgentKind 的 rawValue（claude/codex/kimi/grok），支持光晕的家统一走这一条路
         guard let kind = source.flatMap(AgentKind.init(rawValue:)), kind.supportsGlow else { return }
         glowController?.notifyCompletion(kind, host: effectiveHost)
-        agentSessionsStore?.markTurnEnded(session: session, source: kind, host: host)
+        env?.agentSessions.markTurnEnded(session: session, source: kind, host: host)
     }
 
     /// 调试用：走真实路径接入 / 卸载 Codex 的 notify 转发器，结果写 /tmp 供核对
@@ -346,10 +333,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     /// 调试用：离屏渲染剪贴板切换器到 PNG（生成 README 配图，无需屏幕录制权限）
     @objc private func debugSnapshotSwitcher() {
+        renderSwitcherSnapshot(clipboard: env.clipboard, snippets: env.snippets)
+    }
+
+    /// 取显式入参而非读 `env`：-snapshotDocs 那条路径跑在建 env 之前
+    /// （配图渲染必须早于 ChatStore，否则同步读钥匙串会弹框阻塞主线程）
+    private func renderSwitcherSnapshot(clipboard: ClipboardStore, snippets: SnippetStore) {
         let root = ZStack {
             Color(white: 0.08)
-            ClipboardSwitcherView(store: clipboardStore, snippets: snippetStore, controller: .shared)
-                .environmentObject(clipboardStore!)
+            ClipboardSwitcherView(store: clipboard, snippets: snippets, controller: .shared)
+                .environmentObject(clipboard)
         }
         .frame(width: 960, height: 400)
         let hosting = NSHostingView(rootView: root)
@@ -407,21 +400,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let cvm = NotchViewModel(notchRect: CGRect(x: 380, y: 0, width: 200, height: 38))
             // 渲染实例没有 NotchWindowController 的设置联动，这里手动同步一次
             // （可用 -notchLeftSlot none -notchRightSlot none 参数验证「两侧全关」形态）
-            cvm.sideSlotsActive = self.settingsStore.sideSlotsActive
+            cvm.sideSlotsActive = self.env.settings.sideSlotsActive
             let root = ZStack(alignment: .top) {
                 Color(white: 0.3)
                 NotchContainerView()
             }
             .environmentObject(cvm)
-            .environmentObject(self.launcherStore!)
-            .environmentObject(self.clipboardStore!)
-            .environmentObject(self.chatStore!)
-            .environmentObject(self.quickActions!)
-            .environmentObject(self.settingsStore!)
-            .environmentObject(self.usageStore!)
-            .environmentObject(self.agentSessionsStore!)
-            .environmentObject(self.memoryStore!)
-            .environmentObject(self.weatherStore!)
+            .injecting(self.env)
             .frame(width: size.width, height: size.height)
             let hosting = NSHostingView(rootView: root)
             hosting.appearance = NSAppearance(named: .darkAqua)
@@ -452,15 +437,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 ExpandedContentView()
             }
             .environmentObject(vm)
-            .environmentObject(self.launcherStore!)
-            .environmentObject(self.clipboardStore!)
-            .environmentObject(self.chatStore!)
-            .environmentObject(self.quickActions!)
-            .environmentObject(self.settingsStore!)
-            .environmentObject(self.usageStore!)
-            .environmentObject(self.agentSessionsStore!)
-            .environmentObject(self.memoryStore!)
-            .environmentObject(self.weatherStore!)
+            .injecting(self.env)
             .overlay(alignment: .topLeading) {
                 Rectangle().fill(Color.red.opacity(0.85)).frame(width: 1).padding(.leading, guide)
             }
@@ -495,18 +472,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// 对齐核查：把设置窗口按真实尺寸离屏渲染成 PNG（不打开窗口、不需屏幕录制权限）。
     /// 分区由 -section 指定（如 -section 刘海面板），默认「通用」；
     /// 尺寸取 SwiftUI 自算值，跟着 SettingsView 的 frame 走，不写死
-    private func snapshotSettings() {
+    private func snapshotSettings(settings: SettingsStore, chat: ChatStore, glow: GlowController,
+                                  weather: WeatherStore, snippets: SnippetStore) {
         let args = CommandLine.arguments
         let section = args.firstIndex(of: "-section")
             .flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
             .flatMap(SettingsView.Section.init(rawValue:)) ?? .general
         let root = SettingsView(initialSection: section)
-            .environmentObject(settingsStore!)
-            .environmentObject(chatStore!)
-            .environmentObject(glowController!)
+            .environmentObject(settings)
+            .environmentObject(chat)
+            .environmentObject(glow)
             .environmentObject(updateChecker)
-            .environmentObject(weatherStore!)
-            .environmentObject(snippetStore!)
+            .environmentObject(weather)
+            .environmentObject(snippets)
         let hosting = NSHostingView(rootView: root)
         hosting.appearance = NSAppearance(named: .darkAqua)
         hosting.frame = NSRect(origin: .zero, size: hosting.fittingSize)
@@ -604,16 +582,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func applicationWillTerminate(_ notification: Notification) {
         // 退出前清理子进程（caffeinate）、监听与窗口
-        clipboardStore?.stop()
-        chatStore?.stopStreaming()
-        quickActions?.stop()
+        env?.clipboard.stop()
+        env?.chat.stopStreaming()
+        env?.quickActions.stop()
         windowControllers.forEach { $0.close() }
     }
 
     @objc private func openSettings() {
         guard let glowController else { return }
-        settingsWindow.show(settings: settingsStore, chatStore: chatStore, glow: glowController,
-                            updates: updateChecker, weather: weatherStore, snippets: snippetStore)
+        settingsWindow.show(settings: env.settings, chatStore: env.chat, glow: glowController,
+                            updates: updateChecker, weather: env.weather, snippets: env.snippets)
     }
 
     /// AI 闪问快捷键：未展开→展开到闪问并聚焦输入框；已展开在别的页→切到闪问；已在闪问→收起
@@ -628,7 +606,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         vm.expandProgrammatically()
         // 展开动画落定、面板成为 key 后聚焦输入框，直接打字
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            self?.chatStore.focusInputTick += 1
+            self?.env.chat.focusInputTick += 1
         }
     }
 
@@ -662,7 +640,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         pendingScreenRebuild?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            let mode = self.settingsStore.notchScreenMode
+            let mode = self.env.settings.notchScreenMode
             let rects = NotchGeometry.screens(for: mode).map { NotchGeometry.notchRect(on: $0) }
             if rects == self.windowControllers.map(\.viewModel.notchRect) { return }
             self.setupNotchWindow()
@@ -679,18 +657,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     /// （外接屏 / 扩展屏）在顶部正中模拟热区。数据层共享，展开状态各自独立。
     private func setupNotchWindow() {
         windowControllers.forEach { $0.close() }
-        windowControllers = NotchGeometry.screens(for: settingsStore.notchScreenMode).map { screen in
-            NotchWindowController(
-                screen: screen,
-                launcherStore: launcherStore,
-                clipboardStore: clipboardStore,
-                chatStore: chatStore,
-                quickActions: quickActions,
-                settingsStore: settingsStore,
-                usageStore: usageStore,
-                agentSessionsStore: agentSessionsStore,
-                memoryStore: memoryStore,
-                weatherStore: weatherStore)
+        windowControllers = NotchGeometry.screens(for: env.settings.notchScreenMode).map { screen in
+            NotchWindowController(screen: screen, env: env)
         }
     }
 
@@ -752,7 +720,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let usageToggle = NSMenuItem(title: "Agent 额度", action: #selector(toggleUsageMenuBar), keyEquivalent: "")
         usageToggle.target = self
         usageToggle.image = emptyImage
-        usageToggle.state = settingsStore.showUsageInMenuBar ? .on : .off
+        usageToggle.state = env.settings.showUsageInMenuBar ? .on : .off
         menu.addItem(usageToggle)
         usageToggleItem = usageToggle
         menu.addItem(.separator())
@@ -801,7 +769,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         statusItem = item
 
         // 数据变化即刷新额度栏标题（定时拉取交给 applyUsageVisibility，只在额度栏显示时跑）
-        usageCancellable = usageStore.objectWillChange
+        usageCancellable = env.usage.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.updateUsageTitle() }
         applyUsageVisibility()   // 按持久化开关状态显隐额度栏并启停定时刷新
@@ -811,7 +779,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             object: nil, queue: .main) { [weak self] _ in
             Task { @MainActor in
                 guard let self else { return }
-                self.usageToggleItem?.state = self.settingsStore.showUsageInMenuBar ? .on : .off
+                self.usageToggleItem?.state = self.env.settings.showUsageInMenuBar ? .on : .off
                 self.applyUsageVisibility()
             }
         }
@@ -827,17 +795,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     @objc private func toggleUsageMenuBar() {
         // 只翻状态：持久化与应用统一走 SettingsStore didSet → 通知回来（设置页开关同一条链）
-        settingsStore.showUsageInMenuBar.toggle()
+        env.settings.showUsageInMenuBar.toggle()
     }
 
     /// 用 NSStatusItem.isVisible 显隐额度栏（不销毁重建，避开「关掉再打开消失」的重建坑）：
     /// 首次开启才真正创建 item，此后只切 isVisible + 启停 5 分钟兜底刷新
     private func applyUsageVisibility() {
-        if settingsStore.showUsageInMenuBar {
+        if env.settings.showUsageInMenuBar {
             if usageStatusItem == nil { createUsageStatusItem() }
             usageStatusItem?.isVisible = true
             updateUsageTitle()
-            usageStore.refresh(force: true)
+            env.usage.refresh(force: true)
             startUsageTimer()
         } else {
             usageStatusItem?.isVisible = false
@@ -853,9 +821,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         item.button?.target = self
         item.button?.action = #selector(toggleUsagePopover)
         let content = NSHostingView(rootView: UsageMenuView(
-            store: usageStore,
-            settings: settingsStore,
-            onRefresh: { [weak self] in self?.usageStore.refresh(force: true) },
+            store: env.usage,
+            settings: env.settings,
+            onRefresh: { [weak self] in self?.env.usage.refresh(force: true) },
             onSettings: { [weak self] in
                 self?.dismissUsagePanel()
                 NotificationCenter.default.post(name: NSNotification.Name("ProNotchOpenSettings"), object: nil)
@@ -876,7 +844,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard let panel = usagePanel else { return }
         if panel.isVisible { dismissUsagePanel(); return }
         guard let button = usageStatusItem?.button, let bwin = button.window else { return }
-        usageStore.refresh(force: true)
+        env.usage.refresh(force: true)
         panel.setContentSize(panel.contentView?.fittingSize ?? NSSize(width: 320, height: 380))
         let br = bwin.convertToScreen(button.convert(button.bounds, to: nil))   // 按钮屏幕坐标
         panel.setFrameTopLeftPoint(NSPoint(x: br.maxX - panel.frame.width, y: br.minY - 4))   // 右对齐、贴按钮下方
@@ -903,9 +871,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let alertsOn = !WeatherAlertType.enabledSet().isEmpty
         if alertsOn, weatherTimer == nil {
             weatherTimer = Timer.scheduledTimer(withTimeInterval: 900, repeats: true) { [weak self] _ in
-                Task { @MainActor in self?.weatherStore.refreshIfAuthorized() }
+                Task { @MainActor in self?.env.weather.refreshIfAuthorized() }
             }
-            weatherStore.refreshIfAuthorized()
+            env.weather.refreshIfAuthorized()
         } else if !alertsOn, let t = weatherTimer {
             t.invalidate()
             weatherTimer = nil
@@ -919,7 +887,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func startUsageTimer() {
         guard usageTimer == nil else { return }
         usageTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.usageStore.refresh() }
+            Task { @MainActor in self?.env.usage.refresh() }
         }
     }
     private func stopUsageTimer() { usageTimer?.invalidate(); usageTimer = nil }
@@ -937,13 +905,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .kimi: NSColor(srgbRed: 0.929, green: 0.929, blue: 0.929, alpha: 1),     // 月之暗面白
         ]
         let items = AgentKind.allCases.filter {
-            $0.supportsQuota && settingsStore.enabledAgents.contains($0)
-                && settingsStore.menuBarAgents.contains($0)
+            $0.supportsQuota && env.settings.enabledAgents.contains($0)
+                && env.settings.menuBarAgents.contains($0)
         }
         let title = NSMutableAttributedString()
         let base: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)]
         for kind in items {
-            guard let pct = usageStore.quota(for: kind)?.primary?.usedPercent else { continue }
+            guard let pct = env.usage.quota(for: kind)?.primary?.usedPercent else { continue }
             if title.length > 0 { title.append(NSAttributedString(string: "  ", attributes: base)) }
             let att = NSTextAttachment()
             att.image = brandImage(kind.polys, tint: tints[kind] ?? .systemGray, size: 17)
@@ -994,7 +962,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return NSColor.labelColor   // 正常用系统前景色，自动适配深浅色菜单栏
     }
 
-    @objc private func refreshUsageFromMenu() { usageStore.refresh(force: true) }
+    @objc private func refreshUsageFromMenu() { env.usage.refresh(force: true) }
 
     // MARK: - 检查更新
 
@@ -1114,6 +1082,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 extension AppDelegate: NSMenuDelegate {
     /// 打开菜单栏下拉时强制拉一次最新额度（不等 5 分钟兜底）
     func menuWillOpen(_ menu: NSMenu) {
-        usageStore.refresh(force: true)
+        env.usage.refresh(force: true)
     }
 }
