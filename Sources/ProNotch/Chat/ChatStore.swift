@@ -85,7 +85,7 @@ final class ChatStore: ObservableObject {
 
     /// 联网搜索开关（切换即持久化）
     @Published var webSearchEnabled: Bool {
-        didSet { UserDefaults.standard.set(webSearchEnabled, forKey: "chatWebSearchEnabled") }
+        didSet { env.defaults.set(webSearchEnabled, forKey: "chatWebSearchEnabled") }
     }
     /// 搜索引擎选择（duckduckgo / tavily / brave）与各自的 Key
     @Published private(set) var searchEngine: String
@@ -122,13 +122,17 @@ final class ChatStore: ObservableObject {
 
     private var streamTask: Task<Void, Never>?
 
+    /// 系统依赖边界（配置存储、钥匙串、网络、落盘路径）。生产用 `.production`，测试注入内存实现
+    let env: ChatEnvironment
+
     var isConfigured: Bool {
         !baseURL.isEmpty && !apiKey.isEmpty && !model.isEmpty
     }
 
-    init() {
-        let defaults = UserDefaults.standard
-        Self.migrateKeysToKeychainIfNeeded()
+    init(env: ChatEnvironment = .production) {
+        self.env = env
+        let defaults = env.defaults
+        Self.migrateKeysToKeychainIfNeeded(env: env)
         let savedURL = defaults.string(forKey: PrefKey.chatBaseURL) ?? ""
         let savedModel = defaults.string(forKey: PrefKey.chatModel) ?? ""
         baseURL = savedURL
@@ -163,7 +167,7 @@ final class ChatStore: ObservableObject {
 
     /// 启动载入配置：无存档则把现有单套迁成第一套（Key 原地复用旧账号，零风险）
     private func loadProviders() {
-        let defaults = UserDefaults.standard
+        let defaults = env.defaults
         if let data = defaults.data(forKey: "chatProviders"),
            let list = try? JSONDecoder().decode([APIProvider].self, from: data), !list.isEmpty {
             providers = list
@@ -211,9 +215,9 @@ final class ChatStore: ObservableObject {
 
     private func persistProviders() {
         if let data = try? JSONEncoder().encode(providers) {
-            UserDefaults.standard.set(data, forKey: "chatProviders")
+            env.defaults.set(data, forKey: "chatProviders")
         }
-        UserDefaults.standard.set(currentProviderID.uuidString, forKey: "chatCurrentProviderID")
+        env.defaults.set(currentProviderID.uuidString, forKey: "chatCurrentProviderID")
     }
 
     /// 把当前运行时的模型态写回当前套存档（切模型/加删模型/拉到列表后调用）
@@ -235,9 +239,10 @@ final class ChatStore: ObservableObject {
         connectivity = .unknown
         fetchError = nil
         let account = currentKeychainAccount
+        let keys = env.keychainSlice
         persistProviders()
         Task.detached(priority: .userInitiated) {
-            let k = KeychainStore.read(account) ?? ""
+            let k = keys.read(account)
             await MainActor.run { [weak self] in
                 guard let self, self.currentProviderID == id else { return }   // 期间又切走则弃
                 self.apiKey = k
@@ -271,7 +276,7 @@ final class ChatStore: ObservableObject {
     func deleteProvider(_ id: UUID) {
         guard providers.count > 1 else { return }
         if let p = providers.first(where: { $0.id == id }) {
-            KeychainStore.delete(p.keychainAccount)
+            env.deleteKey(p.keychainAccount)
         }
         let wasCurrent = id == currentProviderID
         providers.removeAll { $0.id == id }
@@ -283,8 +288,9 @@ final class ChatStore: ObservableObject {
             draftAPIKey = ""
             connectivity = .unknown
             let account = currentKeychainAccount
+            let keys = env.keychainSlice
             Task.detached(priority: .userInitiated) {
-                let k = KeychainStore.read(account) ?? ""
+                let k = keys.read(account)
                 await MainActor.run { [weak self] in
                     guard let self else { return }
                     self.apiKey = k
@@ -308,7 +314,7 @@ final class ChatStore: ObservableObject {
 
     /// 启动加载历史会话；首次运行或文件损坏则从一个空会话开始
     private func loadConversations() {
-        if let data = try? Data(contentsOf: Self.conversationsURL),
+        if let data = try? Data(contentsOf: env.conversationsURL),
            let list = try? JSONDecoder().decode([ChatConversation].self, from: data) {
             conversations = list
         }
@@ -348,17 +354,10 @@ final class ChatStore: ObservableObject {
         persistConversations()
     }
 
-    /// 会话历史落盘位置（与 snippets.json 同目录）
-    private static var conversationsURL: URL {
-        let base = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return base.appendingPathComponent("ProNotch/chat-conversations.json")
-    }
-
     /// 落盘时机：发消息、流结束、建删会话——流式逐字阶段不写盘
     private func persistConversations() {
         let list = conversations
-        let url = Self.conversationsURL
+        let url = env.conversationsURL
         Task.detached(priority: .utility) {
             do {
                 try FileManager.default.createDirectory(
@@ -380,10 +379,11 @@ final class ChatStore: ObservableObject {
     /// 测试参数域已注入的值优先，不覆盖
     private func loadKeysFromKeychain() {
         let account = currentKeychainAccount   // 当前套的账号（首套=chatAPIKey）
+        let keys = env.keychainSlice
         Task.detached(priority: .userInitiated) {
-            let api = KeychainStore.read(account) ?? ""
-            let tavily = KeychainStore.read("chatTavilyKey") ?? ""
-            let brave = KeychainStore.read("chatBraveKey") ?? ""
+            let api = keys.read(account)
+            let tavily = keys.read("chatTavilyKey")
+            let brave = keys.read("chatBraveKey")
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 if self.apiKey.isEmpty { self.apiKey = api; self.draftAPIKey = api }
@@ -398,10 +398,10 @@ final class ChatStore: ObservableObject {
     /// 抹明文的前提是钥匙串**读回校验通过**——原先写完不看返回值就 `removeObject`，
     /// 钥匙串锁定或 ACL 拒绝时明文和密文同时没了，Key 直接丢失
     @discardableResult
-    private static func migrateKeysToKeychainIfNeeded() -> KeychainMigrationReport {
-        guard let bundleID = Bundle.main.bundleIdentifier else { return KeychainMigrationReport() }
-        let report = KeychainMigrator().migratePlaintextKeys(
-            KeychainStore.legacyAccounts, in: .standard, domain: bundleID)
+    private static func migrateKeysToKeychainIfNeeded(env: ChatEnvironment) -> KeychainMigrationReport {
+        guard let domain = env.plaintextDomain else { return KeychainMigrationReport() }
+        let report = KeychainMigrator(keychain: env.keychain, currentService: env.keychainService)
+            .migratePlaintextKeys(KeychainStore.legacyAccounts, in: env.defaults, domain: domain)
         for account in report.migrated {
             print("[ProNotch] \(account) 已从明文配置迁入钥匙串")
         }
@@ -424,7 +424,7 @@ final class ChatStore: ObservableObject {
         draftModel = model
         draftTavilyKey = tavilyKey
         draftBraveKey = braveKey
-        let defaults = UserDefaults.standard
+        let defaults = env.defaults
         defaults.set(baseURL, forKey: PrefKey.chatBaseURL)
         defaults.set(model, forKey: PrefKey.chatModel)
         defaults.set(searchEngine, forKey: "chatSearchEngine")
@@ -441,9 +441,9 @@ final class ChatStore: ObservableObject {
             persistProviders()
         }
         // Key 只进钥匙串，不落明文配置
-        KeychainStore.save(apiKey, account: account)
-        KeychainStore.save(tavilyKey, account: "chatTavilyKey")
-        KeychainStore.save(braveKey, account: "chatBraveKey")
+        env.saveKey(apiKey, account: account)
+        env.saveKey(tavilyKey, account: "chatTavilyKey")
+        env.saveKey(braveKey, account: "chatBraveKey")
         print("[ProNotch] 已保存 AI 设置，端点: \((try? endpointURL())?.absoluteString ?? "无效")")
         checkConnectivity(force: true)
     }
@@ -527,7 +527,7 @@ final class ChatStore: ObservableObject {
         guard !trimmed.isEmpty, trimmed != model else { return }
         model = trimmed
         draftModel = trimmed
-        UserDefaults.standard.set(trimmed, forKey: PrefKey.chatModel)
+        env.defaults.set(trimmed, forKey: PrefKey.chatModel)
         syncCurrentProviderModels()
         print("[ProNotch] 已切换模型: \(trimmed)")
     }
@@ -535,7 +535,7 @@ final class ChatStore: ObservableObject {
     /// 模型列表既供设置表单也供右上角切换器，持久化后重启即用
     private func updateAvailableModels(_ models: [String]) {
         availableModels = models
-        UserDefaults.standard.set(models, forKey: "chatAvailableModels")
+        env.defaults.set(models, forKey: "chatAvailableModels")
         syncCurrentProviderModels()
     }
 
@@ -555,7 +555,7 @@ final class ChatStore: ObservableObject {
         guard !trimmed.isEmpty,
               !customModels.contains(trimmed), !availableModels.contains(trimmed) else { return }
         customModels.append(trimmed)
-        UserDefaults.standard.set(customModels, forKey: "chatCustomModels")
+        env.defaults.set(customModels, forKey: "chatCustomModels")
         syncCurrentProviderModels()
         print("[ProNotch] 已添加模型到列表: \(trimmed)")
     }
@@ -563,7 +563,7 @@ final class ChatStore: ObservableObject {
     /// 移除手动添加的模型；正在用的不强制切走（列表里仍会显示当前模型）
     func removeCustomModel(_ name: String) {
         customModels.removeAll { $0 == name }
-        UserDefaults.standard.set(customModels, forKey: "chatCustomModels")
+        env.defaults.set(customModels, forKey: "chatCustomModels")
         syncCurrentProviderModels()
     }
 
@@ -774,7 +774,7 @@ final class ChatStore: ObservableObject {
             "messages": payload,
             "stream": false,
         ])
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await env.transport.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             let detail = String(data: data, encoding: .utf8) ?? ""
             throw NSError(domain: "ProNotch", code: http.statusCode,
@@ -797,7 +797,8 @@ final class ChatStore: ObservableObject {
 
     /// 拉取服务端可用模型列表（GET /v1/models，OpenAI 兼容）。
     /// 用表单当场填写的地址和 Key，不要求先保存
-    static func fetchAvailableModels(baseURL: String, apiKey: String) async throws -> [String] {
+    static func fetchAvailableModels(baseURL: String, apiKey: String,
+                                     transport: HTTPTransporting = URLSessionTransport()) async throws -> [String] {
         var raw = baseURL.trimmingCharacters(in: .whitespaces)
         while raw.hasSuffix("/") { raw.removeLast() }
         if raw.hasSuffix("/chat/completions") {
@@ -813,7 +814,7 @@ final class ChatStore: ObservableObject {
         request.timeoutInterval = 20
         request.setValue("Bearer \(apiKey.trimmingCharacters(in: .whitespaces))",
                          forHTTPHeaderField: "Authorization")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await transport.data(for: request)
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             let detail = String(data: data, encoding: .utf8) ?? ""
             throw NSError(domain: "ProNotch", code: http.statusCode,
@@ -868,20 +869,21 @@ final class ChatStore: ObservableObject {
                 "stream": true,
             ])
 
-            let (bytes, response) = try await URLSession.shared.bytes(for: request)
+            let (lines, response) = try await env.transport.stream(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode != 200 {
-                var data = Data()
-                for try await byte in bytes {
-                    data.append(byte)
-                    if data.count > 4096 { break }
+                // 错误正文按行收，够拼错误信息即止（原先是收 4096 字节，同一条 JSON 错误的呈现一致）
+                var detail = ""
+                for try await line in lines {
+                    detail += line
+                    if detail.count > 4096 { break }
                 }
-                let detail = String(data: data, encoding: .utf8) ?? ""
                 throw NSError(domain: "ProNotch", code: http.statusCode,
                               userInfo: [NSLocalizedDescriptionKey:
                                   "HTTP \(http.statusCode) \(detail.prefix(200))"])
             }
 
-            for try await line in bytes.lines {
+            for try await line in lines {
+                try Task.checkCancellation()   // 点「停止」时与原先的 bytes.lines 一样立刻抛 CancellationError
                 guard line.hasPrefix("data:") else { continue }
                 let json = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
                 if json == "[DONE]" { break }
