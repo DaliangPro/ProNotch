@@ -257,6 +257,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         env?.clipboard.stop()
         env?.chat.stopStreaming()
         env?.quickActions.stop()
+        env?.memory.stop()
         windowControllers.forEach { $0.close() }
     }
 

@@ -33,8 +33,27 @@ struct ProcessMemory: Identifiable {
     let icon: NSImage?       // App 取 bundle 图标；纯进程为 nil（视图给兜底符号）
 }
 
+/// 后台扫描的产物：**纯数据**，跨线程安全。
+///
+/// 这里一个 `NSImage` 都没有是刻意的——AppKit 的图像对象不该在后台创建或触碰，
+/// 名字与图标一律等主线程拿到最终 Top N 之后再解析
+struct ProcessMemorySample: Sendable, Equatable {
+    /// 聚合键：最外层 .app bundle 路径，或可执行文件路径
+    let key: String
+    let appPath: String?
+    let fallbackName: String
+    let footprint: UInt64
+}
+
 /// 按 App 聚合的纯函数逻辑（单测对象）
 enum MemoryGrouping {
+    /// 单个进程的原始读数（syscall 读出来什么就是什么，不带任何 UI 对象）
+    struct RawProcess: Sendable, Equatable {
+        let execPath: String?
+        let bsdName: String
+        let footprint: UInt64
+    }
+
     /// 可执行路径 → 所属最外层 .app bundle 路径：Chrome/Claude 一类多进程 App 的
     /// Helper（含内嵌 .app/.xpc）可执行文件都藏在宿主包里，取最外层即归并到宿主；
     /// 不在任何 .app 内返回 nil。只认目录组件——末段是可执行文件本体，不参与匹配
@@ -45,6 +64,85 @@ enum MemoryGrouping {
             if comp.hasSuffix(".app") { return prefix }
         }
         return nil
+    }
+
+    /// 原始读数 → 按 App 聚合并排好序。纯函数，可离线喂任意进程表
+    static func merge(_ raw: [RawProcess]) -> [ProcessMemorySample] {
+        var groups: [String: ProcessMemorySample] = [:]
+        for process in raw where process.footprint > 0 {
+            let appPath = process.execPath.flatMap { appBundlePath(of: $0) }
+            let fallbackName = process.execPath.map { String($0.split(separator: "/").last ?? "") }
+                ?? process.bsdName
+            let key = appPath ?? process.execPath ?? "name:\(fallbackName)"
+            if let existing = groups[key] {
+                groups[key] = ProcessMemorySample(key: key, appPath: appPath,
+                                                  fallbackName: existing.fallbackName,
+                                                  footprint: existing.footprint + process.footprint)
+            } else {
+                groups[key] = ProcessMemorySample(key: key, appPath: appPath,
+                                                  fallbackName: fallbackName,
+                                                  footprint: process.footprint)
+            }
+        }
+        // 占用相同时按键排序：字典的遍历顺序每次都不一样，
+        // 不定死次序的话并列的两行会自己来回跳
+        return groups.values.sorted {
+            $0.footprint != $1.footprint ? $0.footprint > $1.footprint : $0.key < $1.key
+        }
+    }
+}
+
+/// 进程扫描口。抽出来一是为了把 syscall 全量遍历挪出主线程，
+/// 二是为了让「重叠刷新」「迟到结果」这两条规则能在测试里可控地复现
+protocol ProcessMemoryScanning: Sendable {
+    func scan() async -> [ProcessMemorySample]
+}
+
+/// 真扫描：proc_listallpids 全量遍历 + proc_pid_rusage 读 phys_footprint。
+///
+/// `scan()` 是 nonisolated async，从主线程调用会自动切到并发执行器上跑——
+/// 几百个进程的 syscall 循环不该占着主线程，3 秒一趟更不该
+struct SystemProcessScanner: ProcessMemoryScanning {
+    func scan() async -> [ProcessMemorySample] {
+        MemoryGrouping.merge(Self.readAllProcesses())
+    }
+
+    static func readAllProcesses() -> [MemoryGrouping.RawProcess] {
+        let n = proc_listallpids(nil, 0)
+        guard n > 0 else { return [] }
+        var pids = [Int32](repeating: 0, count: Int(n) + 32)   // 留余量防两次调用间新进程
+        let filled = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<Int32>.size))
+        guard filled > 0 else { return [] }
+
+        var result: [MemoryGrouping.RawProcess] = []
+        result.reserveCapacity(Int(filled))
+        for pid in pids.prefix(Int(filled)) where pid > 0 {
+            var info = rusage_info_current()
+            let kr = withUnsafeMutablePointer(to: &info) {
+                $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+                    proc_pid_rusage(pid, RUSAGE_INFO_CURRENT, $0)
+                }
+            }
+            // 同 uid 进程可读，系统进程 EPERM 自动跳过
+            guard kr == 0, info.ri_phys_footprint > 0 else { continue }
+            result.append(MemoryGrouping.RawProcess(execPath: execPath(pid),
+                                                    bsdName: bsdName(pid),
+                                                    footprint: info.ri_phys_footprint))
+        }
+        return result
+    }
+
+    private static func execPath(_ pid: Int32) -> String? {
+        var buf = [CChar](repeating: 0, count: 4096)
+        guard proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 else { return nil }
+        return String(cString: buf)
+    }
+
+    private static func bsdName(_ pid: Int32) -> String {
+        var buf = [CChar](repeating: 0, count: 256)
+        proc_name(pid, &buf, UInt32(buf.count))
+        let name = String(cString: buf)
+        return name.isEmpty ? "pid \(pid)" : name
     }
 }
 
@@ -58,6 +156,26 @@ final class MemoryStore: ObservableObject {
     /// bundle 名与图标缓存（路径 → 结果，App 不变结果不变）
     private var appNameCache: [String: String] = [:]
     private var appIconCache: [String: NSImage] = [:]
+
+    private let scanner: ProcessMemoryScanning
+    /// 正在跑的那趟扫描。持有它才谈得上「不叠第二趟」和「销毁时取消」
+    private var scanTask: Task<Void, Never>?
+    /// 扫描代际：结果回来时若已不是最新那趟，丢弃
+    private var scanGeneration: UInt64 = 0
+
+    init(scanner: ProcessMemoryScanning = SystemProcessScanner()) {
+        self.scanner = scanner
+    }
+
+    deinit {
+        scanTask?.cancel()
+    }
+
+    /// 窗口重建/退出前调用：停掉在跑的扫描
+    func stop() {
+        scanTask?.cancel()
+        scanTask = nil
+    }
 
     func refresh() {
         var info = vm_statistics64_data_t()
@@ -79,41 +197,46 @@ final class MemoryStore: ObservableObject {
             compressed: UInt64(info.compressor_page_count) * page)
     }
 
-    /// 刷新占用排行：proc_listallpids 全量遍历 + proc_pid_rusage 读 phys_footprint，
-    /// 按「最外层 .app bundle」聚合（见 MemoryGrouping）后取前 count 名；
-    /// CLI/守护进程按可执行路径聚合（多实例同样合并）。
-    /// 同 uid 进程可读、系统进程 EPERM 自动跳过；整趟毫秒级，3 秒节奏主线程可担。
+    /// 刷新占用排行。
+    ///
+    /// 病灶：整趟 proc_listallpids 全量遍历 + 每进程一次 proc_pid_rusage
+    /// 原先全跑在主线程上，还挂着 3 秒定时器。进程一多（Chrome、Xcode 开着的时候
+    /// 轻松五六百个）就是几十毫秒的卡顿，而且上一趟没跑完下一趟又来了。
+    ///
+    /// 对策：syscall 遍历、聚合、排序全部交给后台扫描器，回来的是纯数据；
+    /// 主线程只对最终上榜的 Top N 解析本地化名与图标。
     /// 取 15 名：视口定高可见 6 行，其余滚动看（大梁老师定）
     func refreshTopProcesses(count: Int = 15) {
-        let n = proc_listallpids(nil, 0)
-        guard n > 0 else { return }
-        var pids = [Int32](repeating: 0, count: Int(n) + 32)   // 留余量防两次调用间新进程
-        let filled = proc_listallpids(&pids, Int32(pids.count * MemoryLayout<Int32>.size))
-        guard filled > 0 else { return }
-        // 聚合键 → (App bundle 路径, 兜底展示名, 组内占用和)；名字图标只对最终上榜者解析
-        var groups: [String: (appPath: String?, fallbackName: String, foot: UInt64)] = [:]
-        for pid in pids.prefix(Int(filled)) where pid > 0 {
-            var info = rusage_info_current()
-            let kr = withUnsafeMutablePointer(to: &info) {
-                $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
-                    proc_pid_rusage(pid, RUSAGE_INFO_CURRENT, $0)
-                }
-            }
-            guard kr == 0, info.ri_phys_footprint > 0 else { continue }
-            let exec = Self.execPath(pid)
-            let appPath = exec.flatMap { MemoryGrouping.appBundlePath(of: $0) }
-            let fallbackName = exec.map { String($0.split(separator: "/").last ?? "") }
-                ?? Self.bsdName(pid)
-            let key = appPath ?? exec ?? "name:\(fallbackName)"
-            groups[key, default: (appPath: appPath, fallbackName: fallbackName, foot: 0)]
-                .foot += info.ri_phys_footprint
+        // 已有一趟在跑就跳过：定时器比扫描快时，叠上去只会越积越多
+        guard scanTask == nil else { return }
+        scanGeneration &+= 1
+        let generation = scanGeneration
+        let scanner = self.scanner
+        scanTask = Task { [weak self] in
+            let samples = await scanner.scan()
+            guard !Task.isCancelled, let self else { return }
+            self.scanTask = nil
+            self.apply(samples, count: count, generation: generation)
         }
-        topProcesses = groups.sorted { $0.value.foot > $1.value.foot }.prefix(count).map { key, g in
-            guard let app = g.appPath else {
-                return ProcessMemory(id: key, name: g.fallbackName, footprint: g.foot, icon: nil)
+    }
+
+    /// 把后台结果落到 UI。名字和图标在这里才解析——AppKit 的这两件事只能在主线程做
+    func apply(_ samples: [ProcessMemorySample], count: Int, generation: UInt64) {
+        // 迟到的旧结果直接丢：被 stop() 取消的那趟可能已越过 await，仍会走到这里
+        guard generation >= scanGeneration else { return }
+        topProcesses = samples.prefix(count).map { sample in
+            guard let app = sample.appPath else {
+                return ProcessMemory(id: sample.key, name: sample.fallbackName,
+                                     footprint: sample.footprint, icon: nil)
             }
-            return ProcessMemory(id: key, name: appName(app), footprint: g.foot, icon: appIcon(app))
+            return ProcessMemory(id: sample.key, name: appName(app),
+                                 footprint: sample.footprint, icon: appIcon(app))
         }
+    }
+
+    /// 测试用等待点：等当前这趟扫描落地
+    func waitForScan() async {
+        await scanTask?.value
     }
 
     /// bundle 路径 → Finder 本地化名（微信这类中文名靠它）；结果缓存，
@@ -134,16 +257,4 @@ final class MemoryStore: ObservableObject {
         return icon
     }
 
-    private static func execPath(_ pid: Int32) -> String? {
-        var buf = [CChar](repeating: 0, count: 4096)
-        guard proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 else { return nil }
-        return String(cString: buf)
-    }
-
-    private static func bsdName(_ pid: Int32) -> String {
-        var buf = [CChar](repeating: 0, count: 256)
-        proc_name(pid, &buf, UInt32(buf.count))
-        let name = String(cString: buf)
-        return name.isEmpty ? "pid \(pid)" : name
-    }
 }
