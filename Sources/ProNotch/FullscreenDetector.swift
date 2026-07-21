@@ -16,14 +16,25 @@ enum FullscreenDetector {
             [.optionOnScreenOnly, .excludeDesktopElements],
             kCGNullWindowID) as? [[String: Any]] else { return false }
         var excluded: Set<Int> = [Int(ProcessInfo.processInfo.processIdentifier)]
-        // 排除程序坞：它在每块屏上都挂一个与整屏等大的背景窗（layer 20）。放宽层级判据后
-        // 这东西会被当成全屏应用，副屏刘海就此永久隐藏——用户看到的是「副屏根本没有刘海」，
-        // 极难联想到是全屏检测误判。按 bundle id 认，不认本地化的 owner 名
-        for app in NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock") {
-            excluded.insert(Int(app.processIdentifier))
+        for bundleID in Self.systemOverlayBundleIDs {
+            for app in NSRunningApplication.runningApplications(withBundleIdentifier: bundleID) {
+                excluded.insert(Int(app.processIdentifier))
+            }
         }
         return hasFullscreen(in: windows, target: target, excludingPIDs: excluded)
     }
+
+    /// 系统 UI 的整屏覆盖窗：与整屏严丝合缝，却都不是「全屏应用」。放宽层级判据后
+    /// 漏排任何一个，刘海都会无故隐藏。按 bundle id 认，不认本地化的 owner 名。
+    /// 名单只收实测抓到过的，发现新的再加：
+    /// - 程序坞（layer 20）：每块屏常驻一个整屏背景窗。漏排 → 副屏刘海永久隐藏，
+    ///   用户看到的是「副屏根本没有刘海」，极难联想到是全屏检测误判
+    /// - 通知中心（layer 21，alpha 1.0）：弹通知时整屏铺开，实测持续约 4 秒后自行消失。
+    ///   漏排 → 「正打着字刘海突然没了、过几秒又自己回来」，且只在恰好来通知时复现
+    private static let systemOverlayBundleIDs = [
+        "com.apple.dock",
+        "com.apple.notificationcenterui",
+    ]
 
     /// 纯判定（可单测）：窗口列表里是否存在铺满 target 屏、且不属于排除进程的可见窗口。
     /// 放宽层级——不再只认普通窗口层(layer 0)：Keynote 放映幕布挂在抬升层(layer>0)，

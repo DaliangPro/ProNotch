@@ -10,6 +10,7 @@ final class FullscreenDetectorTests: XCTestCase {
     private let screen = CGRect(x: 0, y: 0, width: 1512, height: 982)
     private let selfPID = 4321   // 假定「自家」进程号
     private let dockPID = 1234   // 程序坞：每屏一个整屏背景窗，同样要排除
+    private let notifPID = 5678  // 通知中心：弹通知时整屏铺开，同样要排除
     private let otherPID = 9999  // 别家进程
 
     private func win(pid: Int, layer: Int, alpha: Double, bounds: CGRect) -> [String: Any] {
@@ -23,7 +24,7 @@ final class FullscreenDetectorTests: XCTestCase {
 
     private func detect(_ windows: [[String: Any]]) -> Bool {
         FullscreenDetector.hasFullscreen(in: windows, target: screen,
-                                         excludingPIDs: [selfPID, dockPID])
+                                         excludingPIDs: [selfPID, dockPID, notifPID])
     }
 
     func test别家普通层整屏窗算全屏() {
@@ -44,6 +45,22 @@ final class FullscreenDetectorTests: XCTestCase {
         // 实测：副屏上程序坞挂着一个与整屏严丝合缝的窗（layer 20），不排除就会让副屏刘海
         // 永久隐藏——现象是「副屏根本没有刘海」，看不出与全屏检测有关
         XCTAssertFalse(detect([win(pid: dockPID, layer: 20, alpha: 1, bounds: screen)]))
+    }
+
+    func test通知中心整屏宿主窗被排除() {
+        // 实测（2026-07-20）：来一条通知时，通知中心在主屏铺开 layer 21 / alpha 1.0 的
+        // 整屏窗，约 4 秒后消失。不排除就会被当成全屏应用 → 刘海隐藏、通知过去又自己回来，
+        // 现象是「正打着字刘海突然没了」，且只在恰好来通知时复现，极难抓
+        XCTAssertFalse(detect([win(pid: notifPID, layer: 21, alpha: 1, bounds: screen)]))
+    }
+
+    /// 反向断言：证明上面那条排除是必需的——同一个窗不排除时确实会被判成全屏。
+    /// 若判据将来收窄到认不出它，这条会失败，提醒排除名单可以相应精简
+    func test通知中心不排除时确实会被误判() {
+        let notifWindow = win(pid: notifPID, layer: 21, alpha: 1, bounds: screen)
+        XCTAssertTrue(FullscreenDetector.hasFullscreen(in: [notifWindow], target: screen,
+                                                       excludingPIDs: [selfPID, dockPID]),
+                      "通知中心的整屏窗本就命中判据，所以必须显式排除")
     }
 
     func test非整屏窗不算全屏() {
