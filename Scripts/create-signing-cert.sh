@@ -35,9 +35,22 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
 openssl pkcs12 -export -inkey "$TMP/key.pem" -in "$TMP/cert.pem" \
     -out "$TMP/cert.p12" -passout pass: -name "$CERT_NAME" >/dev/null 2>&1
 
-# -A 允许本机各工具使用该私钥，减少后续签名弹框
-security import "$TMP/cert.p12" -k "$KEYCHAIN" -P "" -T /usr/bin/codesign -A
+# 只授权 codesign 使用该私钥。
+# 原先带 -A：那是「本机任意程序都能拿这把私钥签名」——任何跑在你账号下的进程
+# （包括随手装的一个脚本、一个 npm 包）都能签出一个「ProNotch Local Signing」的 App。
+# 而这个签名身份正是 macOS 记忆隐私授权的依据：伪造它，就能继承 ProNotch 已获得的
+# 录屏、辅助功能等授权。省下的那点弹框远不值这个代价。
+security import "$TMP/cert.p12" -k "$KEYCHAIN" -P "" -T /usr/bin/codesign
+
+# 分区列表限定在签名链路必需的几项，替代 -A 来免除重复弹框。
+# 这一步会弹一次钥匙串密码框：密码交给系统对话框，不进脚本、不进 shell 历史
+if ! security set-key-partition-list -S apple-tool:,apple:,codesign: \
+        -s -l "$CERT_NAME" "$KEYCHAIN" >/dev/null 2>&1; then
+    echo "⚠️  私钥分区列表未能自动设置（多半是取消了密码框）。"
+    echo "   不影响签名，只是首次签名时会多弹一次「codesign 想使用私钥」，点【始终允许】即可。"
+fi
 
 echo "✅ 已创建固定自签名代码签名证书：$CERT_NAME"
+echo "   私钥仅授权给 /usr/bin/codesign，不对本机其它程序开放。"
 echo "   首次用它签名时若弹「codesign 想使用钥匙串中的私钥」，点【始终允许】即可（仅一次）。"
 security find-identity -p codesigning -v | grep "$CERT_NAME" || true
