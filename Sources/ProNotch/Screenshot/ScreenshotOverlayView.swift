@@ -2785,7 +2785,10 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         let aiReady = !config.baseURL.isEmpty && !config.apiKey.isEmpty && !config.model.isEmpty
         let useSystem = config.useSystemEngine && SystemTranslator.isSupported
         guard useSystem || aiReady else {
-            showHint("翻译接口未配置（去设置→超级截图→翻译）")
+            // 配好了只差 Key 回填，和压根没配是两回事——后者要去设置，前者等一下重试即可
+            showHint(config.keyPending
+                     ? "翻译接口尚未就绪（Key 正在载入，请稍候重试）"
+                     : "翻译接口未配置（去设置→超级截图→翻译）")
             DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
                 self?.removeHint(); if let s = self?.selection { self?.showToolbar(for: s) }
             }

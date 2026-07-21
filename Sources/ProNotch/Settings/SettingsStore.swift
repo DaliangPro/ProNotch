@@ -191,14 +191,20 @@ final class SettingsStore: ObservableObject {
     func translateAPIKey() -> String { KeychainStore.read("translateAPIKey") ?? "" }
     func setTranslateAPIKey(_ v: String) { _ = KeychainStore.save(v, account: "translateAPIKey") }
 
-    /// 翻译实际用的接口配置：复用闪问 或 翻译自填
-    var resolvedTranslateConfig: (baseURL: String, apiKey: String, model: String) {
+    /// 翻译实际用的接口配置：复用闪问 或 翻译自填。
+    ///
+    /// 复用闪问时必须走 `ActiveProviderSnapshot`——闪问是多套配置，
+    /// 直接读 `chatBaseURL` + 固定账号 `chatAPIKey` 会拿到"上次保存的端点 + 第一套的 Key"，
+    /// 用户切过套之后这两者根本不是同一套
+    var resolvedTranslateConfig: (baseURL: String, apiKey: String, model: String, keyPending: Bool) {
         if translateUseChatAPI {
-            return (UserDefaults.standard.string(forKey: PrefKey.chatBaseURL) ?? "",
-                    KeychainStore.read("chatAPIKey") ?? "",
-                    UserDefaults.standard.string(forKey: PrefKey.chatModel) ?? "")
+            let snapshot = ActiveProviderSnapshot.load(from: .production)
+            return (snapshot.baseURL, snapshot.apiKey, snapshot.model,
+                    snapshot.readiness == .keyPending)
         }
-        return (translateBaseURL, KeychainStore.read("translateAPIKey") ?? "", translateModel)
+        let key = KeychainStore.read("translateAPIKey") ?? ""
+        let pending = key.isEmpty && !translateBaseURL.isEmpty && !translateModel.isEmpty
+        return (translateBaseURL, key, translateModel, pending)
     }
 
     static let translateLangs = ["中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский"]

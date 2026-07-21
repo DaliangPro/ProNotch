@@ -6,6 +6,8 @@ enum ScreenshotTranslator {
         var baseURL: String; var apiKey: String; var model: String
         var parallel: Bool = true
         var useSystemEngine: Bool = false   // true=优先系统翻译（失败降级到本 AI 配置）
+        /// 端点和模型都配好了、只差 Key 还没落钥匙串。用来区分"没配"和"还没就绪"两种提示
+        var keyPending: Bool = false
     }
 
     /// 分块并行翻译：按字数把条目切成连续块并发请求（上限 5 路）——模型逐 token 串行生成，

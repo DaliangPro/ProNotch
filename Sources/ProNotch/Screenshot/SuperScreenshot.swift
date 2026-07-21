@@ -40,7 +40,8 @@ final class SuperScreenshotController {
             let c = s.resolvedTranslateConfig
             return (.init(baseURL: c.baseURL, apiKey: c.apiKey, model: c.model,
                           parallel: s.translateParallel,
-                          useSystemEngine: s.translateEngine == "system"),
+                          useSystemEngine: s.translateEngine == "system",
+                          keyPending: c.keyPending),
                     s.translateTargetLang, s.translatePrompt)
         }
         let win = ScreenshotOverlayWindow(image: image, screen: screen, translateProvider: provider) { [weak self] in
