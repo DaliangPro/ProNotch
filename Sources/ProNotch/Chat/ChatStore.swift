@@ -129,8 +129,8 @@ final class ChatStore: ObservableObject {
     init() {
         let defaults = UserDefaults.standard
         Self.migrateKeysToKeychainIfNeeded()
-        let savedURL = defaults.string(forKey: "chatBaseURL") ?? ""
-        let savedModel = defaults.string(forKey: "chatModel") ?? ""
+        let savedURL = defaults.string(forKey: PrefKey.chatBaseURL) ?? ""
+        let savedModel = defaults.string(forKey: PrefKey.chatModel) ?? ""
         baseURL = savedURL
         model = savedModel
         draftBaseURL = savedURL
@@ -421,8 +421,8 @@ final class ChatStore: ObservableObject {
         draftTavilyKey = tavilyKey
         draftBraveKey = braveKey
         let defaults = UserDefaults.standard
-        defaults.set(baseURL, forKey: "chatBaseURL")
-        defaults.set(model, forKey: "chatModel")
+        defaults.set(baseURL, forKey: PrefKey.chatBaseURL)
+        defaults.set(model, forKey: PrefKey.chatModel)
         defaults.set(searchEngine, forKey: "chatSearchEngine")
         // 写回当前套配置存档（名称、URL、模型、模型列表），Key 存这套自己的钥匙串账号
         let account = currentKeychainAccount
@@ -523,7 +523,7 @@ final class ChatStore: ObservableObject {
         guard !trimmed.isEmpty, trimmed != model else { return }
         model = trimmed
         draftModel = trimmed
-        UserDefaults.standard.set(trimmed, forKey: "chatModel")
+        UserDefaults.standard.set(trimmed, forKey: PrefKey.chatModel)
         syncCurrentProviderModels()
         print("[ProNotch] 已切换模型: \(trimmed)")
     }

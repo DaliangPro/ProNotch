@@ -23,7 +23,7 @@ final class ClipboardStore: ObservableObject {
 
     /// 保留条数上限（设置项 clipboardLimit，默认 200）
     private var maxItems: Int {
-        let value = UserDefaults.standard.integer(forKey: "clipboardLimit")
+        let value = UserDefaults.standard.integer(forKey: PrefKey.clipboardLimit)
         return value > 0 ? value : 200
     }
 

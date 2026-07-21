@@ -22,7 +22,7 @@ final class SettingsStore: ObservableObject {
     @Published var hideNotchInFullscreen: Bool {
         didSet {
             UserDefaults.standard.set(hideNotchInFullscreen,
-                                      forKey: "hideNotchInFullscreen")
+                                      forKey: PrefKey.hideNotchInFullscreen)
             // 通知刘海窗口立即按新设置重判一次
             NotificationCenter.default.post(
                 name: .proNotchFullscreenSettingChanged, object: nil)
@@ -32,7 +32,7 @@ final class SettingsStore: ObservableObject {
     /// 刘海显示在哪些屏幕（默认全部屏幕）
     @Published var notchScreenMode: NotchScreenMode {
         didSet {
-            UserDefaults.standard.set(notchScreenMode.rawValue, forKey: "notchScreenMode")
+            UserDefaults.standard.set(notchScreenMode.rawValue, forKey: PrefKey.notchScreenMode)
             // 通知 AppDelegate 按新设置重建刘海窗口
             NotificationCenter.default.post(
                 name: .proNotchScreenModeChanged, object: nil)
@@ -47,14 +47,14 @@ final class SettingsStore: ObservableObject {
     /// 左/右功能区内容（none 关闭该侧）；变更即持久化并通知刘海窗口调整收起态宽度
     @Published var leftSlot: NotchSlot {
         didSet {
-            UserDefaults.standard.set(leftSlot.rawValue, forKey: "notchLeftSlot")
+            UserDefaults.standard.set(leftSlot.rawValue, forKey: PrefKey.notchLeftSlot)
             NotificationCenter.default.post(
                 name: .proNotchSlotSettingsChanged, object: nil)
         }
     }
     @Published var rightSlot: NotchSlot {
         didSet {
-            UserDefaults.standard.set(rightSlot.rawValue, forKey: "notchRightSlot")
+            UserDefaults.standard.set(rightSlot.rawValue, forKey: PrefKey.notchRightSlot)
             NotificationCenter.default.post(
                 name: .proNotchSlotSettingsChanged, object: nil)
         }
@@ -89,7 +89,7 @@ final class SettingsStore: ObservableObject {
     /// 关 = 组件页不渲染内存卡、停其定时刷新（真停机）
     @Published var memoryWidgetEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(memoryWidgetEnabled, forKey: "memoryWidgetEnabled")
+            UserDefaults.standard.set(memoryWidgetEnabled, forKey: PrefKey.memoryWidgetEnabled)
             NotificationCenter.default.post(
                 name: .proNotchWidgetVisibilityChanged, object: nil)
         }
@@ -98,7 +98,7 @@ final class SettingsStore: ObservableObject {
     /// 收起态槽位各自独立
     @Published var weatherWidgetEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(weatherWidgetEnabled, forKey: "weatherWidgetEnabled")
+            UserDefaults.standard.set(weatherWidgetEnabled, forKey: PrefKey.weatherWidgetEnabled)
             NotificationCenter.default.post(
                 name: .proNotchWidgetVisibilityChanged, object: nil)
         }
@@ -107,8 +107,8 @@ final class SettingsStore: ObservableObject {
     /// 无存值兜底 true——新键未注册时保守显示，不让首帧误判成隐藏
     nonisolated static func anyWidgetVisible() -> Bool {
         let d = UserDefaults.standard
-        let mem = d.object(forKey: "memoryWidgetEnabled") as? Bool ?? true
-        let wea = d.object(forKey: "weatherWidgetEnabled") as? Bool ?? true
+        let mem = d.object(forKey: PrefKey.memoryWidgetEnabled) as? Bool ?? true
+        let wea = d.object(forKey: PrefKey.weatherWidgetEnabled) as? Bool ?? true
         return mem || wea
     }
 
@@ -116,7 +116,7 @@ final class SettingsStore: ObservableObject {
     /// 清历史是独立按钮的职责——误关开关不丢数据（大梁老师定）
     @Published var clipboardEnabled: Bool {
         didSet {
-            UserDefaults.standard.set(clipboardEnabled, forKey: "clipboardEnabled")
+            UserDefaults.standard.set(clipboardEnabled, forKey: PrefKey.clipboardEnabled)
             NotificationCenter.default.post(
                 name: .proNotchClipboardEnabledChanged, object: nil)
         }
@@ -125,7 +125,7 @@ final class SettingsStore: ObservableObject {
     /// 剪贴板历史保留条数
     @Published var clipboardLimit: Int {
         didSet {
-            UserDefaults.standard.set(clipboardLimit, forKey: "clipboardLimit")
+            UserDefaults.standard.set(clipboardLimit, forKey: PrefKey.clipboardLimit)
             // 通知剪贴板数据源立即按新上限裁剪
             NotificationCenter.default.post(
                 name: .proNotchClipboardLimitChanged, object: nil)
@@ -138,9 +138,9 @@ final class SettingsStore: ObservableObject {
     @Published var screenshotShortcut: ScreenshotShortcut? {
         didSet {
             if let s = screenshotShortcut, let data = try? JSONEncoder().encode(s) {
-                UserDefaults.standard.set(data, forKey: "screenshotShortcut")
+                UserDefaults.standard.set(data, forKey: PrefKey.screenshotShortcut)
             } else {
-                UserDefaults.standard.removeObject(forKey: "screenshotShortcut")
+                UserDefaults.standard.removeObject(forKey: PrefKey.screenshotShortcut)
             }
             NotificationCenter.default.post(
                 name: .proNotchScreenshotShortcutChanged, object: nil)
@@ -151,9 +151,9 @@ final class SettingsStore: ObservableObject {
     @Published var clipboardShortcut: ScreenshotShortcut? {
         didSet {
             if let s = clipboardShortcut, let data = try? JSONEncoder().encode(s) {
-                UserDefaults.standard.set(data, forKey: "clipboardShortcut")
+                UserDefaults.standard.set(data, forKey: PrefKey.clipboardShortcut)
             } else {
-                UserDefaults.standard.removeObject(forKey: "clipboardShortcut")
+                UserDefaults.standard.removeObject(forKey: PrefKey.clipboardShortcut)
             }
             NotificationCenter.default.post(
                 name: .proNotchClipboardShortcutChanged, object: nil)
@@ -164,9 +164,9 @@ final class SettingsStore: ObservableObject {
     @Published var chatShortcut: ScreenshotShortcut? {
         didSet {
             if let s = chatShortcut, let data = try? JSONEncoder().encode(s) {
-                UserDefaults.standard.set(data, forKey: "chatShortcut")
+                UserDefaults.standard.set(data, forKey: PrefKey.chatShortcut)
             } else {
-                UserDefaults.standard.removeObject(forKey: "chatShortcut")
+                UserDefaults.standard.removeObject(forKey: PrefKey.chatShortcut)
             }
             NotificationCenter.default.post(
                 name: .proNotchChatShortcutChanged, object: nil)
@@ -174,16 +174,16 @@ final class SettingsStore: ObservableObject {
     }
 
     // MARK: - 翻译（超级截图原位翻译）
-    @Published var translateTargetLang: String { didSet { UserDefaults.standard.set(translateTargetLang, forKey: "translateTargetLang") } }
-    @Published var translateUseChatAPI: Bool { didSet { UserDefaults.standard.set(translateUseChatAPI, forKey: "translateUseChatAPI") } }
-    @Published var translateBaseURL: String { didSet { UserDefaults.standard.set(translateBaseURL, forKey: "translateBaseURL") } }
-    @Published var translateModel: String { didSet { UserDefaults.standard.set(translateModel, forKey: "translateModel") } }
+    @Published var translateTargetLang: String { didSet { UserDefaults.standard.set(translateTargetLang, forKey: PrefKey.translateTargetLang) } }
+    @Published var translateUseChatAPI: Bool { didSet { UserDefaults.standard.set(translateUseChatAPI, forKey: PrefKey.translateUseChatAPI) } }
+    @Published var translateBaseURL: String { didSet { UserDefaults.standard.set(translateBaseURL, forKey: PrefKey.translateBaseURL) } }
+    @Published var translateModel: String { didSet { UserDefaults.standard.set(translateModel, forKey: PrefKey.translateModel) } }
     /// 并行加速：长文按块并发翻译（默认开）；接口对并发限流严格时可关掉走单请求
-    @Published var translateParallel: Bool { didSet { UserDefaults.standard.set(translateParallel, forKey: "translateParallel") } }
+    @Published var translateParallel: Bool { didSet { UserDefaults.standard.set(translateParallel, forKey: PrefKey.translateParallel) } }
     /// 翻译引擎：system=系统翻译（macOS 15+，本机离线毫秒级）；ai=自填 AI 接口。系统引擎失败自动降级 AI
-    @Published var translateEngine: String { didSet { UserDefaults.standard.set(translateEngine, forKey: "translateEngine") } }
+    @Published var translateEngine: String { didSet { UserDefaults.standard.set(translateEngine, forKey: PrefKey.translateEngine) } }
     /// 翻译提示词（可编辑）；其中 {lang} 翻译时替换为目标语言
-    @Published var translatePrompt: String { didSet { UserDefaults.standard.set(translatePrompt, forKey: "translatePrompt") } }
+    @Published var translatePrompt: String { didSet { UserDefaults.standard.set(translatePrompt, forKey: PrefKey.translatePrompt) } }
 
     nonisolated static let defaultTranslatePrompt = "You are a professional translation engine. Translate EVERY string in the input JSON array into {lang}, including single words, labels and UI text. If a string is already in {lang} keep it; otherwise you MUST translate it — never leave non-{lang} text untranslated. Keep as-is: product or brand names (e.g. deepseek, GitHub), code identifiers and function names (e.g. runTranslate, NaturalLanguage), all-letter acronyms (e.g. AI, API, OCR), code values with digits (e.g. status=200, v1.6.0), URLs, file paths and numbers. Return ONLY a JSON array of translated strings, same length and order, no explanations, no code fences."
 
@@ -194,9 +194,9 @@ final class SettingsStore: ObservableObject {
     /// 翻译实际用的接口配置：复用闪问 或 翻译自填
     var resolvedTranslateConfig: (baseURL: String, apiKey: String, model: String) {
         if translateUseChatAPI {
-            return (UserDefaults.standard.string(forKey: "chatBaseURL") ?? "",
+            return (UserDefaults.standard.string(forKey: PrefKey.chatBaseURL) ?? "",
                     KeychainStore.read("chatAPIKey") ?? "",
-                    UserDefaults.standard.string(forKey: "chatModel") ?? "")
+                    UserDefaults.standard.string(forKey: PrefKey.chatModel) ?? "")
         }
         return (translateBaseURL, KeychainStore.read("translateAPIKey") ?? "", translateModel)
     }
@@ -233,7 +233,7 @@ final class SettingsStore: ObservableObject {
     /// 关 = status item 隐藏 + 60 秒定时刷新停（真停机）
     @Published var showUsageInMenuBar: Bool {
         didSet {
-            UserDefaults.standard.set(showUsageInMenuBar, forKey: "showUsageInMenuBar")
+            UserDefaults.standard.set(showUsageInMenuBar, forKey: PrefKey.showUsageInMenuBar)
             NotificationCenter.default.post(
                 name: .proNotchUsageMenuBarChanged, object: nil)
         }
@@ -243,7 +243,7 @@ final class SettingsStore: ObservableObject {
     @Published var menuBarAgents: Set<AgentKind> {
         didSet {
             UserDefaults.standard.set(menuBarAgents.map(\.rawValue).sorted(),
-                                      forKey: "menuBarAgents")
+                                      forKey: PrefKey.menuBarAgents)
             NotificationCenter.default.post(
                 name: .proNotchMenuBarAgentsChanged, object: nil)
         }
@@ -252,7 +252,7 @@ final class SettingsStore: ObservableObject {
     // MARK: - 光晕提醒
     @Published var glowEnabled: Bool {
         didSet {
-            persistGlow(glowEnabled, "glowEnabled")
+            persistGlow(glowEnabled, PrefKey.glowEnabled)
             // 总开关：打开默认接入全部支持完成钩子的家、关闭全部移除（具体勾选谁再由勾选框微调）。
             // 放 didSet 而非 binding set，避开「set 里改被绑值」的 re-entrancy。
             // 同值赋值不动钩子：否则「取消勾选一家但还剩别家」时会把刚移除的钩子装回去
@@ -263,10 +263,10 @@ final class SettingsStore: ObservableObject {
             }
         }
     }
-    @Published var glowClaudeColorHex: String { didSet { persistGlow(glowClaudeColorHex, "glowClaudeColorHex") } }
-    @Published var glowCodexColorHex: String { didSet { persistGlow(glowCodexColorHex, "glowCodexColorHex") } }
-    @Published var glowKimiColorHex: String { didSet { persistGlow(glowKimiColorHex, "glowKimiColorHex") } }
-    @Published var glowGrokColorHex: String { didSet { persistGlow(glowGrokColorHex, "glowGrokColorHex") } }
+    @Published var glowClaudeColorHex: String { didSet { persistGlow(glowClaudeColorHex, PrefKey.glowClaudeColorHex) } }
+    @Published var glowCodexColorHex: String { didSet { persistGlow(glowCodexColorHex, PrefKey.glowCodexColorHex) } }
+    @Published var glowKimiColorHex: String { didSet { persistGlow(glowKimiColorHex, PrefKey.glowKimiColorHex) } }
+    @Published var glowGrokColorHex: String { didSet { persistGlow(glowGrokColorHex, PrefKey.glowGrokColorHex) } }
 
     /// 光晕色按家取（GlowController 点亮时用）
     func glowColorHex(for kind: AgentKind) -> String {
@@ -288,9 +288,9 @@ final class SettingsStore: ObservableObject {
         default: break
         }
     }
-    @Published var glowBreathPeriod: Double { didSet { persistGlow(glowBreathPeriod, "glowBreathPeriod") } }
-    @Published var glowIntensity: Double { didSet { persistGlow(glowIntensity, "glowIntensity") } }
-    @Published var glowThickness: Double { didSet { persistGlow(glowThickness, "glowThickness") } }
+    @Published var glowBreathPeriod: Double { didSet { persistGlow(glowBreathPeriod, PrefKey.glowBreathPeriod) } }
+    @Published var glowIntensity: Double { didSet { persistGlow(glowIntensity, PrefKey.glowIntensity) } }
+    @Published var glowThickness: Double { didSet { persistGlow(glowThickness, PrefKey.glowThickness) } }
 
     /// 光晕设置统一写入 UserDefaults，并通知 GlowController 即时刷新外观
     private func persistGlow(_ value: Any, _ key: String) {
@@ -301,57 +301,41 @@ final class SettingsStore: ObservableObject {
 
     init() {
         launchAtLogin = Self.serviceStatus == .enabled
-        UserDefaults.standard.register(defaults: [
-            "hideNotchInFullscreen": true,
-            "memoryWidgetEnabled": true,
-            "weatherWidgetEnabled": true,
-            "clipboardEnabled": true,
-            "clipboardLimit": 200,
-            "glowEnabled": true,
-            "glowClaudeColorHex": "#FF8A00",
-            "glowCodexColorHex": "#0A84FF",
-            "glowKimiColorHex": "#2ED3B7",
-            "glowGrokColorHex": "#FFFFFF",
-            "glowBreathPeriod": 3.2,
-            "glowIntensity": 0.9,
-            "glowThickness": 90.0,
-            "translateTargetLang": "中文",
-            "translateUseChatAPI": true,
-        ])
-        hideNotchInFullscreen = UserDefaults.standard.bool(forKey: "hideNotchInFullscreen")
-        notchScreenMode = UserDefaults.standard.string(forKey: "notchScreenMode")
+        PrefDefault.register()   // 易失域默认值，每次启动必须重注册（见 PreferenceKeys.swift）
+        hideNotchInFullscreen = UserDefaults.standard.bool(forKey: PrefKey.hideNotchInFullscreen)
+        notchScreenMode = UserDefaults.standard.string(forKey: PrefKey.notchScreenMode)
             .flatMap(NotchScreenMode.init(rawValue:)) ?? .all
         weatherAlertsEnabled = UserDefaults.standard.object(forKey: WeatherAlertType.masterKey) as? Bool ?? true
         // 类型多选：有存值用存值（空数组 = 用户主动全清，尊重）；无存值默认全选
         weatherAlertTypes = UserDefaults.standard.stringArray(forKey: WeatherAlertType.typesKey)
             .map { Set($0.compactMap(WeatherAlertType.init(rawValue:))) }
             ?? Set(WeatherAlertType.allCases)
-        memoryWidgetEnabled = UserDefaults.standard.bool(forKey: "memoryWidgetEnabled")
-        weatherWidgetEnabled = UserDefaults.standard.bool(forKey: "weatherWidgetEnabled")
-        clipboardEnabled = UserDefaults.standard.bool(forKey: "clipboardEnabled")
-        clipboardLimit = UserDefaults.standard.integer(forKey: "clipboardLimit")
+        memoryWidgetEnabled = UserDefaults.standard.bool(forKey: PrefKey.memoryWidgetEnabled)
+        weatherWidgetEnabled = UserDefaults.standard.bool(forKey: PrefKey.weatherWidgetEnabled)
+        clipboardEnabled = UserDefaults.standard.bool(forKey: PrefKey.clipboardEnabled)
+        clipboardLimit = UserDefaults.standard.integer(forKey: PrefKey.clipboardLimit)
         // 菜单栏额度：沿用旧键（老用户开关状态原样保留，默认关）；家勾选无存值默认全家
-        showUsageInMenuBar = UserDefaults.standard.bool(forKey: "showUsageInMenuBar")
-        menuBarAgents = UserDefaults.standard.stringArray(forKey: "menuBarAgents")
+        showUsageInMenuBar = UserDefaults.standard.bool(forKey: PrefKey.showUsageInMenuBar)
+        menuBarAgents = UserDefaults.standard.stringArray(forKey: PrefKey.menuBarAgents)
             .map { Set($0.compactMap(AgentKind.init(rawValue:))) } ?? Set(AgentKind.allCases)
-        leftSlot = NotchSlot(rawValue: UserDefaults.standard.string(forKey: "notchLeftSlot") ?? "") ?? .memory
-        rightSlot = NotchSlot(rawValue: UserDefaults.standard.string(forKey: "notchRightSlot") ?? "") ?? .weather
-        glowEnabled = UserDefaults.standard.bool(forKey: "glowEnabled")
-        glowClaudeColorHex = UserDefaults.standard.string(forKey: "glowClaudeColorHex") ?? "#FF8A00"
-        glowCodexColorHex = UserDefaults.standard.string(forKey: "glowCodexColorHex") ?? "#0A84FF"
-        glowKimiColorHex = UserDefaults.standard.string(forKey: "glowKimiColorHex") ?? "#2ED3B7"
-        glowGrokColorHex = UserDefaults.standard.string(forKey: "glowGrokColorHex") ?? "#FFFFFF"
-        glowBreathPeriod = UserDefaults.standard.double(forKey: "glowBreathPeriod")
-        glowIntensity = UserDefaults.standard.double(forKey: "glowIntensity")
-        glowThickness = UserDefaults.standard.double(forKey: "glowThickness")
-        translateTargetLang = UserDefaults.standard.string(forKey: "translateTargetLang") ?? "中文"
-        translateUseChatAPI = UserDefaults.standard.bool(forKey: "translateUseChatAPI")
-        translateBaseURL = UserDefaults.standard.string(forKey: "translateBaseURL") ?? ""
-        translateModel = UserDefaults.standard.string(forKey: "translateModel") ?? ""
-        translateParallel = UserDefaults.standard.object(forKey: "translateParallel") as? Bool ?? true
-        translateEngine = UserDefaults.standard.string(forKey: "translateEngine")
+        leftSlot = NotchSlot(rawValue: UserDefaults.standard.string(forKey: PrefKey.notchLeftSlot) ?? "") ?? .memory
+        rightSlot = NotchSlot(rawValue: UserDefaults.standard.string(forKey: PrefKey.notchRightSlot) ?? "") ?? .weather
+        glowEnabled = UserDefaults.standard.bool(forKey: PrefKey.glowEnabled)
+        glowClaudeColorHex = UserDefaults.standard.string(forKey: PrefKey.glowClaudeColorHex) ?? PrefDefault.glowClaudeColor
+        glowCodexColorHex = UserDefaults.standard.string(forKey: PrefKey.glowCodexColorHex) ?? PrefDefault.glowCodexColor
+        glowKimiColorHex = UserDefaults.standard.string(forKey: PrefKey.glowKimiColorHex) ?? PrefDefault.glowKimiColor
+        glowGrokColorHex = UserDefaults.standard.string(forKey: PrefKey.glowGrokColorHex) ?? PrefDefault.glowGrokColor
+        glowBreathPeriod = UserDefaults.standard.double(forKey: PrefKey.glowBreathPeriod)
+        glowIntensity = UserDefaults.standard.double(forKey: PrefKey.glowIntensity)
+        glowThickness = UserDefaults.standard.double(forKey: PrefKey.glowThickness)
+        translateTargetLang = UserDefaults.standard.string(forKey: PrefKey.translateTargetLang) ?? PrefDefault.translateTargetLang
+        translateUseChatAPI = UserDefaults.standard.bool(forKey: PrefKey.translateUseChatAPI)
+        translateBaseURL = UserDefaults.standard.string(forKey: PrefKey.translateBaseURL) ?? ""
+        translateModel = UserDefaults.standard.string(forKey: PrefKey.translateModel) ?? ""
+        translateParallel = UserDefaults.standard.object(forKey: PrefKey.translateParallel) as? Bool ?? true
+        translateEngine = UserDefaults.standard.string(forKey: PrefKey.translateEngine)
             ?? (SystemTranslator.isSupported ? "system" : "ai")
-        translatePrompt = UserDefaults.standard.string(forKey: "translatePrompt") ?? Self.defaultTranslatePrompt
+        translatePrompt = UserDefaults.standard.string(forKey: PrefKey.translatePrompt) ?? Self.defaultTranslatePrompt
         // Agent 勾选：有存值用存值；首启/升级则本机检测一次，检测到的默认全勾
         // （升级无感，大梁老师定）——目录 stat 检查毫秒级，不会拖慢启动
         let detected = Set(AgentProbe.detect().filter(\.installed).map(\.kind))
@@ -375,28 +359,28 @@ final class SettingsStore: ObservableObject {
             UserDefaults.standard.set(AgentKind.allCases.map(\.rawValue).sorted(),
                                       forKey: AgentKind.knownKey)
         }
-        if let data = UserDefaults.standard.data(forKey: "screenshotShortcut") {
+        if let data = UserDefaults.standard.data(forKey: PrefKey.screenshotShortcut) {
             screenshotShortcut = try? JSONDecoder().decode(ScreenshotShortcut.self, from: data)
         } else {
             screenshotShortcut = nil
         }
-        if let data = UserDefaults.standard.data(forKey: "chatShortcut") {
+        if let data = UserDefaults.standard.data(forKey: PrefKey.chatShortcut) {
             chatShortcut = try? JSONDecoder().decode(ScreenshotShortcut.self, from: data)
         } else {
             chatShortcut = nil
         }
         // 剪贴板快捷键：有存值用存值；从未设过则给默认 ⌥⌘V 并持久化；用户清空过则尊重为 nil
-        if let data = UserDefaults.standard.data(forKey: "clipboardShortcut") {
+        if let data = UserDefaults.standard.data(forKey: PrefKey.clipboardShortcut) {
             clipboardShortcut = try? JSONDecoder().decode(ScreenshotShortcut.self, from: data)
-        } else if UserDefaults.standard.bool(forKey: "clipboardShortcutInitialized") {
+        } else if UserDefaults.standard.bool(forKey: PrefKey.clipboardShortcutInitialized) {
             clipboardShortcut = nil
         } else {
             let def = ScreenshotShortcut(keyCode: 9 /* V */,
                                          modifierFlags: NSEvent.ModifierFlags([.command, .option]).rawValue,
                                          keyLabel: "V")
             clipboardShortcut = def
-            if let d = try? JSONEncoder().encode(def) { UserDefaults.standard.set(d, forKey: "clipboardShortcut") }
-            UserDefaults.standard.set(true, forKey: "clipboardShortcutInitialized")
+            if let d = try? JSONEncoder().encode(def) { UserDefaults.standard.set(d, forKey: PrefKey.clipboardShortcut) }
+            UserDefaults.standard.set(true, forKey: PrefKey.clipboardShortcutInitialized)
         }
     }
 
