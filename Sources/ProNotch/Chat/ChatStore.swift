@@ -125,6 +125,29 @@ final class ChatStore: ObservableObject {
     /// 系统依赖边界（配置存储、钥匙串、网络、落盘路径）。生产用 `.production`，测试注入内存实现
     let env: ChatEnvironment
 
+    /// Provider 身份/配置代际：切换、新增、删除、保存设置都 +1。
+    /// 异步任务出发前记下它，回来前比一次——不一致说明用户已经改过配置，结果作废
+    private(set) var providerRevision: UInt64 = 0
+
+    /// 当前 Provider 的不可变快照（含搜索引擎与对应 Key）
+    func currentRequestConfig() -> ChatRequestConfig {
+        let engine = SearchEngine(rawValue: searchEngine) ?? .duckduckgo
+        let key: String
+        switch engine {
+        case .tavily:     key = tavilyKey
+        case .brave:      key = braveKey
+        case .duckduckgo: key = ""
+        }
+        return ChatRequestConfig(providerID: currentProviderID, baseURL: baseURL,
+                                 apiKey: apiKey, model: model,
+                                 searchEngine: engine, searchKey: key)
+    }
+
+    /// 异步结果回来时是否还该采纳：Provider 没换人、配置没改过
+    private func isStillCurrent(_ providerID: UUID, _ revision: UInt64) -> Bool {
+        providerID == currentProviderID && revision == providerRevision
+    }
+
     var isConfigured: Bool {
         !baseURL.isEmpty && !apiKey.isEmpty && !model.isEmpty
     }
@@ -233,6 +256,7 @@ final class ChatStore: ObservableObject {
     func activateProvider(_ id: UUID) {
         guard id != currentProviderID, providers.contains(where: { $0.id == id }) else { return }
         currentProviderID = id
+        providerRevision += 1
         applyCurrentProviderToFields()
         apiKey = ""
         draftAPIKey = ""
@@ -240,11 +264,13 @@ final class ChatStore: ObservableObject {
         fetchError = nil
         let account = currentKeychainAccount
         let keys = env.keychainSlice
+        let revision = providerRevision
         persistProviders()
         Task.detached(priority: .userInitiated) {
             let k = keys.read(account)
             await MainActor.run { [weak self] in
-                guard let self, self.currentProviderID == id else { return }   // 期间又切走则弃
+                // 期间又切走（或配置被改）则弃：A 的 Key 绝不能落到 B 头上
+                guard let self, self.isStillCurrent(id, revision) else { return }
                 self.apiKey = k
                 self.draftAPIKey = k
                 if self.isConfigured { self.checkConnectivity(force: true) }
@@ -264,6 +290,7 @@ final class ChatStore: ObservableObject {
         // 直接切过去（activateProvider 有「同 id 不切」保护，先落库再切）
         persistProviders()
         currentProviderID = p.id
+        providerRevision += 1
         applyCurrentProviderToFields()
         apiKey = ""
         draftAPIKey = ""
@@ -283,16 +310,20 @@ final class ChatStore: ObservableObject {
         persistProviders()
         if wasCurrent, let first = providers.first {
             currentProviderID = first.id
+            providerRevision += 1
             applyCurrentProviderToFields()
             apiKey = ""
             draftAPIKey = ""
             connectivity = .unknown
             let account = currentKeychainAccount
             let keys = env.keychainSlice
+            let newID = first.id
+            let revision = providerRevision
             Task.detached(priority: .userInitiated) {
                 let k = keys.read(account)
                 await MainActor.run { [weak self] in
-                    guard let self else { return }
+                    // 删完接着切到别套时，这份迟到的回填不能覆盖当前套
+                    guard let self, self.isStillCurrent(newID, revision) else { return }
                     self.apiKey = k
                     self.draftAPIKey = k
                     if self.isConfigured { self.checkConnectivity(force: true) }
@@ -419,6 +450,7 @@ final class ChatStore: ObservableObject {
         tavilyKey = draftTavilyKey.trimmingCharacters(in: .whitespaces)
         braveKey = draftBraveKey.trimmingCharacters(in: .whitespaces)
         searchEngine = draftSearchEngine
+        providerRevision += 1   // 端点/Key/模型都可能变，在途的异步结果一律作废
         draftBaseURL = baseURL
         draftAPIKey = apiKey
         draftModel = model
@@ -444,7 +476,7 @@ final class ChatStore: ObservableObject {
         env.saveKey(apiKey, account: account)
         env.saveKey(tavilyKey, account: "chatTavilyKey")
         env.saveKey(braveKey, account: "chatBraveKey")
-        print("[ProNotch] 已保存 AI 设置，端点: \((try? endpointURL())?.absoluteString ?? "无效")")
+        print("[ProNotch] 已保存 AI 设置，端点: \((try? currentRequestConfig().chatCompletionsURL())?.absoluteString ?? "无效")")
         checkConnectivity(force: true)
     }
 
@@ -460,14 +492,20 @@ final class ChatStore: ObservableObject {
         connectivity = .checking
         let url = baseURL
         let key = apiKey
+        let providerID = currentProviderID
+        let revision = providerRevision
+        let transport = env.transport
         Task { [weak self] in
             do {
-                let models = try await Self.fetchAvailableModels(baseURL: url, apiKey: key)
-                self?.updateAvailableModels(models)   // 探测顺带刷新列表，切换器保持新鲜
-                self?.connectivity = .ok
+                let models = try await Self.fetchAvailableModels(
+                    baseURL: url, apiKey: key, transport: transport)
+                guard let self, self.isStillCurrent(providerID, revision) else { return }
+                self.updateAvailableModels(models)   // 探测顺带刷新列表，切换器保持新鲜
+                self.connectivity = .ok
                 print("[ProNotch] API 连通检测: 正常")
             } catch {
-                self?.connectivity = .failed(error.localizedDescription)
+                guard let self, self.isStillCurrent(providerID, revision) else { return }
+                self.connectivity = .failed(error.localizedDescription)
                 print("[ProNotch] API 连通检测失败: \(error.localizedDescription)")
             }
         }
@@ -503,10 +541,15 @@ final class ChatStore: ObservableObject {
         fetchError = nil
         let url = draftBaseURL
         let key = draftAPIKey
+        let providerID = currentProviderID
+        let revision = providerRevision
+        let transport = env.transport
         Task { [weak self] in
             do {
-                let models = try await Self.fetchAvailableModels(baseURL: url, apiKey: key)
-                guard let self else { return }
+                let models = try await Self.fetchAvailableModels(
+                    baseURL: url, apiKey: key, transport: transport)
+                // 拉了半天回来时用户已经切到别套：这份列表属于上一套，写进去就是张冠李戴
+                guard let self, self.isStillCurrent(providerID, revision) else { return }
                 self.updateAvailableModels(models)
                 // 模型栏为空时自动填入第一个，少点一次
                 if self.draftModel.trimmingCharacters(in: .whitespaces).isEmpty,
@@ -515,9 +558,11 @@ final class ChatStore: ObservableObject {
                 }
                 print("[ProNotch] 获取到 \(models.count) 个模型")
             } catch {
-                self?.fetchError = error.localizedDescription
+                guard let self, self.isStillCurrent(providerID, revision) else { return }
+                self.fetchError = error.localizedDescription
             }
-            self?.fetchingModels = false
+            guard let self, self.isStillCurrent(providerID, revision) else { return }
+            self.fetchingModels = false
         }
     }
 
@@ -630,27 +675,24 @@ final class ChatStore: ObservableObject {
         streamingConvID = currentID
         persistConversations()
         isStreaming = true
+        // 快照在这生成一次：之后查询改写、搜索、流式请求都只认它。
+        // 用户中途切 Provider 不再影响这一轮——本轮从头到尾是同一套配置
+        let config = currentRequestConfig()
         streamTask = Task { [weak self] in
-            await self?.run(question: trimmed, history: history)
+            await self?.run(question: trimmed, history: history, config: config)
         }
     }
 
     /// 完整一轮：可选联网搜索（查询改写 → 搜索 → 结果注入最后一条用户消息）→ 流式请求
-    private func run(question: String, history: [[String: Any]]) async {
+    private func run(question: String, history: [[String: Any]], config: ChatRequestConfig) async {
         var payload = history
         if webSearchEnabled {
             isSearching = true
             do {
                 // 先让模型把口语化问题（含上下文指代）改写成搜索词，失败则用原话
-                let query = await rewriteQuery(history: history) ?? question
-                let engine = SearchEngine(rawValue: searchEngine) ?? .duckduckgo
-                let searchKey: String
-                switch engine {
-                case .tavily:     searchKey = tavilyKey
-                case .brave:      searchKey = braveKey
-                case .duckduckgo: searchKey = ""
-                }
-                let results = try await WebSearch.search(query: query, engine: engine, key: searchKey)
+                let query = await rewriteQuery(history: history, config: config) ?? question
+                let results = try await WebSearch.search(
+                    query: query, engine: config.searchEngine, key: config.searchKey)
                 if !results.isEmpty {
                     payload[payload.count - 1]["content"] = Self.replacingText(
                         in: payload[payload.count - 1]["content"],
@@ -677,7 +719,7 @@ final class ChatStore: ObservableObject {
                 return
             }
         }
-        await stream(payload: payload)
+        await stream(payload: payload, config: config)
     }
 
     private func cancelBeforeStream() {
@@ -730,7 +772,7 @@ final class ChatStore: ObservableObject {
     }
 
     /// 用同一个模型做非流式查询改写：把口语化问题与上下文指代还原成搜索词
-    private func rewriteQuery(history: [[String: Any]]) async -> String? {
+    private func rewriteQuery(history: [[String: Any]], config: ChatRequestConfig) async -> String? {
         var payload: [[String: String]] = [[
             "role": "system",
             "content": "你是搜索查询改写器。今天是\(Self.currentDateText())。"
@@ -747,7 +789,7 @@ final class ChatStore: ObservableObject {
             return ["role": role, "content": text + "（附截图）"]
         }
         do {
-            let raw = try await completeOnce(payload: payload)
+            let raw = try await completeOnce(payload: payload, config: config)
             let cleaned = raw
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .trimmingCharacters(in: CharacterSet(charactersIn: "\"“”'「」"))
@@ -763,14 +805,15 @@ final class ChatStore: ObservableObject {
     }
 
     /// 非流式单次补全，供查询改写等轻量内部任务使用
-    private func completeOnce(payload: [[String: String]]) async throws -> String {
-        var request = URLRequest(url: try endpointURL())
+    private func completeOnce(payload: [[String: String]],
+                             config: ChatRequestConfig) async throws -> String {
+        var request = URLRequest(url: try config.chatCompletionsURL())
         request.httpMethod = "POST"
         request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": model,
+            "model": config.model,
             "messages": payload,
             "stream": false,
         ])
@@ -799,18 +842,7 @@ final class ChatStore: ObservableObject {
     /// 用表单当场填写的地址和 Key，不要求先保存
     static func fetchAvailableModels(baseURL: String, apiKey: String,
                                      transport: HTTPTransporting = URLSessionTransport()) async throws -> [String] {
-        var raw = baseURL.trimmingCharacters(in: .whitespaces)
-        while raw.hasSuffix("/") { raw.removeLast() }
-        if raw.hasSuffix("/chat/completions") {
-            raw = String(raw.dropLast("/chat/completions".count))
-        }
-        if !raw.hasSuffix("/v1") { raw += "/v1" }
-        raw += "/models"
-        guard let url = URL(string: raw), url.scheme?.hasPrefix("http") == true else {
-            throw NSError(domain: "ProNotch", code: -1,
-                          userInfo: [NSLocalizedDescriptionKey: "API 地址无效: \(raw)"])
-        }
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: try ChatRequestConfig.modelsURL(baseURL: baseURL))
         request.timeoutInterval = 20
         request.setValue("Bearer \(apiKey.trimmingCharacters(in: .whitespaces))",
                          forHTTPHeaderField: "Authorization")
@@ -836,35 +868,20 @@ final class ChatStore: ObservableObject {
 
     // MARK: - 私有
 
-    /// 端点规范化：已带 /chat/completions 直接用；带 /v1 补 /chat/completions；
-    /// 否则补 /v1/chat/completions
-    private func endpointURL() throws -> URL {
-        var raw = baseURL.trimmingCharacters(in: .whitespaces)
-        while raw.hasSuffix("/") { raw.removeLast() }
-        if !raw.hasSuffix("/chat/completions") {
-            raw += raw.hasSuffix("/v1") ? "/chat/completions" : "/v1/chat/completions"
-        }
-        guard let url = URL(string: raw), url.scheme?.hasPrefix("http") == true else {
-            throw NSError(domain: "ProNotch", code: -1,
-                          userInfo: [NSLocalizedDescriptionKey: "API 地址无效: \(raw)"])
-        }
-        return url
-    }
-
-    private func stream(payload: [[String: Any]]) async {
+    private func stream(payload: [[String: Any]], config: ChatRequestConfig) async {
         defer {
             isStreaming = false
             streamTask = nil
             persistConversations()   // 成功、失败、停止统一在这落盘
         }
         do {
-            var request = URLRequest(url: try endpointURL())
+            var request = URLRequest(url: try config.chatCompletionsURL())
             request.httpMethod = "POST"
             request.timeoutInterval = 120
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
             request.httpBody = try JSONSerialization.data(withJSONObject: [
-                "model": model,
+                "model": config.model,
                 "messages": payload,
                 "stream": true,
             ])
