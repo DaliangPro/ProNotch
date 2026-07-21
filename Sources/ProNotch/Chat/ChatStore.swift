@@ -393,18 +393,22 @@ final class ChatStore: ObservableObject {
         }
     }
 
-    /// 历史版本把 Key 明文存在 UserDefaults：首次启动搬进钥匙串并抹掉明文
-    private static func migrateKeysToKeychainIfNeeded() {
-        guard let bundleID = Bundle.main.bundleIdentifier,
-              let persisted = UserDefaults.standard.persistentDomain(forName: bundleID)
-        else { return }
-        for account in ["chatAPIKey", "chatTavilyKey"] {
-            if let legacy = persisted[account] as? String, !legacy.isEmpty {
-                KeychainStore.save(legacy, account: account)
-                UserDefaults.standard.removeObject(forKey: account)
-                print("[ProNotch] \(account) 已从明文配置迁入钥匙串")
-            }
+    /// 历史版本把 Key 明文存在 UserDefaults：首次启动搬进钥匙串并抹掉明文。
+    ///
+    /// 抹明文的前提是钥匙串**读回校验通过**——原先写完不看返回值就 `removeObject`，
+    /// 钥匙串锁定或 ACL 拒绝时明文和密文同时没了，Key 直接丢失
+    @discardableResult
+    private static func migrateKeysToKeychainIfNeeded() -> KeychainMigrationReport {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return KeychainMigrationReport() }
+        let report = KeychainMigrator().migratePlaintextKeys(
+            KeychainStore.legacyAccounts, in: .standard, domain: bundleID)
+        for account in report.migrated {
+            print("[ProNotch] \(account) 已从明文配置迁入钥匙串")
         }
+        for (account, error) in report.failed {
+            print("[ProNotch] \(account) 迁入钥匙串失败（明文已保留，下次启动重试）: \(error)")
+        }
+        return report
     }
 
     /// 把表单草稿提交为正式设置并持久化

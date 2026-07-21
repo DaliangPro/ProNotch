@@ -204,13 +204,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     /// 应用更名（NotchHub → ProNotch，bundle id 一并变更）的一次性数据搬家：
-    /// 配置域整体拷贝、数据目录改名、钥匙串条目迁移，必须先于各 Store 初始化
+    /// 配置域整体拷贝、数据目录改名、钥匙串条目迁移，必须先于各 Store 初始化。
+    ///
+    /// 三步分别记结果，**全部达到「成功或无需迁移」才置完成标记**。
+    /// 原先无条件置 true：钥匙串首启弹授权框被用户点了拒绝，这一次就永久放弃，
+    /// 旧 service 下的 Key 再也搬不过来——而用户看到的只是「API Key 不见了」
     private static func migrateFromNotchHubIfNeeded() {
         let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: "didMigrateFromNotchHub") else { return }
 
-        // 1. 旧配置域整体拷入新域（新域已有的键不覆盖）
-        if let legacy = defaults.persistentDomain(forName: "com.jiliang.NotchHub") {
+        // 1. 旧配置域整体拷入新域（新域已有的键不覆盖）。纯内存操作，无失败路径
+        if let legacy = defaults.persistentDomain(forName: KeychainStore.legacyService) {
             var copied = 0
             for (key, value) in legacy where defaults.object(forKey: key) == nil {
                 defaults.set(value, forKey: key)
@@ -219,20 +223,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             print("[ProNotch] 已从旧版配置迁移 \(copied) 项设置")
         }
 
-        // 2. 数据目录（剪贴板历史 / 话术库）随应用名改名
+        // 2. 数据目录（剪贴板历史 / 话术库）随应用名改名。失败保留旧目录，不置完成标记
+        var directoryOK = true
         let fm = FileManager.default
         if let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             let oldDir = base.appendingPathComponent("NotchHub")
             let newDir = base.appendingPathComponent("ProNotch")
+            // 新目录已存在时不覆盖：那是当前版本正在用的数据
             if fm.fileExists(atPath: oldDir.path), !fm.fileExists(atPath: newDir.path) {
-                try? fm.moveItem(at: oldDir, to: newDir)
-                print("[ProNotch] 数据目录已迁移")
+                do {
+                    try fm.moveItem(at: oldDir, to: newDir)
+                    print("[ProNotch] 数据目录已迁移")
+                } catch {
+                    directoryOK = false
+                    print("[ProNotch] 数据目录迁移失败（旧目录已保留，下次启动重试）: \(error.localizedDescription)")
+                }
             }
         }
 
-        // 3. 钥匙串条目搬到新 service
-        KeychainStore.migrateLegacyService()
+        // 3. 钥匙串条目搬到新 service（事务式：读回校验通过才删旧值）
+        let keychainReport = KeychainStore.migrateLegacyService()
 
+        guard directoryOK, keychainReport.isComplete else {
+            print("[ProNotch] 迁移未全部完成，保留重试标记，下次启动继续")
+            return
+        }
         defaults.set(true, forKey: "didMigrateFromNotchHub")
     }
 
