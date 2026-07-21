@@ -317,8 +317,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                           cursor: .resizeUpDown)
         }
         // 四角（非翻转坐标系：minY 是底边）
-        let nwse = Self.diagonalResizeCursor(nwse: true)
-        let nesw = Self.diagonalResizeCursor(nwse: false)
+        let nwse = DiagonalResizeCursor.cursor(for: .nwse)
+        let nesw = DiagonalResizeCursor.cursor(for: .nesw)
         func cornerRect(_ x: CGFloat, _ y: CGFloat) -> NSRect {
             NSRect(x: x - t, y: y - t, width: 2 * t, height: 2 * t)
         }
@@ -328,18 +328,6 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         addCursorRect(cornerRect(sel.maxX, sel.minY), cursor: nwse)   // 右下
     }
 
-    /// 对角调整光标：系统到 macOS 15 才开放 NSCursor.frameResize，本项目部署到 14，
-    /// 故走私有 selector；取不到就回退成上下调整光标（仍有「可拖」反馈，不影响功能）
-    private static func diagonalResizeCursor(nwse: Bool) -> NSCursor {
-        let name = nwse ? "_windowResizeNorthWestSouthEastCursor"
-                        : "_windowResizeNorthEastSouthWestCursor"
-        let sel = NSSelectorFromString(name)
-        if NSCursor.responds(to: sel),
-           let cursor = NSCursor.perform(sel)?.takeUnretainedValue() as? NSCursor {
-            return cursor
-        }
-        return .resizeUpDown
-    }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach { removeTrackingArea($0) }
