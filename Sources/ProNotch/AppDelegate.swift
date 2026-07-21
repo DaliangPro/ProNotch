@@ -477,8 +477,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         withCompletionHandler completionHandler: @escaping () -> Void) {
         let urlString = response.notification.request.content.userInfo["url"] as? String
         Task { @MainActor in
-            if let urlString, let url = URL(string: urlString) {
-                NSWorkspace.shared.open(url)
+            // 通知里的网址虽是自己塞的，打开前仍过一遍策略——「打开网址」这个出口只留一道闸
+            if let urlString {
+                NSWorkspace.shared.open(ReleaseURLPolicy.trusted(URL(string: urlString)))
             }
         }
         completionHandler()

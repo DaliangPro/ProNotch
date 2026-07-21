@@ -15,8 +15,9 @@ final class UpdateChecker: ObservableObject {
     @Published private(set) var lastError: String?
     @Published private(set) var checkedUpToDate = false   // 检查过且已是最新（用于"已是最新版"提示）
 
-    /// 仓库 owner/repo（发版时在此发 Release、打版本 tag）
-    private let repo = "DaliangPro/ProNotch"
+    /// 仓库 owner/repo（发版时在此发 Release、打版本 tag）。
+    /// 与 `ReleaseURLPolicy.repo` 同源，保证「去哪儿查」和「允许打开哪儿」是同一个仓库
+    private let repo = ReleaseURLPolicy.repo
 
     var currentVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
@@ -78,7 +79,8 @@ final class UpdateChecker: ObservableObject {
         let tag = final.lastPathComponent
         let version = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
         guard !version.isEmpty, version.first?.isNumber == true else { throw err("版本号解析失败") }
-        return Release(version: version, url: final)
+        // 重定向的落点也过一遍策略：跟随重定向意味着最终 URL 由对端决定
+        return Release(version: version, url: ReleaseURLPolicy.trusted(final))
     }
 
     /// ② jsDelivr CDN 读仓库 docs/version.json（发版时同步更新该文件）
@@ -89,11 +91,12 @@ final class UpdateChecker: ObservableObject {
         let (data, response) = try await URLSession.shared.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let version = obj["version"] as? String,
-              let url = URL(string: (obj["url"] as? String) ?? "https://github.com/\(repo)/releases/latest") else {
+              let version = obj["version"] as? String else {
             throw err("CDN 版本信息解析失败")
         }
-        return Release(version: version, url: url)
+        // 第三方 CDN 上的 JSON 只信版本号这一个字段。
+        // 网址一律自己拼——它写的 "url" 连读都不读
+        return Release(version: version, url: ReleaseURLPolicy.tagURL(forVersion: version))
     }
 
     /// ③ GitHub REST API（原逻辑）
@@ -107,12 +110,12 @@ final class UpdateChecker: ObservableObject {
         }
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tag = obj["tag_name"] as? String,
-              let urlString = obj["html_url"] as? String,
-              let url = URL(string: urlString) else {
+              let urlString = obj["html_url"] as? String else {
             throw err("解析 Release 信息失败")
         }
         let version = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
-        return Release(version: version, url: url)
+        // html_url 虽出自 GitHub，也一样过策略：这条链路上没有「不用查的来源」
+        return Release(version: version, url: ReleaseURLPolicy.trusted(URL(string: urlString)))
     }
 
     private static func err(_ m: String) -> NSError {
