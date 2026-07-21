@@ -73,47 +73,57 @@ final class LongShotStitcherTests: XCTestCase {
 
     // ===== 用例 =====
 
-    func test向下拼接_测得偏移与真实一致() throws {
+    func test向下拼接_测得偏移与真实一致() async throws {
         let page = makePage()
         let stitcher = try XCTUnwrap(LongShotStitcher(firstFrame: frame(page, off: 0, seed: 1)))
         var off = 0
         for (i, step) in [55, 48, 62, 50, 57].enumerated() {
             off += step
-            let got = stitcher.addFrame(frame(page, off: off, seed: UInt64(2 + i)), expectedDelta: 55)
-            XCTAssertEqual(got, step, "第 \(i + 1) 帧测得 δ=\(got)，真实=\(step)")
+            let got = await stitcher.addFrame(frame(page, off: off, seed: UInt64(2 + i)), expectedDelta: 55)
+            XCTAssertEqual(got, .appended(rows: step), "第 \(i + 1) 帧测得 δ=\(got.rows)，真实=\(step)")
         }
-        XCTAssertEqual(stitcher.totalHeight, H + 55 + 48 + 62 + 50 + 57)
-        XCTAssertEqual(stitcher.result()?.height, stitcher.totalHeight)
+        let total = await stitcher.totalHeight
+        XCTAssertEqual(total, H + 55 + 48 + 62 + 50 + 57)
+        let result = await stitcher.result()
+        XCTAssertEqual(result?.height, total)
     }
 
-    func test向上拼接_测得偏移与真实一致() throws {
+    func test向上拼接_测得偏移与真实一致() async throws {
         let page = makePage()
         var off = 600
         let stitcher = try XCTUnwrap(LongShotStitcher(firstFrame: frame(page, off: off, seed: 11)))
         for (i, step) in [45, 52, 40].enumerated() {
             off -= step
-            let got = stitcher.prependFrame(frame(page, off: off, seed: UInt64(12 + i)), expectedDelta: 45)
-            XCTAssertEqual(got, step, "第 \(i + 1) 帧测得 δ=\(got)，真实=\(step)")
+            let got = await stitcher.prependFrame(frame(page, off: off, seed: UInt64(12 + i)), expectedDelta: 45)
+            XCTAssertEqual(got, .appended(rows: step), "第 \(i + 1) 帧测得 δ=\(got.rows)，真实=\(step)")
         }
-        XCTAssertEqual(stitcher.totalHeight, H + 45 + 52 + 40)
+        let total = await stitcher.totalHeight
+        XCTAssertEqual(total, H + 45 + 52 + 40)
     }
 
-    func test坏帧拒收_内容不丢_下帧累计接回() throws {
+    func test坏帧拒收_内容不丢_下帧累计接回() async throws {
         let page = makePage()
         let stitcher = try XCTUnwrap(LongShotStitcher(firstFrame: frame(page, off: 0, seed: 21)))
-        XCTAssertEqual(stitcher.addFrame(frame(page, off: 50, seed: 22), expectedDelta: 55), 50)
-        // 画面突变的坏帧：拒收（返回 0），且保留参考帧
-        XCTAssertEqual(stitcher.addFrame(garbageFrame(seed: 23), expectedDelta: 55), 0)
+        var got = await stitcher.addFrame(frame(page, off: 50, seed: 22), expectedDelta: 55)
+        XCTAssertEqual(got, .appended(rows: 50))
+        // 画面突变的坏帧：拒收（.skipped，而不是"撞上限"），且保留参考帧
+        got = await stitcher.addFrame(garbageFrame(seed: 23), expectedDelta: 55)
+        XCTAssertEqual(got, .skipped)
         // 坏帧期间页面又滚了 45：下一帧应测得「累计」45，中间内容一行不丢
-        XCTAssertEqual(stitcher.addFrame(frame(page, off: 95, seed: 24), expectedDelta: 55), 45)
-        XCTAssertEqual(stitcher.totalHeight, H + 50 + 45)
+        got = await stitcher.addFrame(frame(page, off: 95, seed: 24), expectedDelta: 55)
+        XCTAssertEqual(got, .appended(rows: 45))
+        let total = await stitcher.totalHeight
+        XCTAssertEqual(total, H + 50 + 45)
     }
 
-    func test方向探测() throws {
+    func test方向探测() async throws {
         let page = makePage()
         let stitcher = try XCTUnwrap(LongShotStitcher(firstFrame: frame(page, off: 400, seed: 31)))
-        XCTAssertEqual(stitcher.probeDirection(frame(page, off: 430, seed: 32)), 1, "内容向下滚应返回 +1")
-        XCTAssertEqual(stitcher.probeDirection(frame(page, off: 370, seed: 33)), -1, "内容向上滚应返回 -1")
-        XCTAssertEqual(stitcher.probeDirection(frame(page, off: 400, seed: 34)), 0, "没动应返回 0")
+        var d = await stitcher.probeDirection(frame(page, off: 430, seed: 32))
+        XCTAssertEqual(d, 1, "内容向下滚应返回 +1")
+        d = await stitcher.probeDirection(frame(page, off: 370, seed: 33))
+        XCTAssertEqual(d, -1, "内容向上滚应返回 -1")
+        d = await stitcher.probeDirection(frame(page, off: 400, seed: 34))
+        XCTAssertEqual(d, 0, "没动应返回 0")
     }
 }

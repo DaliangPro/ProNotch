@@ -236,6 +236,14 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var longCaptureRect: NSRect = .zero  // 选区（视图坐标）
     private var scrollWheelFlipped = false       // 滚轮方向补偿（自然滚动/反转工具会翻转合成事件，开滚前实测校准）
     private var longInspectPanel: NSPanel?       // 长图检视面板（双击预览打开，放大确认拼接质量）
+    // 长截图的四个任务句柄。停止/取消要能「等到在途工作真正落定」而不是 sleep 猜，
+    // 就必须把每个后台任务都握在手里
+    private var longMainTask: Task<Void, Never>?      // 自动滚动主循环
+    private var longScrollTask: Task<Void, Never>?    // 后台连续滚动
+    private var longFinalizeTask: Task<Void, Never>?  // 停止后的收尾合成
+    private var longInspectTask: Task<Void, Never>?   // 检视面板的取图
+    private var longFinalizing = false                // 收尾已启动，避免「停止」与「滚到端」重复触发
+    private var longLimitNotice: String?               // 撞上安全上限的说明，出图后再提示
 
     private let badgeRadius: CGFloat = 13
     private let textFont = NSFont.systemFont(ofSize: 14, weight: .medium)
@@ -2220,7 +2228,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         presentLongPanel()
         startScanAnimation()                  // 扫描取景条动画
         window?.ignoresMouseEvents = true     // 穿透，合成滚轮事件可达下面的 App
-        Task { @MainActor in await runAutoScroll(sel, dir) }
+        longFinalizing = false
+        longMainTask = Task { @MainActor in await runAutoScroll(sel, dir) }
     }
 
     /// 方向选择面板（浮在选区中央）
@@ -2287,7 +2296,6 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         warpCursorToSelectionCenter(sel)
         try? await Task.sleep(nanoseconds: 200_000_000)
         guard longActive, let first = await captureLongFrame() else { cancelLongShot(); return }
-        var dbg = 0                                              // 帧计数（驱动预览刷新频率）
         longStitcher = LongShotStitcher(firstFrame: first)
         let scale = screen.backingScaleFactor
         let stepPx = max(30, min(80, Int(sel.height * scale / 9)))      // 每步滚小一点 → 更顺、且给匹配更大余量
@@ -2299,7 +2307,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         scrollBy(pixels: probePt, up: up)
         try? await Task.sleep(nanoseconds: 250_000_000)
         if longActive, let probeFrame = await captureLongFrame() {
-            let moved = longStitcher?.probeDirection(probeFrame) ?? 0   // +1=内容呈「向下滚」动向
+            let moved = await longStitcher?.probeDirection(probeFrame) ?? 0   // +1=内容呈「向下滚」动向
             if moved != 0 {
                 scrollBy(pixels: probePt, up: !up)                      // 物理反向撤销探测滚动，回到原位
                 let expected = up ? -1 : 1
@@ -2324,7 +2332,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         // 后台连续滚动：每 ~8ms 推一更小步，画面持续匀速滑动（暂停/到端由 longScrolling 控制；截取与滚动并行）
         let tickPx = max(2, stepPx / 9)
         longScrolling = true
-        let scroller = Task { @MainActor [weak self] in
+        longScrollTask = Task { @MainActor [weak self] in
             while !Task.isCancelled, self?.longActive == true {
                 if self?.longScrolling == true { self?.scrollBy(pixels: tickPx, up: up) }
                 try? await Task.sleep(nanoseconds: 8_000_000)
@@ -2332,6 +2340,10 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         }
         let cadence: TimeInterval = 0.11                         // 固定帧间隔留足余量 → δ 抖动更小、更稳
         var userPaused = false
+        // 预览成本随已拼高度线性增长。固定"每 2 帧一次"到后期会把 CPU 全吃掉，
+        // 改成按上一次实测耗时自适应：预览最多占用 1/5 的时间，其余留给滚动与拼接
+        var lastPreviewAt = Date.distantPast
+        var previewCost: TimeInterval = 0
         longSession?.phase = .scrolling
         while longActive {
             let cycleStart = Date()
@@ -2343,11 +2355,12 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             }
             if userPaused {                                      // 鼠标移回 → 先 resync 接住漂移，再恢复滚动
                 userPaused = false; noMove = 0; longSession?.phase = .scrolling
-                if longActive, let f = await captureLongFrame() {
-                    _ = up ? longStitcher?.prependFrame(f, expectedDelta: 0, resync: true)
-                           : longStitcher?.addFrame(f, expectedDelta: 0, resync: true)
+                if longActive, let st = longStitcher, let f = await captureLongFrame() {
+                    let outcome = up ? await st.prependFrame(f, expectedDelta: 0, resync: true)
+                                     : await st.addFrame(f, expectedDelta: 0, resync: true)
                     prevFrame = f
-                    updateLongProgress(scale: scale)
+                    await updateLongProgress(scale: scale)
+                    if outcome.isRejected { break }
                 }
                 longScrolling = true
                 continue
@@ -2364,17 +2377,27 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                 } else {
                     noMove = 0
                     longSession?.phase = .scrolling
-                    dbg += 1
-                    // 拼接(灰度+匹配+裁剪)放后台线程 → 滚动不被打断；await 串行化，无并发
+                    // 拼接(灰度+匹配+裁剪)在 stitcher 的 actor 执行器上跑 → 不占主线程、天然串行
+                    var hitLimit: LongShotLimits.Reason?
                     if let st = longStitcher {
-                        await Task.detached(priority: .userInitiated) {
-                            _ = up ? st.prependFrame(frame, expectedDelta: expDelta) : st.addFrame(frame, expectedDelta: expDelta)
-                        }.value
+                        let outcome = up ? await st.prependFrame(frame, expectedDelta: expDelta)
+                                         : await st.addFrame(frame, expectedDelta: expDelta)
+                        if case .rejected(let reason) = outcome { hitLimit = reason }
                     }
                     prevFrame = frame
-                    if dbg % 2 == 0, let st = longStitcher {     // 预览生成(随段增长而变重)放后台线程
-                        let cg = await Task.detached(priority: .utility) { st.previewImage(width: 150) }.value
-                        longSession?.pointHeight = Int((CGFloat(st.totalHeight) / scale).rounded())
+                    if let hitLimit {                            // 撞上限：不再增长，走正常收尾出图
+                        // 提示留到出图后再显示——此刻弹提示条会被随后的补全帧一并截进长图里
+                        longLimitNotice = hitLimit.message
+                        break
+                    }
+                    // 预览自适应节流：距上次至少 0.4 秒，且不少于上次自身耗时的 4 倍
+                    let due = max(0.4, previewCost * 4)
+                    if Date().timeIntervalSince(lastPreviewAt) >= due, let st = longStitcher {
+                        let began = Date()
+                        let cg = await st.previewImage(width: 150)
+                        previewCost = Date().timeIntervalSince(began)
+                        lastPreviewAt = Date()
+                        longSession?.pointHeight = Int((CGFloat(await st.totalHeight) / scale).rounded())
                         if let cg { longSession?.preview = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height)) }
                     }
                 }
@@ -2384,7 +2407,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             if used < cadence { try? await Task.sleep(nanoseconds: UInt64((cadence - used) * 1_000_000_000)) }
         }
         longScrolling = false
-        scroller.cancel()
+        longScrollTask?.cancel(); longScrollTask = nil
         if longActive {
             if up {
                 // 到顶：补「框上方 → 视口顶」头部 + 选框向上拉伸
@@ -2394,9 +2417,9 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                     let target = NSRect(x: longCaptureRect.minX, y: longCaptureRect.minY,
                                         width: longCaptureRect.width, height: targetTopY - longCaptureRect.minY)
                     await animateBoxStretch(to: target)
-                    if let tall = await captureLongFrameTallUp() {
-                        _ = longStitcher?.addHead(tall, viewportTop: viewportTop)
-                        updateLongProgress(scale: scale)
+                    if let st = longStitcher, let tall = await captureLongFrameTallUp() {
+                        _ = await st.addHead(tall, viewportTop: viewportTop)
+                        await updateLongProgress(scale: scale)
                     }
                     try? await Task.sleep(nanoseconds: 350_000_000)
                 }
@@ -2408,22 +2431,22 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                     let target = NSRect(x: longCaptureRect.minX, y: targetBottomY,
                                         width: longCaptureRect.width, height: longCaptureRect.maxY - targetBottomY)
                     await animateBoxStretch(to: target)
-                    if let tall = await captureLongFrameTall() {
-                        _ = longStitcher?.addTail(tall, viewportBottom: viewportBottom)
-                        updateLongProgress(scale: scale)
+                    if let st = longStitcher, let tall = await captureLongFrameTall() {
+                        _ = await st.addTail(tall, viewportBottom: viewportBottom)
+                        await updateLongProgress(scale: scale)
                     }
                     try? await Task.sleep(nanoseconds: 350_000_000)
                 }
             }
-            finishLongShot()                                     // 滚到端自动完成（取消时已置 false）
+            finalizeAfterLoop()                                  // 滚到端自动完成（取消时已置 false）
         }
     }
 
     /// 刷新控制条：已拼高度 + 实时长图预览（随截随长）
-    private func updateLongProgress(scale: CGFloat) {
+    private func updateLongProgress(scale: CGFloat) async {
         guard let st = longStitcher else { return }
-        longSession?.pointHeight = Int((CGFloat(st.totalHeight) / scale).rounded())
-        if let cg = st.previewImage(width: 150) {
+        longSession?.pointHeight = Int((CGFloat(await st.totalHeight) / scale).rounded())
+        if let cg = await st.previewImage(width: 150) {
             longSession?.preview = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
         }
     }
@@ -2542,13 +2565,45 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
 
     /// 确认/申请辅助功能权限（合成滚轮事件需要）
-    /// 完成：停循环 → 取拼好的长图 → 进入「选择输出」态（带预览）
+    /// 用户点「停止」：先停采集与滚动，再**等主循环真正退出**（在途那一帧因此必然落定），
+    /// 最后到后台合成、回主线程出图。以前是 sleep 250ms 猜在途帧完成——机器一慢就漏最后一段
     private func finishLongShot() {
+        guard !longFinalizing else { return }
+        longFinalizing = true
+        stopLongCapture()
+        let main = longMainTask
+        longFinalizeTask = Task { @MainActor [weak self] in
+            await main?.value
+            await self?.produceLongResult()
+        }
+    }
+
+    /// 主循环自己走到端：不能再去 await 自身，直接进收尾
+    private func finalizeAfterLoop() {
+        guard !longFinalizing else { return }
+        longFinalizing = true
+        stopLongCapture()
+        longFinalizeTask = Task { @MainActor [weak self] in await self?.produceLongResult() }
+    }
+
+    /// 停掉采集侧的一切：循环开关、连续滚动任务、扫描动画
+    private func stopLongCapture() {
         longActive = false
         longScrolling = false
         recordingLong = false
-        longScanTimer?.invalidate(); longScanTimer = nil   // 停扫描动画
-        showLongResult(longStitcher?.result())
+        longScrollTask?.cancel(); longScrollTask = nil
+        longScanTimer?.invalidate(); longScanTimer = nil
+    }
+
+    /// 后台合成最终长图再出图。合成走 stitcher 的 actor 执行器：
+    /// 既不占主线程，又天然排在所有在途拼接之后
+    private func produceLongResult() async {
+        guard let st = longStitcher else { cleanupLongShot(); close(); return }
+        let cg = await st.result()
+        // 合成期间用户可能已取消（stitcher 被换掉或清空）→ 迟到结果不得重新打开结果面板
+        guard longStitcher === st else { return }
+        showLongResult(cg)
+        if let notice = longLimitNotice { longLimitNotice = nil; showHint(notice) }
     }
 
     private func showLongResult(_ cg: CGImage?) {
@@ -2582,13 +2637,17 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     }
 
     private func saveLongResult() {
-        // 长截图整图的 png 编码临时 data 可达数百 MB，圈进池里写盘即释放
-        autoreleasepool {
-            if let cg = longResultCG, let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) {
-                let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd HH.mm.ss"
-                let url = FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent("Desktop/长截图 \(fmt.string(from: Date())).png")
-                try? png.write(to: url)
+        if let cg = longResultCG {
+            let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd HH.mm.ss"
+            let url = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Desktop/长截图 \(fmt.string(from: Date())).png")
+            // 几万像素高的长图，PNG 编码要几百毫秒到数秒、临时 data 可达数百 MB。
+            // 放主线程会整个界面卡住；圈进 autoreleasepool 写完即释放
+            Task.detached(priority: .userInitiated) {
+                autoreleasepool {
+                    guard let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { return }
+                    try? png.write(to: url)
+                }
             }
         }
         cleanupLongShot(); close()
@@ -2615,6 +2674,14 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     private func cleanupLongShot() {
         longScrolling = false
+        // 四个任务全部取消。longStitcher 一并置空，收尾任务里的 `longStitcher === st`
+        // 因此不成立——已在途的合成结果不会再把结果面板弹回来
+        longMainTask?.cancel(); longMainTask = nil
+        longScrollTask?.cancel(); longScrollTask = nil
+        longFinalizeTask?.cancel(); longFinalizeTask = nil
+        longInspectTask?.cancel(); longInspectTask = nil
+        longFinalizing = false
+        longLimitNotice = nil
         longScanTimer?.invalidate(); longScanTimer = nil
         longStretchRect = nil
         dismissLongInspector()
@@ -2652,18 +2719,21 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private func toggleLongInspector() {
         if longInspectPanel != nil { dismissLongInspector(); return }
         if !longFinished, longScrolling { return }
-        Task { @MainActor in
+        longInspectTask?.cancel()
+        longInspectTask = Task { @MainActor [weak self] in
+            guard let self else { return }
             var img: NSImage?
-            if longFinished {
-                img = longResultImg
-            } else if let st = longStitcher {
-                // 等在途的最后一拍拼接落定（暂停生效前可能有一帧在接），再取全分辨率结果
-                try? await Task.sleep(nanoseconds: 250_000_000)
-                if let cg = await Task.detached(operation: { st.result() }).value {
+            if self.longFinished {
+                img = self.longResultImg
+            } else if let st = self.longStitcher {
+                // 全分辨率结果走 actor 队列：在途的最后一拍拼接必然排在它前面，
+                // 不需要再 sleep 250ms 去猜"应该拼完了吧"
+                if let cg = await st.result(), self.longStitcher === st {
                     img = NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
                 }
             }
-            guard let image = img, image.size.width > 0, image.size.height > 0 else { return }
+            guard !Task.isCancelled, let image = img,
+                  image.size.width > 0, image.size.height > 0 else { return }
             self.presentLongInspector(image)
         }
     }
