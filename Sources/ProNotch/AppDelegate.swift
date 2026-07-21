@@ -4,41 +4,30 @@ import UserNotifications
 import ScreenCaptureKit
 import Combine
 
-/// 可成为 key 的无边框面板：承载「检查更新」结果窗（按钮可点、回车可关）
-private final class UpdateAlertPanel: NSPanel {
-    override var canBecomeKey: Bool { true }
-}
-
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
-    private var windowControllers: [NotchWindowController] = []
+    var windowControllers: [NotchWindowController] = []
     /// 屏幕参数变化的防抖重建任务（合并系统成批发送的通知，避开中间态坐标）
     private var pendingScreenRebuild: DispatchWorkItem?
     private var statusItem: NSStatusItem?
-    private var usageStatusItem: NSStatusItem?                    // 独立可开关的「额度」菜单栏项
-    private weak var usageToggleItem: NSMenuItem?                 // 主菜单里的开关项（同步勾选态）
-    private var usagePanel: NSPanel?                              // 额度栏点开的 iOS 风格矩形面板（无箭头/无毛玻璃）
-    private var usagePanelMonitor: Any?                           // 点面板外收起（其他 App）
-    private var usagePanelLocalMonitor: Any?                      // 点面板外收起（本 App 其他窗口）
-    private var usageTimer: Timer?
+    private var usageStatusItem: UsageStatusItemController?        // 独立可开关的「额度」菜单栏项
     /// 恶劣天气预警兜底刷新：两侧功能区都没配天气时也保证数据定期落地供扫描
     private var weatherTimer: Timer?
-    private var usageCancellable: AnyCancellable?
     private var glowController: GlowController?
-    private let updateChecker = UpdateChecker()
-    private var updateMenuItem: NSMenuItem?
-    private var updateSeparator: NSMenuItem?
-    private var updateResultPanel: NSPanel?         // 检查更新结果窗（非模态，点「好」关闭）
+    /// 检查更新的呈现层：结果窗、菜单标记、通知（见 UpdatePresenter）
+    let updatePresenter = UpdatePresenter()
+    /// 设置页与调试快照直接读拉取器本体
+    var updateChecker: UpdateChecker { updatePresenter.checker }
     /// 超级截图全局快捷键（Carbon RegisterEventHotKey）
-    private let screenshotHotKey = GlobalHotKey(id: 1)
+    let screenshotHotKey = GlobalHotKey(id: 1)
     /// 剪贴板切换器全局快捷键
-    private let clipboardHotKey = GlobalHotKey(id: 2)
+    let clipboardHotKey = GlobalHotKey(id: 2)
     /// AI 闪问全局快捷键（弹出刘海对话页）
-    private let chatHotKey = GlobalHotKey(id: 3)
+    let chatHotKey = GlobalHotKey(id: 3)
 
     /// 数据层在应用级持有：换屏重建刘海窗口时状态不丢失。
     /// 离屏渲染设置窗那条路径（-snapshotSettings）只建它用得着的几个，不填这里，故为 nil
-    private var env: AppEnvironment!
+    var env: AppEnvironment!
     private let settingsWindow = SettingsWindowController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -113,9 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         // 启动时静默检查更新：发现新版才提醒（不打扰）
         UNUserNotificationCenter.current().delegate = self
-        updateChecker.check { [weak self] release in
-            self?.handleUpdate(release, manual: false)
-        }
+        updatePresenter.checkSilently()
 
         // 光晕提醒：控制器常驻（很轻），覆盖整屏的光晕窗点亮才建、熄灭即拆
         glowController = GlowController(settings: env.settings)
@@ -148,49 +135,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             _ = try? await SCShareableContent.current
         }
 
-        // 超级截图全局快捷键：按下即唤起区域截图；在设置里改快捷键后重新注册
-        SuperScreenshotController.shared.settings = env.settings   // 翻译时惰性读配置
-        SuperScreenshotController.shared.warmUp()   // 后台预热截图子系统，消除"截图第一下慢"
-        screenshotHotKey.onTrigger = {
-            Task { @MainActor in SuperScreenshotController.shared.capture() }
-        }
-        screenshotHotKey.update(env.settings.screenshotShortcut)
-        NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchScreenshotShortcutChanged"),
-            object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                self.screenshotHotKey.update(self.env.settings.screenshotShortcut)
-            }
-        }
-
-        // 剪贴板切换器全局快捷键：按下唤出横向卡片面板；设置里改键后重新注册
-        clipboardHotKey.onTrigger = {
-            Task { @MainActor in ClipboardSwitcherController.shared.toggle() }
-        }
-        clipboardHotKey.update(env.settings.clipboardShortcut)
-        NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchClipboardShortcutChanged"),
-            object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                self.clipboardHotKey.update(self.env.settings.clipboardShortcut)
-            }
-        }
-
-        // AI 闪问全局快捷键：按下从刘海弹出对话页；已停在闪问页时再按收起。改键后重新注册
-        chatHotKey.onTrigger = { [weak self] in
-            Task { @MainActor in self?.toggleChatPanel() }
-        }
-        chatHotKey.update(env.settings.chatShortcut)
-        NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchChatShortcutChanged"),
-            object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                self.chatHotKey.update(self.env.settings.chatShortcut)
-            }
-        }
+        // 三个全局快捷键的注册与改键重注册（实现见 HotKeySetup.swift）
+        setupHotKeys()
 
         // 屏幕配置变化（接显示器、合盖等）时重建刘海窗口
         NotificationCenter.default.addObserver(
@@ -202,74 +148,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             self, selector: #selector(screenModeChanged),
             name: NSNotification.Name("ProNotchScreenModeChanged"), object: nil)
 
-        // 调试通道仅存在于开发构建：正式版不暴露任何可被本机其他进程
-        // 远程触发的接口
-        #if DEBUG
-        // 调试入口：命令行可触发展开/收起，便于不靠鼠标悬停验证
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugToggle),
-            name: NSNotification.Name("com.daliangpro.ProNotch.toggle"), object: nil)
-
-        // 调试入口：把当前窗口内容渲染成 PNG，无需屏幕录制权限即可验证 UI
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugSnapshot),
-            name: NSNotification.Name("com.daliangpro.ProNotch.snapshot"), object: nil)
-
-        // 调试入口：走真实代码路径启动计算器，验证启动台逻辑
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugTestLaunch),
-            name: NSNotification.Name("com.daliangpro.ProNotch.testlaunch"), object: nil)
-
-        // 调试入口：循环切换标签页 / 把历史第一条复制回剪贴板
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugNextTab),
-            name: NSNotification.Name("com.daliangpro.ProNotch.nexttab"), object: nil)
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugTestPaste),
-            name: NSNotification.Name("com.daliangpro.ProNotch.testpaste"), object: nil)
-
-        // 调试入口：走真实代码路径发送一条 AI 对话消息 / 拉取模型列表
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugTestChat),
-            name: NSNotification.Name("com.daliangpro.ProNotch.testchat"), object: nil)
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugTestModels),
-            name: NSNotification.Name("com.daliangpro.ProNotch.testmodels"), object: nil)
-
-        // 调试入口：执行一次联网搜索验证搜索链路
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugTestSearch),
-            name: NSNotification.Name("com.daliangpro.ProNotch.testsearch"), object: nil)
-
-        // 调试入口：探测 SkyLight 外观接口可用性
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugTestTheme),
-            name: NSNotification.Name("com.daliangpro.ProNotch.testtheme"), object: nil)
-
-        // 调试入口：切换防休眠 / 打开设置窗口
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugTestCaffeinate),
-            name: NSNotification.Name("com.daliangpro.ProNotch.testcaffeinate"), object: nil)
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(openSettings),
-            name: NSNotification.Name("com.daliangpro.ProNotch.opensettings"), object: nil)
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugTestFullscreen),
-            name: NSNotification.Name("com.daliangpro.ProNotch.testfullscreen"), object: nil)
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugSnapshotSwitcher),
-            name: NSNotification.Name("com.daliangpro.ProNotch.snapswitcher"), object: nil)
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugSnapshotToolbar),
-            name: NSNotification.Name("com.daliangpro.ProNotch.snaptoolbar"), object: nil)
-        // 调试入口：驱动 Codex notify 转发器接入 / 卸载，验证软件层接入
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugCodexHookOn),
-            name: NSNotification.Name("com.daliangpro.ProNotch.codexhookon"), object: nil)
-        DistributedNotificationCenter.default().addObserver(
-            self, selector: #selector(debugCodexHookOff),
-            name: NSNotification.Name("com.daliangpro.ProNotch.codexhookoff"), object: nil)
-        #endif
+        // 跨进程调试入口，仅 DEBUG 构建注册（实现见 DebugChannels.swift）
+        setupDebugChannels()
 
         // 面板内齿轮按钮打开设置窗口（窗口由本类持有，进程内通知解耦）——
         // 正式功能，必须在调试块之外
@@ -323,230 +203,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         env?.agentSessions.markTurnEnded(session: session, source: kind, host: host)
     }
 
-    /// 调试用：走真实路径接入 / 卸载 Codex 的 notify 转发器，结果写 /tmp 供核对
-    @objc private func debugCodexHookOn() {
-        print("[ProNotch] 调试：Codex notify 接入 = \(GlowHookInstaller.setInstalled(.codex, true))")
-    }
-    @objc private func debugCodexHookOff() {
-        print("[ProNotch] 调试：Codex notify 卸载 = \(GlowHookInstaller.setInstalled(.codex, false))")
-    }
-
-    /// 调试用：离屏渲染剪贴板切换器到 PNG（生成 README 配图，无需屏幕录制权限）
-    @objc private func debugSnapshotSwitcher() {
-        renderSwitcherSnapshot(clipboard: env.clipboard, snippets: env.snippets)
-    }
-
-    /// 取显式入参而非读 `env`：-snapshotDocs 那条路径跑在建 env 之前
-    /// （配图渲染必须早于 ChatStore，否则同步读钥匙串会弹框阻塞主线程）
-    private func renderSwitcherSnapshot(clipboard: ClipboardStore, snippets: SnippetStore) {
-        let root = ZStack {
-            Color(white: 0.08)
-            ClipboardSwitcherView(store: clipboard, snippets: snippets, controller: .shared)
-                .environmentObject(clipboard)
-        }
-        .frame(width: 960, height: 400)
-        let hosting = NSHostingView(rootView: root)
-        hosting.appearance = NSAppearance(named: .darkAqua)
-        hosting.frame = NSRect(x: 0, y: 0, width: 960, height: 400)
-        hosting.layoutSubtreeIfNeeded()
-        guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { return }
-        hosting.cacheDisplay(in: hosting.bounds, to: rep)
-        if let data = rep.representation(using: .png, properties: [:]) {
-            try? data.write(to: URL(fileURLWithPath: "/tmp/pronotch-switcher.png"))
-            print("[ProNotch] 剪贴板切换器快照已保存")
-        }
-    }
-
-    /// 调试用：离屏渲染超级截图工具栏到 PNG（生成 README 配图）
-    @objc private func debugSnapshotToolbar() {
-        let bar = ScreenshotToolbar(
-            boxActive: false, hlActive: false, textActive: false, penActive: false, arrowActive: false, mosaicActive: false,
-            noteActive: false, flowActive: false, wmActive: false,
-            translateTitle: "翻译", translateActive: false,
-            onBox: {}, onHighlightTool: {}, onTextTool: {}, onPen: {}, onArrow: {}, onMosaic: {}, onNote: {}, onFlow: {}, onWatermark: {}, onUndo: {},
-            onOCR: {}, onLongShot: {}, onPin: {}, onAskAI: {}, onTranslate: {}, onSave: {}, onCopy: {}, onCancel: {},
-            onDragToolbar: { _, _ in })
-        let probe = NSHostingView(rootView: bar)
-        let s = probe.fittingSize
-        let root = ZStack { Color(white: 0.08); bar }
-            .frame(width: s.width + 48, height: s.height + 40)
-        let hosting = NSHostingView(rootView: root)
-        hosting.appearance = NSAppearance(named: .darkAqua)
-        hosting.frame = NSRect(x: 0, y: 0, width: s.width + 48, height: s.height + 40)
-        hosting.layoutSubtreeIfNeeded()
-        guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { return }
-        hosting.cacheDisplay(in: hosting.bounds, to: rep)
-        if let data = rep.representation(using: .png, properties: [:]) {
-            try? data.write(to: URL(fileURLWithPath: "/tmp/pronotch-toolbar.png"))
-            print("[ProNotch] 超级截图工具栏快照已保存")
-        }
-    }
-
-    /// 对齐核查：离屏渲染展开面板四页到 /tmp/pronotch-panel-<页>.png，
-    /// 叠红色基准线（左 x=43=20+pageHInset、右 x=917 对称），在图上直接检查
-    /// 「各页左缘是否压线、右侧留白是否对称」。渲染完自动退出进程
-    @objc private func debugSnapshotPanel() {
-        // 假刘海几何取 14 寸 MBP 典型值；挂进离屏 window 让 onAppear/pageEntrance 生效
-        let vm = NotchViewModel(notchRect: CGRect(x: 380, y: 0, width: 200, height: 38))
-        vm.debugToggle()   // 置 isExpanded=true：各页 pageEntrance 才会翻 played、内容可见
-        let size = vm.expandedShapeSize
-        let guide = 20 + ExpandedContentView.pageHInset
-        let pages: [(NotchViewModel.Tab, String)] = [(.launcher, "launcher"), (.chat, "chat"),
-                                                     (.usage, "usage"), (.agent, "agent"),
-                                                     (.widgets, "widgets")]
-        var index = 0
-        // 收起态渲染：黑形状在灰底上才看得见，独立 vm（不展开）跑真实容器视图
-        func renderCollapsed() {
-            let cvm = NotchViewModel(notchRect: CGRect(x: 380, y: 0, width: 200, height: 38))
-            // 渲染实例没有 NotchWindowController 的设置联动，这里手动同步一次
-            // （可用 -notchLeftSlot none -notchRightSlot none 参数验证「两侧全关」形态）
-            cvm.sideSlotsActive = self.env.settings.sideSlotsActive
-            let root = ZStack(alignment: .top) {
-                Color(white: 0.3)
-                NotchContainerView()
-            }
-            .environmentObject(cvm)
-            .injecting(self.env)
-            .frame(width: size.width, height: size.height)
-            let hosting = NSHostingView(rootView: root)
-            hosting.appearance = NSAppearance(named: .darkAqua)
-            hosting.frame = NSRect(origin: .zero, size: size)
-            let win = NSWindow(contentRect: hosting.frame, styleMask: .borderless,
-                               backing: .buffered, defer: false)
-            win.isReleasedWhenClosed = false
-            win.contentView = hosting
-            hosting.layoutSubtreeIfNeeded()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                if let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
-                    hosting.cacheDisplay(in: hosting.bounds, to: rep)
-                    if let data = rep.representation(using: .png, properties: [:]) {
-                        try? data.write(to: URL(fileURLWithPath: "/tmp/pronotch-panel-collapsed.png"))
-                        print("[ProNotch] 面板快照: collapsed")
-                    }
-                }
-                win.close()
-                NSApp.terminate(nil)
-            }
-        }
-        func renderNext() {
-            guard index < pages.count else { renderCollapsed(); return }
-            let (tab, name) = pages[index]; index += 1
-            vm.activeTab = tab   // 每页新建视图树：displayedTab 初始 nil 直接显示该页，无过渡
-            let root = ZStack(alignment: .top) {
-                Color.black
-                ExpandedContentView()
-            }
-            .environmentObject(vm)
-            .injecting(self.env)
-            .overlay(alignment: .topLeading) {
-                Rectangle().fill(Color.red.opacity(0.85)).frame(width: 1).padding(.leading, guide)
-            }
-            .overlay(alignment: .topTrailing) {
-                Rectangle().fill(Color.red.opacity(0.85)).frame(width: 1).padding(.trailing, guide)
-            }
-            .frame(width: size.width, height: size.height)
-            let hosting = NSHostingView(rootView: root)
-            hosting.appearance = NSAppearance(named: .darkAqua)
-            hosting.frame = NSRect(origin: .zero, size: size)
-            let win = NSWindow(contentRect: hosting.frame, styleMask: .borderless,
-                               backing: .buffered, defer: false)
-            win.isReleasedWhenClosed = false   // ARC 下 close 默认连带 release，池排空时会过度释放崩溃
-            win.contentView = hosting   // 进 window 树 onAppear 才触发；不 orderFront，离屏
-            hosting.layoutSubtreeIfNeeded()
-            // pageEntrance 0.10s 后翻 played；cacheDisplay 渲模型终值，不必等动画播完
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-                if let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
-                    hosting.cacheDisplay(in: hosting.bounds, to: rep)
-                    if let data = rep.representation(using: .png, properties: [:]) {
-                        try? data.write(to: URL(fileURLWithPath: "/tmp/pronotch-panel-\(name).png"))
-                        print("[ProNotch] 面板快照: \(name)")
-                    }
-                }
-                win.close()
-                renderNext()
-            }
-        }
-        renderNext()
-    }
-
-    /// 对齐核查：把设置窗口按真实尺寸离屏渲染成 PNG（不打开窗口、不需屏幕录制权限）。
-    /// 分区由 -section 指定（如 -section 刘海面板），默认「通用」；
-    /// 尺寸取 SwiftUI 自算值，跟着 SettingsView 的 frame 走，不写死
-    private func snapshotSettings(settings: SettingsStore, chat: ChatStore, glow: GlowController,
-                                  weather: WeatherStore, snippets: SnippetStore) {
-        let args = CommandLine.arguments
-        let section = args.firstIndex(of: "-section")
-            .flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
-            .flatMap(SettingsView.Section.init(rawValue:)) ?? .general
-        let root = SettingsView(initialSection: section)
-            .environmentObject(settings)
-            .environmentObject(chat)
-            .environmentObject(glow)
-            .environmentObject(updateChecker)
-            .environmentObject(weather)
-            .environmentObject(snippets)
-        let hosting = NSHostingView(rootView: root)
-        hosting.appearance = NSAppearance(named: .darkAqua)
-        hosting.frame = NSRect(origin: .zero, size: hosting.fittingSize)
-        // 挂进离屏窗口：onAppear 与入场动画要有 window 才跑，否则渲出来是初始态
-        let win = NSWindow(contentRect: hosting.frame, styleMask: .borderless,
-                           backing: .buffered, defer: false)
-        win.isReleasedWhenClosed = false
-        win.contentView = hosting
-        hosting.layoutSubtreeIfNeeded()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            if let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
-                hosting.cacheDisplay(in: hosting.bounds, to: rep)
-                if let data = rep.representation(using: .png, properties: [:]) {
-                    let out = "/tmp/pronotch-settings-\(section.rawValue).png"
-                    try? data.write(to: URL(fileURLWithPath: out))
-                    print("[ProNotch] 设置窗口快照已保存: \(out)")
-                }
-            }
-            NSApp.terminate(nil)
-        }
-    }
-
-    @objc private func debugTestFullscreen() {
-        windowControllers.first?.debugTestFullscreen()
-    }
-
-    @objc private func debugTestCaffeinate() {
-        windowControllers.first?.debugTestCaffeinate()
-    }
-
-    @objc private func debugTestTheme() {
-        windowControllers.first?.debugTestTheme()
-    }
-
-    @objc private func debugTestSearch() {
-        windowControllers.first?.debugTestSearch()
-    }
-
-    @objc private func debugTestModels() {
-        windowControllers.first?.debugTestModels()
-    }
-
-    @objc private func debugTestChat() {
-        windowControllers.first?.debugTestChat()
-    }
-
-    @objc private func debugNextTab() {
-        windowControllers.first?.debugNextTab()
-    }
-
-    @objc private func debugTestPaste() {
-        windowControllers.first?.debugTestPaste()
-    }
-
-    @objc private func debugTestLaunch() {
-        windowControllers.first?.debugTestLaunch()
-    }
-
-    @objc private func debugSnapshot() {
-        windowControllers.first?.saveSnapshot()
-    }
-
     /// 应用更名（NotchHub → ProNotch，bundle id 一并变更）的一次性数据搬家：
     /// 配置域整体拷贝、数据目录改名、钥匙串条目迁移，必须先于各 Store 初始化
     private static func migrateFromNotchHubIfNeeded() {
@@ -588,14 +244,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         windowControllers.forEach { $0.close() }
     }
 
-    @objc private func openSettings() {
+    @objc func openSettings() {
         guard let glowController else { return }
         settingsWindow.show(settings: env.settings, chatStore: env.chat, glow: glowController,
                             updates: updateChecker, weather: env.weather, snippets: env.snippets)
     }
 
     /// AI 闪问快捷键：未展开→展开到闪问并聚焦输入框；已展开在别的页→切到闪问；已在闪问→收起
-    @objc private func toggleChatPanel() {
+    @objc func toggleChatPanel() {
         guard let wc = windowControllers.first else { return }
         let vm = wc.viewModel
         if vm.isExpanded, vm.activeTab == .chat {
@@ -647,10 +303,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         pendingScreenRebuild = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
-    }
-
-    @objc private func debugToggle() {
-        windowControllers.first?.viewModel.debugToggle()
     }
 
     /// 按「显示屏幕」设置为选中的屏各建一个刘海面板：有物理刘海的贴刘海，没有的
@@ -722,21 +374,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         usageToggle.image = emptyImage
         usageToggle.state = env.settings.showUsageInMenuBar ? .on : .off
         menu.addItem(usageToggle)
-        usageToggleItem = usageToggle
         menu.addItem(.separator())
 
         // 顶部「发现新版本」项：默认隐藏，检查到新版才显示
         let updateItem = NSMenuItem(title: "↓ 发现新版本",
-                                    action: #selector(openLatestRelease), keyEquivalent: "")
-        updateItem.target = self
+                                    action: #selector(UpdatePresenter.openLatestRelease), keyEquivalent: "")
+        updateItem.target = updatePresenter
         updateItem.image = emptyImage
         updateItem.isHidden = true
         menu.addItem(updateItem)
         let updateSep = NSMenuItem.separator()
         updateSep.isHidden = true
         menu.addItem(updateSep)
-        updateMenuItem = updateItem
-        updateSeparator = updateSep
+        updatePresenter.attachMenu(item: updateItem, separator: updateSep)
 
         let toggleItem = NSMenuItem(title: "展开 / 收起",
                                     action: #selector(debugToggle), keyEquivalent: "t")
@@ -755,8 +405,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         aboutItem.image = emptyImage
         menu.addItem(aboutItem)
         let checkUpdateItem = NSMenuItem(title: "检查更新…",
-                                         action: #selector(checkForUpdatesManually), keyEquivalent: "")
-        checkUpdateItem.target = self
+                                         action: #selector(UpdatePresenter.checkManually), keyEquivalent: "")
+        checkUpdateItem.target = updatePresenter
         checkUpdateItem.image = emptyImage
         menu.addItem(checkUpdateItem)
         menu.addItem(.separator())
@@ -768,27 +418,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         item.menu = menu
         statusItem = item
 
-        // 数据变化即刷新额度栏标题（定时拉取交给 applyUsageVisibility，只在额度栏显示时跑）
-        usageCancellable = env.usage.objectWillChange
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.updateUsageTitle() }
-        applyUsageVisibility()   // 按持久化开关状态显隐额度栏并启停定时刷新
-        // 总开关状态归 SettingsStore：主菜单勾选与设置页开关改的是同一份，任一处动这里统一应用
-        NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchUsageMenuBarChanged"),
-            object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                self.usageToggleItem?.state = self.env.settings.showUsageInMenuBar ? .on : .off
-                self.applyUsageVisibility()
-            }
+        // 额度菜单栏是独立一条 NSStatusItem，自成一套显隐/刷新/弹面板逻辑（见 UsageStatusItemController）
+        let usageBar = UsageStatusItemController(env: env)
+        usageBar.onVisibilityChanged = { [weak usageToggle] on in
+            usageToggle?.state = on ? .on : .off
         }
-        // per-Agent 菜单栏勾选只影响标题渲染，不动数据层
-        NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("ProNotchMenuBarAgentsChanged"),
-            object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.updateUsageTitle() }
-        }
+        usageBar.start()
+        usageStatusItem = usageBar
     }
 
     // MARK: - 独立「额度」菜单栏项（可开关）
@@ -796,72 +432,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func toggleUsageMenuBar() {
         // 只翻状态：持久化与应用统一走 SettingsStore didSet → 通知回来（设置页开关同一条链）
         env.settings.showUsageInMenuBar.toggle()
-    }
-
-    /// 用 NSStatusItem.isVisible 显隐额度栏（不销毁重建，避开「关掉再打开消失」的重建坑）：
-    /// 首次开启才真正创建 item，此后只切 isVisible + 启停 5 分钟兜底刷新
-    private func applyUsageVisibility() {
-        if env.settings.showUsageInMenuBar {
-            if usageStatusItem == nil { createUsageStatusItem() }
-            usageStatusItem?.isVisible = true
-            updateUsageTitle()
-            env.usage.refresh(force: true)
-            startUsageTimer()
-        } else {
-            usageStatusItem?.isVisible = false
-            stopUsageTimer()
-        }
-    }
-
-    /// 只创建一次：变宽额度栏，常驻 C<5h%> X<5h%>，点开是详情卡（两服务 5h/7d 进度条）
-    private func createUsageStatusItem() {
-        guard usageStatusItem == nil else { return }
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.toolTip = "AI 编码额度"
-        item.button?.target = self
-        item.button?.action = #selector(toggleUsagePopover)
-        let content = NSHostingView(rootView: UsageMenuView(
-            store: env.usage,
-            settings: env.settings,
-            onRefresh: { [weak self] in self?.env.usage.refresh(force: true) },
-            onSettings: { [weak self] in
-                self?.dismissUsagePanel()
-                NotificationCenter.default.post(name: NSNotification.Name("ProNotchOpenSettings"), object: nil)
-            }))
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 380),
-                            styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.isOpaque = false
-        panel.backgroundColor = .clear   // 圆角外透明——无系统毛玻璃、无指向箭头
-        panel.hasShadow = true
-        panel.level = .popUpMenu
-        panel.contentView = content
-        usagePanel = panel
-        usageStatusItem = item
-    }
-
-    /// 点额度栏：贴着菜单栏弹出/收起矩形面板（iOS 风，无箭头无毛玻璃），打开时刷新一次
-    @objc private func toggleUsagePopover() {
-        guard let panel = usagePanel else { return }
-        if panel.isVisible { dismissUsagePanel(); return }
-        guard let button = usageStatusItem?.button, let bwin = button.window else { return }
-        env.usage.refresh(force: true)
-        panel.setContentSize(panel.contentView?.fittingSize ?? NSSize(width: 320, height: 380))
-        let br = bwin.convertToScreen(button.convert(button.bounds, to: nil))   // 按钮屏幕坐标
-        panel.setFrameTopLeftPoint(NSPoint(x: br.maxX - panel.frame.width, y: br.minY - 4))   // 右对齐、贴按钮下方
-        panel.orderFrontRegardless()
-        usagePanelMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
-            self?.dismissUsagePanel()
-        }
-        usagePanelLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] e in
-            if e.window !== self?.usagePanel { self?.dismissUsagePanel() }
-            return e
-        }
-    }
-
-    private func dismissUsagePanel() {
-        usagePanel?.orderOut(nil)
-        if let m = usagePanelMonitor { NSEvent.removeMonitor(m); usagePanelMonitor = nil }
-        if let m = usagePanelLocalMonitor { NSEvent.removeMonitor(m); usagePanelLocalMonitor = nil }
     }
 
     /// 恶劣天气预警兜底：预警开着才跑——即使两侧功能区都没配天气（没了 10 秒心跳），
@@ -877,186 +447,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         } else if !alertsOn, let t = weatherTimer {
             t.invalidate()
             weatherTimer = nil
-        }
-    }
-
-    /// 定时刷新只在额度栏显示时运行——隐藏即停，不再无谓访问 Claude / ChatGPT 接口。
-    /// 5 分钟只是兜底：真正的刷新时机是用户主动看的那一刻（额度页 onAppear、点开菜单栏
-    /// 额度面板、各处刷新按钮）。原先 60 秒一轮属实过密——额度是分钟级都不会变的数字，
-    /// 却让 Kimi/Grok 每分钟各挨一次 token 交换，既白耗配额又平添被限流的机会
-    private func startUsageTimer() {
-        guard usageTimer == nil else { return }
-        usageTimer = Timer.scheduledTimer(withTimeInterval: 300, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.env.usage.refresh() }
-        }
-    }
-    private func stopUsageTimer() { usageTimer?.invalidate(); usageTimer = nil }
-
-    /// 额度栏标题：勾选各家品牌 logo + 5h%；高占用百分比变色；无数据的服务省略。仅额度栏存在时更新
-    private func updateUsageTitle() {
-        guard let button = usageStatusItem?.button else { return }
-        // 双重过滤：接入勾选（设置 → Agent 每家总开关）∩ 菜单栏勾选（每家「菜单栏」小开关）——
-        // 刘海里看全量、菜单栏只挑常用的。取消接入时数据被置 nil，
-        // objectWillChange 会把这里再驱动一遍，标题即时增减
-        let tints: [AgentKind: NSColor] = [
-            .claude: NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1),   // Claude 橙
-            .codex: .systemCyan,
-            .grok: .systemGray,
-            .kimi: NSColor(srgbRed: 0.929, green: 0.929, blue: 0.929, alpha: 1),     // 月之暗面白
-        ]
-        let items = AgentKind.allCases.filter {
-            $0.supportsQuota && env.settings.enabledAgents.contains($0)
-                && env.settings.menuBarAgents.contains($0)
-        }
-        let title = NSMutableAttributedString()
-        let base: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)]
-        for kind in items {
-            guard let pct = env.usage.quota(for: kind)?.primary?.usedPercent else { continue }
-            if title.length > 0 { title.append(NSAttributedString(string: "  ", attributes: base)) }
-            let att = NSTextAttachment()
-            att.image = brandImage(kind.polys, tint: tints[kind] ?? .systemGray, size: 17)
-            att.bounds = CGRect(x: 0, y: -4.5, width: 17, height: 17)   // 图标与数字基线对齐
-            title.append(NSAttributedString(attachment: att))
-            var seg = base
-            seg[.foregroundColor] = pctColor(pct)
-            title.append(NSAttributedString(string: " \(Int(pct.rounded()))%", attributes: seg))
-        }
-        // 占位区分两种空：勾了家但数据没到 =「额度…」（在加载）；菜单栏一家没勾 =「额度」（静态入口，点开看详情）
-        button.attributedTitle = title.length > 0 ? title
-            : NSAttributedString(string: items.isEmpty ? "额度" : "额度…", attributes: base)
-    }
-
-    /// 品牌 logo 渲染成菜单栏用小 NSImage：归一化折线 → 染色 evenodd 填充；Y 轴翻转适配 AppKit 坐标系
-    private func brandImage(_ polys: [[CGPoint]], tint: NSColor, size: CGFloat) -> NSImage {
-        let img = NSImage(size: NSSize(width: size, height: size))
-        img.lockFocus()
-        // 品牌色圆角底：实心色块保证在任意菜单栏背景上都醒目
-        let bg = NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: size, height: size), xRadius: size * 0.3, yRadius: size * 0.3)
-        tint.setFill(); bg.fill()
-        // 按各 logo 实际包围盒等比缩放到统一区域，保证三家视觉大小一致（长边填满、居中）
-        let pts = polys.flatMap { $0 }
-        let xs = pts.map { $0.x }, ys = pts.map { $0.y }
-        guard let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max() else { img.unlockFocus(); return img }
-        let bw = max(maxX - minX, 0.0001), bh = max(maxY - minY, 0.0001)
-        let inset = size * 0.16, avail = size - inset * 2   // 收窄留白，让 logo 在圆底里占更大面积
-        let scale = avail / max(bw, bh)
-        let offX = inset + (avail - bw * scale) / 2, offY = inset + (avail - bh * scale) / 2
-        NSColor.white.setFill()
-        let path = NSBezierPath()
-        for poly in polys {
-            guard let first = poly.first else { continue }
-            func m(_ p: CGPoint) -> NSPoint { NSPoint(x: offX + (p.x - minX) * scale, y: offY + (maxY - p.y) * scale) }
-            path.move(to: m(first))
-            for pt in poly.dropFirst() { path.line(to: m(pt)) }
-            path.close()
-        }
-        path.windingRule = .evenOdd
-        path.fill()
-        img.unlockFocus()
-        return img
-    }
-
-    private func pctColor(_ pct: Double) -> NSColor {
-        if pct >= 85 { return NSColor.systemRed }
-        if pct >= 60 { return NSColor.systemOrange }
-        return NSColor.labelColor   // 正常用系统前景色，自动适配深浅色菜单栏
-    }
-
-    @objc private func refreshUsageFromMenu() { env.usage.refresh(force: true) }
-
-    // MARK: - 检查更新
-
-    @objc private func checkForUpdatesManually() {
-        updateChecker.check { [weak self] release in
-            self?.handleUpdate(release, manual: true)
-        }
-    }
-
-    private func handleUpdate(_ release: UpdateChecker.Release?, manual: Bool) {
-        refreshUpdateMenuItem()
-        if let release {
-            if manual {
-                // 用户主动检查：醒目弹窗提示 +「前往下载」按钮（不再只在菜单里改一行字）
-                showUpdateResultWindow(
-                    title: "发现新版本 \(release.version)",
-                    detail: "当前 \(updateChecker.currentVersion)，可更新到 \(release.version)。",
-                    actionTitle: "前往下载",
-                    action: { [weak self] in self?.openLatestRelease() })
-            } else {
-                notifyUpdate(release)   // 启动时静默检查：只发通知 + 菜单标记，不弹窗打扰
-            }
-        } else if manual {
-            // 非模态结果窗：NSAlert.runModal 会接管事件循环，弹着时截图快捷键等全部失灵；
-            // 这里用同款式的普通浮动窗口，弹着时一切照常（还能被截图分享）
-            if let err = updateChecker.lastError {
-                showUpdateResultWindow(title: "检查更新失败", detail: err)
-            } else {
-                showUpdateResultWindow(title: "已是最新版本",
-                                       detail: "当前 \(updateChecker.currentVersion) 已是最新。")
-            }
-        }
-    }
-
-    /// 系统弹窗同款式的非模态结果窗：屏幕中央偏上，点「好」或回车关闭
-    private func showUpdateResultWindow(title: String, detail: String,
-                                        actionTitle: String? = nil, action: (() -> Void)? = nil) {
-        updateResultPanel?.orderOut(nil)
-        let host = NSHostingView(rootView: UpdateAlertView(
-            title: title, detail: detail, actionTitle: actionTitle,
-            onAction: action.map { act in { [weak self] in
-                self?.updateResultPanel?.orderOut(nil); self?.updateResultPanel = nil; act()
-            } },
-            onOK: { [weak self] in
-                self?.updateResultPanel?.orderOut(nil)
-                self?.updateResultPanel = nil
-            }))
-        let size = host.fittingSize
-        host.frame = NSRect(origin: .zero, size: size)
-        let panel = UpdateAlertPanel(contentRect: host.frame, styleMask: [.borderless],
-                                     backing: .buffered, defer: false)
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
-        panel.level = .floating
-        panel.contentView = host
-        let sf = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? .zero
-        panel.setFrameOrigin(NSPoint(x: sf.midX - size.width / 2,
-                                     y: sf.midY - size.height / 2 + sf.height * 0.12))
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
-        updateResultPanel = panel
-    }
-
-    private func refreshUpdateMenuItem() {
-        if let release = updateChecker.available {
-            updateMenuItem?.title = "↓ 发现新版本 \(release.version)"
-            updateMenuItem?.isHidden = false
-            updateSeparator?.isHidden = false
-        } else {
-            updateMenuItem?.isHidden = true
-            updateSeparator?.isHidden = true
-        }
-    }
-
-    @objc private func openLatestRelease() {
-        if let url = updateChecker.available?.url {
-            NSWorkspace.shared.open(url)
-        }
-    }
-
-    private func notifyUpdate(_ release: UpdateChecker.Release) {
-        let version = release.version
-        let urlString = release.url.absoluteString
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
-            guard granted else { return }
-            // 回调在任意线程：中心实例在闭包内现取（单例），不跨 @Sendable 边界捕获非 Sendable 对象
-            let content = UNMutableNotificationContent()
-            content.title = "ProNotch 有新版本"
-            content.body = "\(version) 可更新，点击前往下载。"
-            content.userInfo = ["url": urlString]
-            let request = UNNotificationRequest(
-                identifier: "pronotch.update.\(version)", content: content, trigger: nil)
-            UNUserNotificationCenter.current().add(request)
         }
     }
 
