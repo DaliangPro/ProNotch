@@ -8,6 +8,24 @@ cd "$(dirname "$0")/.."
 CONFIG="${1:-release}"
 VARIANT="${2:-native}"
 
+# 上一次构建的副本还在跑就别构建。
+# 它与 /Applications 版 bundle id 相同（com.daliangpro.ProNotch），于是共享
+# UserDefaults、App Support 存档和钥匙串——两个实例互相覆盖设置与剪贴板历史，
+# 而 AtomicFileStore 的串行写只在单进程内有效，跨进程管不着。
+# 何况下面还要 rm -rf 掉这个 bundle，删正在运行的 App 行为更没准。
+#（2026-07-21 实测踩坑：一个副本在后台跑了 10 小时没人发现）
+#
+# 用 lsof 按文件认而不是 pgrep 按命令行认：进程的命令行取决于当初怎么启动的
+#（`open` 给绝对路径、手敲 ./build/… 给相对路径），字符串匹配一换写法就漏。
+# 运行中的可执行文件必然被自己的进程持有，按文件问最准。
+STALE=$(lsof -t "$PWD/build/ProNotch.app/Contents/MacOS/ProNotch" 2>/dev/null | tr '\n' ' ' || true)
+if [ -n "$STALE" ]; then
+    echo "❌ 上次构建的 ProNotch 副本还在运行（PID: $STALE）"
+    echo "   它和 /Applications 版共享设置、剪贴板历史与钥匙串，会互相覆盖数据。"
+    echo "   先停掉再构建：  kill $STALE"
+    exit 1
+fi
+
 if [ "$VARIANT" = "universal" ]; then
     swift build -c "$CONFIG" --arch arm64 --arch x86_64
     # 多架构产物在 .build/apple/Products/<首字母大写的配置名>/ 下
