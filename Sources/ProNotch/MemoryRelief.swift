@@ -11,7 +11,7 @@ enum MemoryRelief {
         DispatchQueue.main.asyncAfter(deadline: .now() + seconds) {
             let freed = malloc_zone_pressure_relief(nil, 0)
             if freed > 0 {
-                print("[ProNotch] 内存归还: \(freed / 1_048_576) MB 空闲块还给系统")
+                AppLog.app.info("内存归还: \(freed / 1_048_576) MB 空闲块还给系统")
             }
         }
     }

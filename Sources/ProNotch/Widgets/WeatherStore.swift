@@ -454,65 +454,25 @@ final class WeatherStore: NSObject, ObservableObject {
 
     private func apply(_ resp: OpenMeteoResponse, city: String) {
         refreshing = false
-        // timezone=auto 返回本地时区时间串，字典序比较即可定位「当前整点」
-        let fmt = DateFormatter()
-        fmt.locale = Locale(identifier: "en_US_POSIX")
-        fmt.dateFormat = "yyyy-MM-dd'T'HH:mm"
-        let nowStr = fmt.string(from: Date())
-        let startIdx = max(0, (resp.hourly.time.firstIndex { $0 >= nowStr } ?? 0) - 1)
-        var hours: [HourForecast] = []
-        for i in startIdx..<min(startIdx + 6, resp.hourly.time.count) {
-            hours.append(HourForecast(
-                hourLabel: resp.hourly.time[i].suffix(5).prefix(2) + "时",
-                temp: resp.hourly.temperature_2m[i],
-                code: resp.hourly.weather_code[i]))
-        }
-        let precipNow = resp.hourly.precipitation_probability?[safe: startIdx] ?? 0
-
-        // 恶劣天气预警（大梁老师定的核心功能）：每次数据落地扫一遍未来 3 小时
-        checkSevereWeather(times: resp.hourly.time, codes: resp.hourly.weather_code,
-                           gusts: resp.hourly.wind_gusts_10m,
-                           probs: resp.hourly.precipitation_probability, fromIndex: startIdx)
-
-        // 逐天：今天/明天 + 之后按周几；日期串转 zh_CN 周几
-        let dayFmt = DateFormatter()
-        dayFmt.locale = Locale(identifier: "en_US_POSIX")
-        dayFmt.dateFormat = "yyyy-MM-dd"
-        let weekFmt = DateFormatter()
-        weekFmt.locale = Locale(identifier: "zh_CN")
-        weekFmt.dateFormat = "EEE"
-        var days: [DayForecast] = []
-        for i in 0..<resp.daily.time.count {
-            let label: String
-            switch i {
-            case 0: label = "今天"
-            case 1: label = "明天"
-            default:
-                label = dayFmt.date(from: resp.daily.time[i]).map { weekFmt.string(from: $0) }
-                    ?? resp.daily.time[i]
-            }
-            days.append(DayForecast(
-                dayLabel: label,
-                code: resp.daily.weather_code?[safe: i] ?? 3,
-                tMax: resp.daily.temperature_2m_max[i],
-                tMin: resp.daily.temperature_2m_min[i],
-                precipProb: resp.daily.precipitation_probability_max?[safe: i] ?? 0))
+        let mapped: WeatherMapping.Mapped
+        do {
+            mapped = try WeatherMapping.map(resp, city: city, at: Date())
+        } catch let failure as WeatherMapping.Failure {
+            // 上游列长对不上时不崩也不显示半截数据：有旧数据就静默保留，等下个周期
+            if now == nil { error = failure.message }
+            AppLog.widgets.info("\(failure.message, privacy: .public)")
+            return
+        } catch {
+            if now == nil { self.error = "天气数据解析失败" }
+            return
         }
 
-        now = WeatherNow(temperature: resp.current.temperature_2m,
-                         apparent: resp.current.apparent_temperature,
-                         humidity: resp.current.relative_humidity_2m,
-                         windSpeed: resp.current.wind_speed_10m,
-                         code: resp.current.weather_code,
-                         todayMax: resp.daily.temperature_2m_max.first ?? resp.current.temperature_2m,
-                         todayMin: resp.daily.temperature_2m_min.first ?? resp.current.temperature_2m,
-                         city: city,
-                         precipProb: precipNow,
-                         hourly: hours,
-                         days: days,
-                         sunrise: String((resp.daily.sunrise?.first ?? "").suffix(5)),
-                         sunset: String((resp.daily.sunset?.first ?? "").suffix(5)),
-                         fetchedAt: Date())
+        // 恶劣天气预警（大梁老师定的核心功能）：每次数据落地扫一遍未来 3 小时。
+        // 用映射裁齐后的列，长度天然一致
+        checkSevereWeather(times: mapped.hourlyTimes, codes: mapped.hourlyCodes,
+                           gusts: mapped.hourlyGusts, probs: mapped.hourlyProbs,
+                           fromIndex: mapped.startIndex)
+        now = mapped.now
     }
 }
 
@@ -532,42 +492,5 @@ extension WeatherStore: CLLocationManagerDelegate {
                                      didFailWithError error: Error) {
         let msg = error.localizedDescription
         Task { @MainActor in self.handleLocationFailure(msg) }
-    }
-}
-
-/// Open-Meteo 响应（只解需要的字段；可选字段容忍接口缺列）
-private struct OpenMeteoResponse: Decodable {
-    struct Current: Decodable {
-        let temperature_2m: Double
-        let apparent_temperature: Double
-        let relative_humidity_2m: Int
-        let weather_code: Int
-        let wind_speed_10m: Double
-    }
-    struct Hourly: Decodable {
-        let time: [String]
-        let temperature_2m: [Double]
-        let weather_code: [Int]
-        let precipitation_probability: [Int]?
-        let wind_gusts_10m: [Double]?   // 恶劣天气预警的大风判据
-    }
-    struct Daily: Decodable {
-        let time: [String]
-        let temperature_2m_max: [Double]
-        let temperature_2m_min: [Double]
-        let weather_code: [Int]?
-        let precipitation_probability_max: [Int]?
-        let sunrise: [String]?
-        let sunset: [String]?
-    }
-    let current: Current
-    let hourly: Hourly
-    let daily: Daily
-}
-
-private extension Array {
-    /// 越界安全取值（接口列长不齐时兜底）
-    subscript(safe index: Int) -> Element? {
-        indices.contains(index) ? self[index] : nil
     }
 }

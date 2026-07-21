@@ -80,11 +80,11 @@ extension AppDelegate {
 
     /// 调试用：走真实路径接入 / 卸载 Codex 的 notify 转发器
     @objc func debugCodexHookOn() {
-        print("[ProNotch] 调试：Codex notify 接入 = \(GlowHookInstaller.setInstalled(.codex, true))")
+        AppLog.debugTools.debug("调试：Codex notify 接入 = \(GlowHookInstaller.setInstalled(.codex, true))")
     }
 
     @objc func debugCodexHookOff() {
-        print("[ProNotch] 调试：Codex notify 卸载 = \(GlowHookInstaller.setInstalled(.codex, false))")
+        AppLog.debugTools.debug("调试：Codex notify 卸载 = \(GlowHookInstaller.setInstalled(.codex, false))")
     }
 
     // MARK: - README 配图
@@ -111,7 +111,7 @@ extension AppDelegate {
         hosting.cacheDisplay(in: hosting.bounds, to: rep)
         if let data = rep.representation(using: .png, properties: [:]) {
             try? data.write(to: URL(fileURLWithPath: "/tmp/pronotch-switcher.png"))
-            print("[ProNotch] 剪贴板切换器快照已保存")
+            AppLog.debugTools.debug("剪贴板切换器快照已保存")
         }
     }
 
@@ -136,7 +136,7 @@ extension AppDelegate {
         hosting.cacheDisplay(in: hosting.bounds, to: rep)
         if let data = rep.representation(using: .png, properties: [:]) {
             try? data.write(to: URL(fileURLWithPath: "/tmp/pronotch-toolbar.png"))
-            print("[ProNotch] 超级截图工具栏快照已保存")
+            AppLog.debugTools.debug("超级截图工具栏快照已保存")
         }
     }
 
@@ -181,7 +181,7 @@ extension AppDelegate {
                     hosting.cacheDisplay(in: hosting.bounds, to: rep)
                     if let data = rep.representation(using: .png, properties: [:]) {
                         try? data.write(to: URL(fileURLWithPath: "/tmp/pronotch-panel-collapsed.png"))
-                        print("[ProNotch] 面板快照: collapsed")
+                        AppLog.debugTools.debug("面板快照: collapsed")
                     }
                 }
                 win.close()
@@ -219,7 +219,7 @@ extension AppDelegate {
                     hosting.cacheDisplay(in: hosting.bounds, to: rep)
                     if let data = rep.representation(using: .png, properties: [:]) {
                         try? data.write(to: URL(fileURLWithPath: "/tmp/pronotch-panel-\(name).png"))
-                        print("[ProNotch] 面板快照: \(name)")
+                        AppLog.debugTools.debug("面板快照: \(name, privacy: .public)")
                     }
                 }
                 win.close()
@@ -260,7 +260,7 @@ extension AppDelegate {
                 if let data = rep.representation(using: .png, properties: [:]) {
                     let out = "/tmp/pronotch-settings-\(section.rawValue).png"
                     try? data.write(to: URL(fileURLWithPath: out))
-                    print("[ProNotch] 设置窗口快照已保存: \(out)")
+                    AppLog.debugTools.debug("设置窗口快照已保存: \(LogRedaction.lastComponent(out), privacy: .public)")
                 }
             }
             NSApp.terminate(nil)

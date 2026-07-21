@@ -30,8 +30,11 @@ enum WebSearch {
     /// 注入给模型的单条正文上限
     static let perResultCap = 1500
 
-    private static let userAgent =
+    static let userAgent =
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Safari/537.36"
+
+    /// 抓正文统一走带安全策略的抓取器（复用同一个 URLSession，不必每页新建）
+    private static let pageFetcher = SafeWebFetcher()
 
     static func search(query: String, engine: SearchEngine, key: String) async throws -> [SearchResult] {
         switch engine {
@@ -185,22 +188,18 @@ enum WebSearch {
         return results
     }
 
-    /// 抓取网页并提取纯文本正文（尽力而为，失败返回 nil 保留原摘要）
-    private static func fetchPageText(url: String) async -> String? {
+    /// 抓取网页并提取纯文本正文（尽力而为，失败返回 nil 保留原摘要）。
+    ///
+    /// URL 来自搜索引擎结果——属于外部可影响的输入，所以抓取前必须过 `SafeWebFetcher`
+    /// 的地址判定、重定向复检、大小上限与内容类型白名单，不能直接丢给 URLSession
+    static func fetchPageText(url: String, fetcher: SafeWebFetcher = pageFetcher) async -> String? {
         guard let pageURL = URL(string: url) else { return nil }
-        var request = URLRequest(url: pageURL)
-        request.timeoutInterval = 8
-        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let html = String(data: data, encoding: .utf8) else { return nil }
-        let text = htmlToText(html)
-        // 太短说明提取失败或是壳页面，不如保留搜索摘要
-        guard text.count > 200 else { return nil }
-        return String(text.prefix(perResultCap))
+        guard let text = try? await fetcher.fetchText(url: pageURL, cap: perResultCap),
+              !text.isEmpty else { return nil }   // 失败只降级为搜索摘要，不打断整轮对话
+        return text
     }
 
-    private static func htmlToText(_ html: String) -> String {
+    static func htmlToText(_ html: String) -> String {
         var text = html
         text = text.replacingOccurrences(of: #"<script[\s\S]*?</script>"#,
                                          with: " ", options: .regularExpression)

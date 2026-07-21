@@ -6,6 +6,8 @@ enum ScreenshotTranslator {
         var baseURL: String; var apiKey: String; var model: String
         var parallel: Bool = true
         var useSystemEngine: Bool = false   // true=优先系统翻译（失败降级到本 AI 配置）
+        /// 端点和模型都配好了、只差 Key 还没落钥匙串。用来区分"没配"和"还没就绪"两种提示
+        var keyPending: Bool = false
     }
 
     /// 分块并行翻译：按字数把条目切成连续块并发请求（上限 5 路）——模型逐 token 串行生成，
@@ -137,7 +139,7 @@ enum ScreenshotTranslator {
 
     /// 单次翻译请求：JSON 数组进出，去掉可能的 ``` 包裹，解析成字符串数组
     private static func request(_ texts: [String], system: String, temperature: Double, config: Config) async throws -> [String] {
-        guard let url = completionsURL(config.baseURL) else { throw err("接口地址无效") }
+        let url = try completionsURL(config.baseURL)
         let inputJSON = String(data: try JSONSerialization.data(withJSONObject: texts), encoding: .utf8) ?? "[]"
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -177,11 +179,14 @@ enum ScreenshotTranslator {
         }
     }
 
-    private static func completionsURL(_ baseURL: String) -> URL? {
+    /// 端点规范化 + 安全策略（与 AI 闪问同一套判定，见 EndpointPolicy）。internal 供测试
+    static func completionsURL(_ baseURL: String) throws -> URL {
         var raw = baseURL.trimmingCharacters(in: .whitespaces)
-        guard !raw.isEmpty else { return nil }
+        guard !raw.isEmpty else { throw err("接口地址无效") }
+        while raw.hasSuffix("/") { raw.removeLast() }
         if !raw.hasSuffix("/chat/completions") { raw += raw.hasSuffix("/v1") ? "/chat/completions" : "/v1/chat/completions" }
-        guard let url = URL(string: raw), url.scheme?.hasPrefix("http") == true else { return nil }
+        guard let url = URL(string: raw), url.scheme != nil else { throw err("接口地址无效") }
+        try EndpointPolicy.validateUserAPIEndpoint(url)
         return url
     }
     private static func err(_ m: String) -> NSError { NSError(domain: "translate", code: 0, userInfo: [NSLocalizedDescriptionKey: m]) }

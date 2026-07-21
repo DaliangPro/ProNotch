@@ -29,7 +29,7 @@ final class SuperScreenshotController {
         warmedUp = true
         Task.detached(priority: .utility) {
             _ = try? await SCShareableContent.current
-            print("[ProNotch] 截图子系统已预热")
+            AppLog.screenshot.info("截图子系统已预热")
         }
     }
 
@@ -40,7 +40,8 @@ final class SuperScreenshotController {
             let c = s.resolvedTranslateConfig
             return (.init(baseURL: c.baseURL, apiKey: c.apiKey, model: c.model,
                           parallel: s.translateParallel,
-                          useSystemEngine: s.translateEngine == "system"),
+                          useSystemEngine: s.translateEngine == "system",
+                          keyPending: c.keyPending),
                     s.translateTargetLang, s.translatePrompt)
         }
         let win = ScreenshotOverlayWindow(image: image, screen: screen, translateProvider: provider) { [weak self] in
@@ -70,7 +71,7 @@ final class SuperScreenshotController {
             let image = try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: cfg)
             return (image, screen)
         } catch {
-            print("[ProNotch] 超级截图捕获失败: \(error.localizedDescription)")
+            AppLog.screenshot.error("超级截图捕获失败: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             return nil
         }
     }

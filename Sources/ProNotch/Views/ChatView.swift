@@ -180,7 +180,7 @@ struct ChatView: View {
                       store.isConfigured,
                       let image = NSImage(pasteboard: .general) else { return false }
                 store.attachScreenshot(image)
-                print("[ProNotch] 已从剪贴板粘贴图片为闪问附件")
+                AppLog.chat.info("已从剪贴板粘贴图片为闪问附件")
                 return true
             }
             return attached ? nil : event

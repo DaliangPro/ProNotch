@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 /// AI 编码工具额度：一个限额窗口的状态
-struct QuotaWindow {
+struct QuotaWindow: Sendable {
     var usedPercent: Double?     // 已用百分比（nil=未知）
     var usedTokens: Int?         // 已用 token 数（Claude 估算路线用）
     var resetsAt: Date?          // 窗口重置时间
@@ -18,7 +18,7 @@ struct QuotaWindow {
 }
 
 /// 一个服务（Claude Code / Codex）的额度快照
-struct ServiceQuota {
+struct ServiceQuota: Sendable {
     var plan: String?            // 订阅计划名
     var account: String?         // 账号标识（多账号切换时确认数据归属）
     var primary: QuotaWindow?    // 5 小时窗
@@ -26,6 +26,66 @@ struct ServiceQuota {
     var dataAt: Date?            // 数据时间（源文件里最后一条记录的时间）
     var error: String?           // 拿不到数据时的原因
     var topTasks: [TaskUsage] = []   // 近 7 天最耗额度的前 5 个任务（占总额度%）
+}
+
+/// 一轮刷新拉回来的全部额度数据（不可变快照，跨线程只传值）
+struct UsageSnapshot: Sendable {
+    var codex: ServiceQuota?
+    var claude: ServiceQuota?
+    var grok: ServiceQuota?
+    var kimi: ServiceQuota?
+    /// 键含来源：四家的 UUID 空间彼此独立，裸 ID 作键会让撞上同一 UUID 的两家互相覆盖
+    var sessionTokens: [AgentSessionKey: Int] = [:]
+}
+
+/// 额度数据的来源。抽成协议是为了让"迟到结果"可测：
+/// 测试里换成可控延迟的 loader，就能构造"A 还在拉、B 已被取消"这种时序
+protocol UsageLoading: Sendable {
+    func load(enabled: Set<AgentKind>) async -> UsageSnapshot
+}
+
+/// 生产实现：按勾选并发拉四家额度 + 扫会话 token
+struct ProductionUsageLoader: UsageLoading {
+    func load(enabled: Set<AgentKind>) async -> UsageSnapshot {
+        let cx = enabled.contains(.codex) ? await CodexQuotaLoader.load() : nil
+        let cl = enabled.contains(.claude) ? await ClaudeQuotaLoader.load() : nil
+        let gr = enabled.contains(.grok) ? await GrokQuotaLoader.load() : nil
+        let km = enabled.contains(.kimi) ? await KimiQuotaLoader.load() : nil
+        // 每会话 token 统计（与额度数据源解耦）；Top 5 占比锚定周额度已用%（无周窗则退 5 小时窗）
+        let claudeSessions = enabled.contains(.claude) ? SessionUsage.scanClaude() : []
+        let codexSessions = enabled.contains(.codex) ? SessionUsage.scanCodex() : []
+        let kimiSessions = enabled.contains(.kimi) ? SessionUsage.scanKimi() : []
+        let grokSessions = enabled.contains(.grok) ? SessionUsage.scanGrok() : []
+        let claudeTop = SessionUsage.top(claudeSessions,
+            weekUsedPercent: cl?.secondary?.usedPercent ?? cl?.primary?.usedPercent, source: .claude)
+        let codexTop = SessionUsage.top(codexSessions,
+            weekUsedPercent: cx?.secondary?.usedPercent ?? cx?.primary?.usedPercent, source: .codex)
+        let kimiTop = SessionUsage.top(kimiSessions,
+            weekUsedPercent: km?.secondary?.usedPercent ?? km?.primary?.usedPercent, source: .kimi)
+        let grokTop = SessionUsage.top(grokSessions,
+            weekUsedPercent: gr?.secondary?.usedPercent ?? gr?.primary?.usedPercent, source: .grok)
+        return UsageSnapshot(
+            codex: cx.map { q in var q = q; q.topTasks = codexTop; return q },
+            claude: cl.map { q in var q = q; q.topTasks = claudeTop; return q },
+            grok: gr.map { q in var q = q; q.topTasks = grokTop; return q },
+            kimi: km.map { q in var q = q; q.topTasks = kimiTop; return q },
+            sessionTokens: Self.tokenTable([
+                (.claude, claudeSessions), (.codex, codexSessions),
+                (.kimi, kimiSessions), (.grok, grokSessions),
+            ]))
+    }
+
+    /// 归并四家的每会话 token。同一家内同键重复（Codex 子代理聚合后可能出现）取和，
+    /// 跨家因为键含来源不会相遇
+    static func tokenTable(_ groups: [(AgentKind, [SessionUsage.Scanned])]) -> [AgentSessionKey: Int] {
+        var table: [AgentSessionKey: Int] = [:]
+        for (source, scanned) in groups {
+            for item in scanned {
+                table[AgentSessionKey(source: source, rawID: item.id), default: 0] += item.tokens
+            }
+        }
+        return table
+    }
 }
 
 /// 额度页数据源：读本机 Claude Code / Codex CLI 的会话文件取实时额度。
@@ -37,11 +97,21 @@ final class UsageStore: ObservableObject {
     @Published private(set) var claude: ServiceQuota?
     @Published private(set) var grok: ServiceQuota?
     @Published private(set) var kimi: ServiceQuota?
-    @Published private(set) var sessionTokens: [String: Int] = [:]   // sessionId → 有效 token（Agent 会话页用）
+    /// 会话键 → 有效 token（Agent 会话页用）。键含来源，两家撞上同一 UUID 也不会互相覆盖
+    @Published private(set) var sessionTokens: [AgentSessionKey: Int] = [:]
     @Published private(set) var refreshing = false
     private var lastRefresh: Date = .distantPast
+    private let loader: UsageLoading
+    /// 刷新代际。每启动一轮 +1，结果回来时对不上就丢——
+    /// 否则用户刚取消勾选 Claude，上一轮在途的结果照样把 Claude 数据写回来
+    private var generation: UInt64 = 0
+    private var refreshTask: Task<Void, Never>?
+    /// 在途刷新期间又来了强制刷新：记下来，这轮一结束立刻补跑。
+    /// 直接丢弃会让「勾选变更后立即重拉」整个失效
+    private var pendingForce = false
 
-    init() {
+    init(loader: UsageLoading = ProductionUsageLoader()) {
+        self.loader = loader
         // 设置页勾选变更 → 立即清掉取消家的数据与缓存、重拉新勾家；平时刷新自然按勾选走
         NotificationCenter.default.addObserver(
             forName: .proNotchAgentSelectionChanged,
@@ -60,8 +130,10 @@ final class UsageStore: ObservableObject {
         }
     }
 
-    /// 勾选变更即时生效：取消的家数据置空、解析缓存释放；新勾的家马上拉一轮
-    private func applyAgentSelection() {
+    /// 勾选变更即时生效：取消的家数据置空、解析缓存释放；新勾的家马上拉一轮。
+    /// 关键是先 `cancelRefresh()`——在途那轮是按旧勾选集拉的，
+    /// 让它跑完再写结果，等于把刚取消的家又填回界面
+    func applyAgentSelection() {
         let enabled = AgentKind.enabledSet()
         if !enabled.contains(.claude) { claude = nil }
         if !enabled.contains(.codex) { codex = nil }
@@ -69,7 +141,18 @@ final class UsageStore: ObservableObject {
         if !enabled.contains(.kimi) { kimi = nil }
         SessionUsage.clearCaches(keeping: enabled)
         MemoryRelief.relieveSoon()
-        refresh(force: true)
+        cancelRefresh()
+        start(enabled: enabled)
+    }
+
+    /// 取消在途刷新：代际前进（迟到结果自动作废）、任务取消、`refreshing` 复位。
+    /// 复位这一步不能漏——被取消的任务不会再走到收尾分支，漏了就永远卡在"刷新中"
+    func cancelRefresh() {
+        generation &+= 1
+        refreshTask?.cancel()
+        refreshTask = nil
+        pendingForce = false
+        refreshing = false
     }
 
     /// 顺带刷新（Agent 页心跳专用，5 分钟节流）：那边 8 秒一跳只为拿每会话 token 消耗，
@@ -84,45 +167,50 @@ final class UsageStore: ObservableObject {
     /// 只处理勾选的 Agent（每家总开关）：未勾选家不发请求、不扫它的任何文件
     func refresh(force: Bool = false) {
         guard force || Date().timeIntervalSince(lastRefresh) > 30 else { return }
-        guard !refreshing else { return }
+        guard !refreshing else {
+            // 撞上在途刷新：强制刷新排队等这轮结束，普通刷新直接跳过（本来就是节流触发的）
+            if force { pendingForce = true }
+            return
+        }
+        start(enabled: AgentKind.enabledSet())   // 主线程取快照，整轮全程用同一份
+    }
+
+    private func start(enabled: Set<AgentKind>) {
         lastRefresh = Date()
         refreshing = true
-        let enabled = AgentKind.enabledSet()   // 主线程取快照，后台闭包全程用同一份
-        Task.detached(priority: .utility) {
-            let cx = enabled.contains(.codex) ? await CodexQuotaLoader.load() : nil
-            let cl = enabled.contains(.claude) ? await ClaudeQuotaLoader.load() : nil
-            let gr = enabled.contains(.grok) ? await GrokQuotaLoader.load() : nil
-            let km = enabled.contains(.kimi) ? await KimiQuotaLoader.load() : nil
-            // 每会话 token 统计（与额度数据源解耦）；Top 5 占比锚定周额度已用%（无周窗则退 5 小时窗）
-            let claudeSessions = enabled.contains(.claude) ? SessionUsage.scanClaude() : []
-            let codexSessions = enabled.contains(.codex) ? SessionUsage.scanCodex() : []
-            let kimiSessions = enabled.contains(.kimi) ? SessionUsage.scanKimi() : []
-            let grokSessions = enabled.contains(.grok) ? SessionUsage.scanGrok() : []
-            let claudeTop = SessionUsage.top(claudeSessions,
-                weekUsedPercent: cl?.secondary?.usedPercent ?? cl?.primary?.usedPercent, source: .claude)
-            let codexTop = SessionUsage.top(codexSessions,
-                weekUsedPercent: cx?.secondary?.usedPercent ?? cx?.primary?.usedPercent, source: .codex)
-            let kimiTop = SessionUsage.top(kimiSessions,
-                weekUsedPercent: km?.secondary?.usedPercent ?? km?.primary?.usedPercent, source: .kimi)
-            let grokTop = SessionUsage.top(grokSessions,
-                weekUsedPercent: gr?.secondary?.usedPercent ?? gr?.primary?.usedPercent, source: .grok)
-            let tokens = Dictionary((claudeSessions + codexSessions + kimiSessions + grokSessions)
-                .map { ($0.id, $0.tokens) }) { a, _ in a }
-            let claudeQuota = cl.map { q in var q = q; q.topTasks = claudeTop; return q }
-            let codexQuota = cx.map { q in var q = q; q.topTasks = codexTop; return q }
-            let kimiQuota = km.map { q in var q = q; q.topTasks = kimiTop; return q }
-            let grokQuota = gr.map { q in var q = q; q.topTasks = grokTop; return q }
-            await MainActor.run { [weak self] in
-                self?.codex = codexQuota
-                self?.claude = claudeQuota
-                self?.grok = grokQuota
-                self?.kimi = kimiQuota
-                self?.sessionTokens = tokens
-                self?.refreshing = false
-                // 扫描是全 App 最大的瞬时分配源（transcript 全库 GB 级），
-                // 收尾把 libmalloc 攒下的空闲大块还给系统，压常驻 footprint
-                MemoryRelief.relieveSoon()
-            }
+        generation &+= 1
+        let gen = generation
+        // Task 继承 MainActor 隔离：loader.load 是 nonisolated async，会自动跳去后台跑，
+        // 回来后 apply 天然在主线程，不必再 MainActor.run 套一层
+        refreshTask = Task { [weak self, loader] in
+            let snapshot = await loader.load(enabled: enabled)
+            self?.apply(snapshot, generation: gen, enabled: enabled)
+        }
+    }
+
+    /// 结果落地。三道校验都过才写 UI：代际未变、任务未取消、勾选集与出发时一致
+    private func apply(_ snapshot: UsageSnapshot, generation gen: UInt64, enabled: Set<AgentKind>) {
+        defer { finish(generation: gen) }
+        guard gen == generation, !Task.isCancelled, enabled == AgentKind.enabledSet() else { return }
+        // 再按勾选过一遍：loader 是外部实现，不能假定它一定尊重了 enabled
+        codex = enabled.contains(.codex) ? snapshot.codex : nil
+        claude = enabled.contains(.claude) ? snapshot.claude : nil
+        grok = enabled.contains(.grok) ? snapshot.grok : nil
+        kimi = enabled.contains(.kimi) ? snapshot.kimi : nil
+        sessionTokens = snapshot.sessionTokens
+        // 扫描是全 App 最大的瞬时分配源（transcript 全库 GB 级），
+        // 收尾把 libmalloc 攒下的空闲大块还给系统，压常驻 footprint
+        MemoryRelief.relieveSoon()
+    }
+
+    /// 收尾。旧代际的任务不许碰 `refreshing`——那是新任务的状态了
+    private func finish(generation gen: UInt64) {
+        guard gen == generation else { return }
+        refreshing = false
+        refreshTask = nil
+        if pendingForce {
+            pendingForce = false
+            start(enabled: AgentKind.enabledSet())
         }
     }
 }

@@ -186,9 +186,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         for url in urls { handleGlowURL(url) }
     }
 
+    /// 调试旁路：仅 DEBUG 构建、且显式设置了环境变量时才放行无令牌回调。
+    /// 正式构建里这个常量恒为 false，编译期就没有旁路可走
+    private static var allowsUnsignedGlowCallback: Bool {
+        #if DEBUG
+        return ProcessInfo.processInfo.environment["PRONOTCH_ALLOW_UNSIGNED_GLOW"] == "1"
+        #else
+        return false
+        #endif
+    }
+
     private func handleGlowURL(_ url: URL) {
         guard url.scheme == "pronotch", url.host == "done" else { return }
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+        // 认证优先：这条 URL 谁都能调（本机任意进程、任意网页里的一个链接），
+        // 伪造的回调不仅能乱点光晕，还能往会话表里塞宿主映射、把用户点卡片时引向别的 App。
+        // 校验必须发生在动 host/session 映射与点亮光晕之前
+        let token = items?.first(where: { $0.name == "token" })?.value
+        if case .reject(let reason) = GlowCallbackAuth.decide(
+            token: token, expected: GlowHookToken.current(.production),
+            allowUnsigned: Self.allowsUnsignedGlowCallback) {
+            AppLog.app.error("已丢弃未通过认证的 pronotch://done 回调：\(reason, privacy: .public)")
+            return
+        }
         let source = items?.first(where: { $0.name == "source" })?.value
         // host：hook 探测到的「Agent 实际所在 App」bundle id（终端/IDE/桌面版通用）
         let host = items?.first(where: { $0.name == "host" })?.value
@@ -196,43 +216,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let session = items?.first(where: { $0.name == "session" })?.value ?? ""
         // host 偶发抓空（Claudian 的 claude 有时没挂在 Obsidian 进程链下）→ 复用该会话之前抓对过的宿主，
         // 不回退桌面版；否则光晕的 activeHosts 记成桌面版，切回 Obsidian 匹配不上、熄不掉
-        let effectiveHost = (host?.isEmpty == false) ? host : env?.agentSessions.knownHost(for: session)
         // source 参数即 AgentKind 的 rawValue（claude/codex/kimi/grok），支持光晕的家统一走这一条路
         guard let kind = source.flatMap(AgentKind.init(rawValue:)), kind.supportsGlow else { return }
+        let effectiveHost = (host?.isEmpty == false) ? host
+            : env?.agentSessions.knownHost(for: session, source: kind)
         glowController?.notifyCompletion(kind, host: effectiveHost)
         env?.agentSessions.markTurnEnded(session: session, source: kind, host: host)
     }
 
     /// 应用更名（NotchHub → ProNotch，bundle id 一并变更）的一次性数据搬家：
-    /// 配置域整体拷贝、数据目录改名、钥匙串条目迁移，必须先于各 Store 初始化
+    /// 配置域整体拷贝、数据目录改名、钥匙串条目迁移，必须先于各 Store 初始化。
+    ///
+    /// 三步分别记结果，**全部达到「成功或无需迁移」才置完成标记**。
+    /// 原先无条件置 true：钥匙串首启弹授权框被用户点了拒绝，这一次就永久放弃，
+    /// 旧 service 下的 Key 再也搬不过来——而用户看到的只是「API Key 不见了」
     private static func migrateFromNotchHubIfNeeded() {
         let defaults = UserDefaults.standard
         guard !defaults.bool(forKey: "didMigrateFromNotchHub") else { return }
 
-        // 1. 旧配置域整体拷入新域（新域已有的键不覆盖）
-        if let legacy = defaults.persistentDomain(forName: "com.jiliang.NotchHub") {
+        // 1. 旧配置域整体拷入新域（新域已有的键不覆盖）。纯内存操作，无失败路径
+        if let legacy = defaults.persistentDomain(forName: KeychainStore.legacyService) {
             var copied = 0
             for (key, value) in legacy where defaults.object(forKey: key) == nil {
                 defaults.set(value, forKey: key)
                 copied += 1
             }
-            print("[ProNotch] 已从旧版配置迁移 \(copied) 项设置")
+            AppLog.app.info("已从旧版配置迁移 \(copied) 项设置")
         }
 
-        // 2. 数据目录（剪贴板历史 / 话术库）随应用名改名
+        // 2. 数据目录（剪贴板历史 / 话术库）随应用名改名。失败保留旧目录，不置完成标记
+        var directoryOK = true
         let fm = FileManager.default
         if let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
             let oldDir = base.appendingPathComponent("NotchHub")
             let newDir = base.appendingPathComponent("ProNotch")
+            // 新目录已存在时不覆盖：那是当前版本正在用的数据
             if fm.fileExists(atPath: oldDir.path), !fm.fileExists(atPath: newDir.path) {
-                try? fm.moveItem(at: oldDir, to: newDir)
-                print("[ProNotch] 数据目录已迁移")
+                do {
+                    try fm.moveItem(at: oldDir, to: newDir)
+                    AppLog.app.info("数据目录已迁移")
+                } catch {
+                    directoryOK = false
+                    AppLog.app.error("数据目录迁移失败（旧目录已保留，下次启动重试）: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
+                }
             }
         }
 
-        // 3. 钥匙串条目搬到新 service
-        KeychainStore.migrateLegacyService()
+        // 3. 钥匙串条目搬到新 service（事务式：读回校验通过才删旧值）
+        let keychainReport = KeychainStore.migrateLegacyService()
 
+        guard directoryOK, keychainReport.isComplete else {
+            AppLog.app.info("迁移未全部完成，保留重试标记，下次启动继续")
+            return
+        }
         defaults.set(true, forKey: "didMigrateFromNotchHub")
     }
 
@@ -241,6 +277,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         env?.clipboard.stop()
         env?.chat.stopStreaming()
         env?.quickActions.stop()
+        env?.memory.stop()
         windowControllers.forEach { $0.close() }
     }
 
@@ -461,8 +498,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         withCompletionHandler completionHandler: @escaping () -> Void) {
         let urlString = response.notification.request.content.userInfo["url"] as? String
         Task { @MainActor in
-            if let urlString, let url = URL(string: urlString) {
-                NSWorkspace.shared.open(url)
+            // 通知里的网址虽是自己塞的，打开前仍过一遍策略——「打开网址」这个出口只留一道闸
+            if let urlString {
+                NSWorkspace.shared.open(ReleaseURLPolicy.trusted(URL(string: urlString)))
             }
         }
         completionHandler()

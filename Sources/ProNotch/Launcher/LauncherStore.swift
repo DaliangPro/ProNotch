@@ -75,7 +75,7 @@ final class LauncherStore: ObservableObject {
     }
 
     func launch(_ app: AppEntry) {
-        print("[ProNotch] 启动应用: \(app.name)")
+        AppLog.launcher.info("启动应用: \(app.name, privacy: .private)")
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
         NSWorkspace.shared.openApplication(at: app.url, configuration: config)
@@ -115,7 +115,7 @@ final class LauncherStore: ObservableObject {
             return apps.first { $0.url.path == path }
                 ?? AppEntry(url: URL(fileURLWithPath: path), name: fm.displayName(atPath: path))
         }
-        print("[ProNotch] 应用扫描完成：全部 \(allApps.count) 个，置顶 \(pinned.count) 个")
+        AppLog.launcher.info("应用扫描完成：全部 \(self.allApps.count, privacy: .public) 个，置顶 \(self.pinned.count, privacy: .public) 个")
         prewarmIcons(apps)
     }
 

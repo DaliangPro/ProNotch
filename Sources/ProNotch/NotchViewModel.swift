@@ -314,10 +314,10 @@ final class NotchViewModel: ObservableObject {
         if shouldHide {
             if isExpanded { collapse() }
             panel?.orderOut(nil)
-            print("[ProNotch] 检测到全屏应用，刘海已隐藏")
+            AppLog.window.info("检测到全屏应用，刘海已隐藏")
         } else {
             panel?.orderFrontRegardless()
-            print("[ProNotch] 全屏结束，刘海已恢复")
+            AppLog.window.info("全屏结束，刘海已恢复")
         }
     }
 
@@ -427,7 +427,7 @@ final class NotchViewModel: ObservableObject {
 
     func debugToggle() {
         guard !hiddenForFullscreen else {
-            print("[ProNotch] 刘海当前因全屏隐藏，忽略展开请求")
+            AppLog.window.info("刘海当前因全屏隐藏，忽略展开请求")
             return
         }
         if isExpanded {
@@ -499,7 +499,7 @@ final class NotchViewModel: ObservableObject {
 
     private func expand() {
         guard !isExpanded else { return }
-        print("[ProNotch] 展开")
+        AppLog.window.info("展开")
         // 展开期间窗口需要接收点击与悬停
         panel?.ignoresMouseEvents = false
         // 形状只管快速长大到位；弹跳（衰减震荡）由 NotchContainerView 的
@@ -511,7 +511,7 @@ final class NotchViewModel: ObservableObject {
 
     private func collapse() {
         guard isExpanded else { return }
-        print("[ProNotch] 收起")
+        AppLog.window.info("收起")
         debugPinned = false
         isPinned = false   // 收起即解锁：下次展开回到默认「自动收起」
         keyboardHold = false
