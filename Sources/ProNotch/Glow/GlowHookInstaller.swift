@@ -75,7 +75,21 @@ enum GlowHookInstaller {
     /// hook 脚本格式版本：升级时 +1，启动迁移据此把旧脚本刷新到新格式
     /// v4：URL 追加 session（Claude 读 stdin 的 session_id / Codex 读 payload 的 thread-id），供 Agent 页瞬时点亮
     /// v5：URL 追加 token，应用侧恒定时间校验；无令牌的回调一律丢弃
-    private static let scriptFormat = 5
+    /// v6：投递前先确认 ProNotch 在运行，不再把退出的 App 拉起来
+    private static let scriptFormat = 6
+
+    /// 投递回调前先确认 ProNotch 还在运行。
+    ///
+    /// 病灶：`open` 遇到没在运行的 App 会**先把它启动起来**再投递 URL。
+    /// 于是用户前脚手动退出 ProNotch，后脚 Agent 干完一轮活，hook 就把它拉了回来——
+    /// 用户看到的是「关不掉，它自己又开了」。`-g` 不抢焦点，连个窗口都不弹，
+    /// 只有菜单栏图标默默出现，更难归因。
+    ///
+    /// 用 `if` 而不是 `pgrep … || exit 0`：
+    /// - Codex 脚本在这之后还要 exec 转发给原有的 notify，中途 exit 会把别人的链也掐断；
+    /// - Stop hook 返回非零退出码会被 Claude Code 当成 hook 失败报错。
+    private static let deliverGuard =
+        #"if /usr/bin/pgrep -x ProNotch >/dev/null 2>&1; then open -g "$url"; fi"#
 
     /// 沿进程链向上找到「Agent 实际所在的 GUI App」bundle id。只认 /Applications 下的 app
     /// （借此排除 claude-code 的 CLI 包装 app）；终端 / IDE / 桌面 App 通用，找不到回空。
@@ -116,7 +130,7 @@ enum GlowHookInstaller {
         url="pronotch://done?source=\(source)&token=\(token)"
         [ -n "$host" ] && url="$url&host=$host"
         [ -n "$sid" ] && url="$url&session=$sid"
-        open -g "$url"
+        \(deliverGuard)
         """
     }
 
@@ -430,7 +444,7 @@ enum GlowHookInstaller {
                 url="pronotch://done?source=codex&token=\(token)"
                 [ -n "$host" ] && url="$url&host=$host"
                 [ -n "$tid" ] && url="$url&session=$tid"
-                open -g "$url" ;;
+                \(deliverGuard) ;;
             esac ;;
         esac
         \(forwardExecBlock(previous: previous))

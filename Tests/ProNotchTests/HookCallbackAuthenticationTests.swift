@@ -197,8 +197,10 @@ final class HookCallbackAuthenticationTests: XCTestCase {
         try prepareAgentHomes()
         // 先造一份 v4 现场：脚本无 token，配置已接入
         XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))
+        // 用正则改格式号而不是写死「5」：脚本格式每升一版这条测试就会失效一次
         let legacy = read(paths.claudeScript)
-            .replacingOccurrences(of: "PRONOTCH_FMT=5", with: "PRONOTCH_FMT=4")
+            .replacingOccurrences(of: #"PRONOTCH_FMT=\d+"#, with: "PRONOTCH_FMT=4",
+                                  options: .regularExpression)
             .replacingOccurrences(of: "&token=\(GlowHookToken.current(paths)!)", with: "")
         try legacy.write(toFile: paths.claudeScript, atomically: true, encoding: .utf8)
         XCTAssertFalse(read(paths.claudeScript).contains("token="), "前置条件：老脚本确实没令牌")
@@ -207,7 +209,7 @@ final class HookCallbackAuthenticationTests: XCTestCase {
 
         let token = try XCTUnwrap(GlowHookToken.current(paths))
         let upgraded = read(paths.claudeScript)
-        XCTAssertTrue(upgraded.contains("PRONOTCH_FMT=5"))
+        XCTAssertFalse(upgraded.contains("PRONOTCH_FMT=4"), "老格式号必须被刷掉")
         XCTAssertTrue(upgraded.contains("token=\(token)"), "迁移后必须带上令牌，否则老用户的光晕再也不亮")
     }
 
