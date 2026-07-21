@@ -44,10 +44,11 @@ struct ChatRequestConfig: Sendable, Equatable {
     }
 
     private static func makeURL(_ raw: String) throws -> URL {
-        guard let url = URL(string: raw), url.scheme?.hasPrefix("http") == true else {
+        guard let url = URL(string: raw), url.scheme != nil else {
             throw NSError(domain: "ProNotch", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "API 地址无效: \(raw)"])
         }
+        try EndpointPolicy.validateUserAPIEndpoint(url)   // 明文 HTTP 发公网直接在这拦掉
         return url
     }
 }

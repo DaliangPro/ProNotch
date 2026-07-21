@@ -36,7 +36,7 @@
 
 ![超级截图工具栏](docs/screenshot-superscreenshot.png)
 
-**AI 闪问** — 自填任意 OpenAI 兼容接口（DeepSeek / Kimi / Ollama 等均可），流式输出、Markdown 渲染、可拉取模型列表；联网搜索可选 **DuckDuckGo（免费、零配置）/ Tavily / Brave**，各自填 Key、一键测试：
+**AI 闪问** — 自填任意 OpenAI 兼容接口（DeepSeek / Kimi / Ollama 等均可；远程端点须为 `https`，明文 `http` 只对本机 `localhost` / `127.0.0.x` 放行，避免 Key 与对话在网络上裸奔），流式输出、Markdown 渲染、可拉取模型列表；联网搜索可选 **DuckDuckGo（免费、零配置）/ Tavily / Brave**，各自填 Key、一键测试：
 
 ![AI 闪问](docs/screenshot-chat.png)
 
