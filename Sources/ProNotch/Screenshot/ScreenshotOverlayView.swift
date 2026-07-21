@@ -2189,17 +2189,18 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         Task { @MainActor in
             await ensureWindowShape()
             // tiff→png 编码链的临时大 data 圈进池里，写盘即释放（不等 runloop 收尾）
-            autoreleasepool {
-                guard let img = compose(),
-                      let tiff = img.tiffRepresentation,
-                      let rep = NSBitmapImageRep(data: tiff),
-                      let png = rep.representation(using: .png, properties: [:]) else { return }
-                let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd HH.mm.ss"
-                let url = FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent("Desktop/截图 \(fmt.string(from: Date())).png")
-                try? png.write(to: url)
+            let result: Result<URL, ScreenshotSaver.Failure> = autoreleasepool {
+                ScreenshotSaver.save(compose().flatMap(ScreenshotSaver.pngData),
+                                     prefix: "截图", date: Date())
             }
-            close()
+            switch ScreenshotSaver.outcome(for: result) {
+            case .close:
+                close()
+            case .keepOpen(let message):
+                // 存不下就别关窗：选区、标注、原图都还在，用户可以重试或改存别处
+                showHint(message)
+                if let sel = selection { showToolbar(for: sel) }
+            }
         }
     }
 
@@ -2637,20 +2638,26 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     }
 
     private func saveLongResult() {
-        if let cg = longResultCG {
-            let fmt = DateFormatter(); fmt.dateFormat = "yyyy-MM-dd HH.mm.ss"
-            let url = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent("Desktop/长截图 \(fmt.string(from: Date())).png")
-            // 几万像素高的长图，PNG 编码要几百毫秒到数秒、临时 data 可达数百 MB。
-            // 放主线程会整个界面卡住；圈进 autoreleasepool 写完即释放
-            Task.detached(priority: .userInitiated) {
+        guard let cg = longResultCG else { cleanupLongShot(); close(); return }
+        let date = Date()
+        // 几万像素高的长图，PNG 编码要几百毫秒到数秒、临时 data 可达数百 MB。
+        // 放主线程会整个界面卡住；圈进 autoreleasepool 写完即释放
+        Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) {
                 autoreleasepool {
-                    guard let png = NSBitmapImageRep(cgImage: cg).representation(using: .png, properties: [:]) else { return }
-                    try? png.write(to: url)
+                    ScreenshotSaver.save(ScreenshotSaver.pngData(cg), prefix: "长截图", date: date)
                 }
+            }.value
+            guard let self else { return }
+            switch ScreenshotSaver.outcome(for: result) {
+            case .close:
+                self.cleanupLongShot(); self.close()
+            case .keepOpen(let message):
+                // 滚了半分钟才拼出来的图，绝不能因为一次写盘失败就清掉——
+                // 结果条留在原地，复制 / 重试保存 / 丢弃三条路都还在
+                self.showHint(message)
             }
         }
-        cleanupLongShot(); close()
     }
 
     /// 把控制条面板换成另一块内容（录制条 → 输出选择条），并按尺寸重新居中到选区下方
