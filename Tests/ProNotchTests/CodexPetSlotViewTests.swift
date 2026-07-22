@@ -4,8 +4,9 @@ import SwiftUI
 
 /// Codex 槽位的素材完整性与尺寸边界。
 ///
-/// 素材是官方精灵图降采样来的（见 `CodexPetSprite` 的说明），网格与调色板一旦被改歪，
-/// 在 24×26pt 上肉眼看不出来，只能靠断言钉住。尺寸同样要钉：右槽可用宽度只有 50pt。
+/// 素材是大梁老师提供的官方「终端云」出图降采样来的（见 `CodexPetSprite` 的说明），
+/// 网格一旦被改歪，在 24pt 上肉眼看不出来，只能靠断言钉住。
+/// 尺寸同样要钉：右槽可用宽度只有 50pt。
 @MainActor
 final class CodexPetSlotViewTests: XCTestCase {
 
@@ -14,14 +15,14 @@ final class CodexPetSlotViewTests: XCTestCase {
     /// 收起态刘海高度（14 寸 MBP 典型值）
     private let slotHeight: CGFloat = 38
 
-    private var allGrids: [(String, [String])] {
-        [("idle", CodexPetSprite.idle),
-         ("working0", CodexPetSprite.working0),
-         ("working1", CodexPetSprite.working1)]
+    private var allFrames: [(String, [String])] {
+        [("resting", CodexPetSprite.resting), ("hopping", CodexPetSprite.hopping)]
     }
 
-    func test三帧的网格尺寸一致() {
-        for (name, grid) in allGrids {
+    /// 落地/弹起两态共用同一坐标系（弹跳靠网格内的留白表现），尺寸必须完全一致，
+    /// 否则切帧时整只会缩放，旁边的指示灯跟着横向跳
+    func test两态网格尺寸一致() {
+        for (name, grid) in allFrames {
             XCTAssertEqual(grid.count, CodexPetSprite.rows, "\(name) 行数不对")
             for (i, row) in grid.enumerated() {
                 XCTAssertEqual(row.count, CodexPetSprite.cols,
@@ -30,44 +31,52 @@ final class CodexPetSlotViewTests: XCTestCase {
         }
     }
 
-    /// 网格里只允许出现「.」与调色板范围内的色位字母。
-    /// 越界字母会被绘制时静默跳过，画出来缺一块——这里提前拦掉
-    func test网格字符都落在调色板范围内() {
-        let last = Character(UnicodeScalar(97 + CodexPetSprite.palette.count - 1)!)
-        for (name, grid) in allGrids {
+    /// 网格只认 . b k：混进别的字符会被 `CodexPetCanvas` 当成云身画出来，多一块糊在身上
+    func test网格只含约定的三种字符() {
+        for (name, grid) in allFrames {
             for row in grid {
-                for ch in row where ch != "." {
-                    XCTAssertTrue(("a"..."z").contains(ch) && ch <= last,
-                                  "\(name) 里出现越界色位「\(ch)」，可用到 \(last)")
-                }
+                XCTAssertTrue(row.allSatisfy { $0 == "." || $0 == "b" || $0 == "k" },
+                              "\(name) 混入了非法字符：\(row)")
             }
         }
     }
 
-    /// 青色（色位 i）是脸上那个 >_，是这只的辨识点。三帧都得有，
-    /// 掉了就只剩一坨蓝、认不出是 Codex
-    func test每帧都留着脸上的青色() {
-        let cyan = Character(UnicodeScalar(97 + CodexPetSprite.palette.count - 1)!)
-        for (name, grid) in allGrids {
-            let count = grid.reduce(0) { $0 + $1.filter { $0 == cyan }.count }
-            XCTAssertGreaterThanOrEqual(count, 2, "\(name) 的青色只剩 \(count) 格")
+    /// 得有一整块黑色终端屏——那是这只的辨识主体。掉了就只剩一朵纯蓝云，认不出是 Codex
+    func test有成块的终端屏() {
+        let black = CodexPetSprite.character.reduce(0) { $0 + $1.filter { $0 == "k" }.count }
+        XCTAssertGreaterThan(black, 80, "黑屏只剩 \(black) 格，终端脸没了")
+    }
+
+    /// 屏上的 `>_` 提示符是蓝格嵌在黑屏里。数「四邻皆黑的蓝格」——那只能是屏内的字，
+    /// 不会是云身边缘。掉到 0 说明脸被降采样吞平了
+    func test终端屏上留着提示符() {
+        let g = CodexPetSprite.character
+        func at(_ y: Int, _ x: Int) -> Character {
+            guard g.indices.contains(y) else { return "." }
+            let row = g[y]
+            guard x >= 0, x < row.count else { return "." }
+            return row[row.index(row.startIndex, offsetBy: x)]
         }
+        var glyph = 0
+        for y in g.indices {
+            for x in 0..<g[y].count where at(y, x) == "b" {
+                if at(y - 1, x) == "k" && at(y + 1, x) == "k"
+                    && at(y, x - 1) == "k" && at(y, x + 1) == "k" { glyph += 1 }
+            }
+        }
+        XCTAssertGreaterThanOrEqual(glyph, 1, "屏内一个被黑屏包住的提示符像素都没有")
     }
 
-    /// 工作态两帧必须真的不一样，否则动画看着没动
-    func test工作态两帧确有差别() {
-        XCTAssertNotEqual(CodexPetSprite.working0, CodexPetSprite.working1)
+    /// 落地与弹起必须真的错开一格，否则「弹跳」是原地不动
+    func test两态确有位移() {
+        XCTAssertNotEqual(CodexPetSprite.resting, CodexPetSprite.hopping,
+                          "落地态与弹起态完全一样，弹跳看不出来")
     }
 
-    /// 空闲是站姿、工作是抱笔记本坐姿，轮廓差别应当明显——
-    /// 若两者只差几格，说明取帧时取错了行
-    func test空闲与工作取的是不同姿态() {
+    /// 弹跳只是整体平移，不该增删像素——两态的非空格子数必须相等
+    func test弹跳前后像素守恒() {
         func filled(_ g: [String]) -> Int { g.reduce(0) { $0 + $1.filter { $0 != "." }.count } }
-        let diff = zip(CodexPetSprite.idle, CodexPetSprite.working0).reduce(0) { acc, pair in
-            acc + zip(pair.0, pair.1).filter { $0 != $1 }.count
-        }
-        XCTAssertGreaterThan(diff, filled(CodexPetSprite.idle) / 3,
-                             "两个姿态差别太小，多半是从同一行取的帧")
+        XCTAssertEqual(filled(CodexPetSprite.resting), filled(CodexPetSprite.hopping))
     }
 
     func test空闲态尺寸塞得进槽位() throws {

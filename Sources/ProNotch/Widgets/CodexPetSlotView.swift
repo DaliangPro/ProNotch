@@ -1,111 +1,63 @@
 import SwiftUI
 
-/// Codex 官方吉祥物（terminal pet「codex」）的像素原件，降采样版。
+/// Codex 官方吉祥物「终端云」的像素原件（大梁老师提供的 ChatGPT 出图，1254² 放大像素画）。
 ///
-/// **不是照着重画的**：素材取自官方 CDN 的精灵图
-/// `persistent.oaistatic.com/codex/pets/v1/codex-spritesheet-v4.webp`，
-/// 原件是 8 列 × 9 行的图集、单元格 192×208，行即状态（第 0 行 idle、第 7 行 running）。
+/// **换掉了此前从 CDN 图集降采样的那版**：旧版是官方 terminal pet（抱笔记本的小机器人），
+/// 带多层明暗渐变，放进 26pt 槽位后和隔壁 Clawd 的实心块完全不是一个精细度，
+/// 并排像成品挨着草稿。这版是一朵蓝云顶着黑色终端屏、屏上一个蓝色 `>_` 提示符，
+/// **只有蓝、黑两色，扁平无渐变**——和 Clawd 的两色实心块正好同一路画风，
+/// 「不是一个画风」的问题到此收口。
 ///
-/// 原件那身细腻的多层上色放进 26pt 高的槽位后，和隔壁 Clawd 的实心块完全不是一个精细度，
-/// 并排像成品挨着草稿（大梁老师拍板的口径：降到 20 列，跟 Clawd 的颗粒感拉齐）。
-/// 所以这里把 192×208 面积平均降到 20×22，再用 k-means 把颜色聚成 8 色。
-///
-/// 屏幕上那个 `>_` 是这只的辨识点，但它太细，降采样后只剩 `#6598B7` 一抹灰蓝。
-/// 因此青色单独占第 9 个色位、由色相判据直接归位，不参与聚类——
-/// 这是全篇唯一一处对原件的改动，为的是这个尺寸下还认得出脸。
+/// 取法：源图背景是烘焙进 RGB 的灰白棋盘（非真透明通道），按面积多数投票降到 26 列。
+/// 屏上的 `>_` 其实和云身同一个蓝，靠黑屏衬出来，因此不必单开色位。
 enum CodexPetSprite {
-    static let cols = 20
-    static let rows = 22
+    /// 26 列 × 26 行 = 25 行本体 + 顶上留一行给弹跳（与 Clawd 同构：留白写进网格，
+    /// 弹跳时整只上抬一格而画布不变，旁边指示灯不会被挤动）
+    static let cols = 26
+    static let rows = 26
 
-    /// a…h 由 k-means 从官方原件聚出，i 是屏幕上 `>_` 的青
-    static let palette: [Color] = [
-        Color(hex: "#181F4E"), Color(hex: "#202863"), Color(hex: "#232E6F"),
-        Color(hex: "#2A3B7B"), Color(hex: "#203084"), Color(hex: "#364B8B"),
-        Color(hex: "#283DA1"), Color(hex: "#2C44BE"), Color(hex: "#8FE3EE"),
+    /// 云身与提示符同色 `#5090F0`；终端屏 `#101010`。取自源图量化后的两个主色
+    static let bodyColor = Color(red: 0x50 / 255, green: 0x90 / 255, blue: 0xF0 / 255)
+    static let screenColor = Color(red: 0x10 / 255, green: 0x10 / 255, blue: 0x10 / 255)
+
+    /// 本体 25 行（`b` 云身/提示符、`k` 终端屏、`.` 透明）
+    static let character = [
+        ".........bbbbbb...........",
+        "........bbbbbbbb.bbb......",
+        ".......bbbbbbbbbbbbbb.....",
+        "......bbbbbbbbbbbbbbbb....",
+        "......bbbbbbbbbbbbbbbb....",
+        "...bbbbbbbbbbbbbbbbbbbb...",
+        "..bbbbbbbbbbbbbbbbbbbbbb..",
+        ".bbbbbbbbbbbbbbbbbbbbbbbb.",
+        ".bbbbbbbkkkkkkkkkkkkbbbbbb",
+        "bbbbbbbkkkkkkkkkkkkkkbbbbb",
+        "bbbbbbbkkkkkkkkkkkkkkbbbbb",
+        "bbbbbbbkkkbkkkkkkkkkkbbbbb",
+        "bbbbbbbkkkkbkkkkkkkkkbbbbb",
+        "bbbbbbbkkkkbkkkkkkkkkbbbbb",
+        "bbbbbbbkkkbkkkkkkkkkkbbbb.",
+        "..bbbbbkkkkkkkkbbbbkkbbbb.",
+        "..bbbbbkkkkkkkkkkkkkkbbbb.",
+        "..bbbbbbkkkkkkkkkkkkbbbbb.",
+        "..bbbbbbbbbbbbbbbbbbbbbb..",
+        "...bbbbbbbbbbbbbbbbbbbb...",
+        "..bbbbbbbbbbbbbbbbbbbbbbb.",
+        "..bbbb.bbbbbbbbbbbb..bbbb.",
+        "..bbb..bbbb....bbbb...bbb.",
+        "...b...bbbb....bbbb....b..",
+        "........bbb....bbb........",
     ]
 
-    /// 空闲：官方第 0 行 idle 首帧，站姿
-    static let idle = [
-        "....................",
-        "....................",
-        "....................",
-        "........dd..........",
-        ".......hhhgggd......",
-        "......ghhhhhhhd.....",
-        ".....dhhhhhhhhg.....",
-        "....hhhhhhhhhhhg....",
-        "...ehhgcabaabbfhf...",
-        "...fhhdadaaaaabhg...",
-        "...eghdaidaaaabhf...",
-        "...bghdaidadidahe...",
-        "....ggeacaabbabhd...",
-        "....eggdbbbbbdgg....",
-        ".....eefgggggfea....",
-        "......cceeeeeb......",
-        ".....egeghhhhef.....",
-        ".....gfeghhhgehb....",
-        ".....eccfeeecae.....",
-        ".......cgcafe.......",
-        "........ea.ca.......",
-        "....................",
-    ]
-
-    /// 工作中之一：官方第 7 行 running 首帧，抱着笔记本坐着敲
-    static let working0 = [
-        "....................",
-        "....................",
-        "....................",
-        ".......d............",
-        ".....fhhhfggd.......",
-        "....chhhhhhhhc......",
-        "...dghhhhhhhhgc.....",
-        "..bhhhhgggggghg.....",
-        "..ehhgcbbbbbbfhd....",
-        "..fgheadcbbbache....",
-        "..eggeadibbbbcgc....",
-        "...fgeaidbcibcg.....",
-        "...egfbaaaabacfa....",
-        "...bfggeeeebbbabba..",
-        ".....ceeffebbcdbba..",
-        ".....ffeefebbbicba..",
-        "....aegffcdbbcdba...",
-        ".....eeccbbbaaaba...",
-        ".....eebefccceb.....",
-        "......ceffbcefb.....",
-        "........cc..........",
-        "....................",
-    ]
-
-    /// 工作中之二：同一行第 4 帧，眼睛瞪成两竖。官方 running 六帧只有脸在变，
-    /// 20 列下多数帧的差别落不到一个像素上，取这两帧是因为脸差得最开
-    static let working1 = [
-        "....................",
-        "....................",
-        "....................",
-        ".......d..c.........",
-        ".....fhhhghhf.......",
-        "....chhhhhhhhd......",
-        "...dghhhhhhhhgd.....",
-        "..chhhhgggggghhc....",
-        "..fhhgcabbbabfhe....",
-        "..fghdaddbbibche....",
-        "..fggeaiiabibcge....",
-        "..afgeaidabibcgc....",
-        "...fgfbaaaaaacfa....",
-        "...cfgfeeeecbbabbb..",
-        "....aeeeffecbbdbba..",
-        "....affeefebbaidba..",
-        "....afgffddbbbdbb...",
-        ".....eeccbbbaaaba...",
-        ".....eebefcccec.....",
-        "......ceffcbefc.....",
-        "........cc..........",
-        "....................",
-    ]
+    private static let blankRow = String(repeating: ".", count: cols)
+    /// 落地态：留白在顶，云沉在底。空闲与弹跳的低点都用它
+    static let resting = [blankRow] + character
+    /// 弹起态：留白挪到底，整只上抬一格。工作态与 `resting` 交替就是原地一跳
+    static let hopping = character + [blankRow]
 }
 
-/// 把调色板网格画出来。按色位归并再落笔：一帧 440 格若逐格 fill 是 440 次绘制，
-/// 归并后只剩 9 次（每个色位一条 path）
+/// 把两色网格画出来：按色归并成两条 path 再落笔（一帧近 500 格，逐格 fill 是 500 次绘制，
+/// 归并后只剩两次）。`drawingGroup()` 再合成一层位图，弹跳重绘时不必逐帧重走 Canvas。
 private struct CodexPetCanvas: View {
     let grid: [String]
 
@@ -113,48 +65,48 @@ private struct CodexPetCanvas: View {
         Canvas { ctx, size in
             let cellW = size.width / CGFloat(CodexPetSprite.cols)
             let cellH = size.height / CGFloat(CodexPetSprite.rows)
-            var paths = [Path](repeating: Path(), count: CodexPetSprite.palette.count)
+            var body = Path()
+            var screen = Path()
             for (y, row) in grid.enumerated() {
                 for (x, ch) in row.enumerated() where ch != "." {
-                    // 'a' 起算的色位下标；越界（网格被改坏）就跳过，不画总比画错色好
-                    let i = Int(ch.asciiValue ?? 0) - 97
-                    guard paths.indices.contains(i) else { continue }
-                    paths[i].addRect(CGRect(x: CGFloat(x) * cellW, y: CGFloat(y) * cellH,
-                                            width: cellW, height: cellH))
+                    let rect = CGRect(x: CGFloat(x) * cellW, y: CGFloat(y) * cellH,
+                                      width: cellW, height: cellH)
+                    if ch == "k" { screen.addRect(rect) } else { body.addRect(rect) }
                 }
             }
-            for (i, path) in paths.enumerated() where !path.isEmpty {
-                ctx.fill(path, with: .color(CodexPetSprite.palette[i]))
-            }
+            // 先铺云身再压黑屏：屏是嵌在云里的，顺序反了会被云身盖住
+            ctx.fill(body, with: .color(CodexPetSprite.bodyColor))
+            ctx.fill(screen, with: .color(CodexPetSprite.screenColor))
         }
-        .drawingGroup()   // 九条 path 合成一层位图，槽位重绘时不必逐帧重走 Canvas
+        .drawingGroup()
     }
 }
 
-/// 收起态槽位里的 Codex 工作状态：官方小人 + 指示灯。
+/// 收起态槽位里的 Codex 工作状态：终端云 + 指示灯。
 ///
-/// 空闲 = 绿灯 + 站着；工作中 = 黄灯 + 抱着笔记本敲，两帧交替。
-/// 和 `ClawdSlotView` 同一套规矩：动画只在工作态存在，空闲不留常驻定时器。
+/// 空闲 = 绿灯 + 静止落地；工作中 = 黄灯 + 原地弹跳（落地/弹起两态交替）。
+/// 只有一个姿态，故动画靠弹跳而非换帧。和 `ClawdSlotView` 同一套规矩：
+/// 动画只在工作态存在，空闲不留常驻定时器。
 struct CodexPetSlotView: View {
     let working: Bool
 
-    /// 与 Clawd 同一节奏。官方 running 标的是 120ms，那是给全尺寸看的，
-    /// 20 列下脸上那点差别每秒闪八次只会像抽搐
-    private static let frameInterval: TimeInterval = 0.38
-    /// 24×26.4 = 每格 1.2pt。原件近似正方（192:208），再大就顶破 38pt 的刘海高度；
-    /// 加 4pt 间距与 6pt 指示灯共 34.4pt，在右槽 50pt 可用宽度内
+    /// 每帧 0.3 秒 → 一次完整弹跳 0.6 秒，和 Clawd 走一步的节奏对齐，看着像同一个世界里的
+    private static let frameInterval: TimeInterval = 0.3
+    /// 24pt 宽。原件近正方（含留白 26×26），高度随之 24pt——比 Clawd（约 20pt）高 4pt，
+    /// 在 `test与Clawd槽位同高` 允许的 8pt 内；再大就顶破 38pt 刘海高度
     private static let spriteWidth: CGFloat = 24
-    private static let spriteHeight: CGFloat = 26.4
+    private static let spriteHeight: CGFloat = 24.0 / CGFloat(CodexPetSprite.cols) * CGFloat(CodexPetSprite.rows)
 
     var body: some View {
         HStack(spacing: 4) {
             if working {
+                // TimelineView 只在这一支里存在：熄灯即整支下树，定时器随之消失
                 TimelineView(.periodic(from: .now, by: Self.frameInterval)) { ctx in
-                    let step = Int(ctx.date.timeIntervalSinceReferenceDate / Self.frameInterval)
-                    sprite(step.isMultiple(of: 2) ? CodexPetSprite.working0 : CodexPetSprite.working1)
+                    let tick = Int(ctx.date.timeIntervalSinceReferenceDate / Self.frameInterval)
+                    sprite(abs(tick).isMultiple(of: 2) ? CodexPetSprite.resting : CodexPetSprite.hopping)
                 }
             } else {
-                sprite(CodexPetSprite.idle)
+                sprite(CodexPetSprite.resting)
             }
             Circle()
                 .fill(working ? Color(hex: "#FFCC00") : Color(hex: "#34C759"))
