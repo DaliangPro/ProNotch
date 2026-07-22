@@ -8,45 +8,40 @@ import SwiftUI
 /// **只有蓝、黑两色，扁平无渐变**——和 Clawd 的两色实心块正好同一路画风，
 /// 「不是一个画风」的问题到此收口。
 ///
-/// 取法：源图背景是烘焙进 RGB 的灰白棋盘（非真透明通道），按面积多数投票降到 26 列。
-/// 屏上的 `>_` 其实和云身同一个蓝，靠黑屏衬出来，因此不必单开色位。
+/// 取法两段拼的：
+/// - **轮廓**按面积多数投票从源图降到 **16 列**的粗颗粒——大梁老师反馈 26 列那版云边碎块太多、
+///   比 Clawd 显得精细，降到 16 列后每格 1.5pt，颗粒感与 Clawd 齐平。
+/// - **屏上的 `>_`** 在 16 列这么粗时会被降采样抹平（黑屏塌成纯方块，认不出终端），
+///   所以是**手工烙印**的粗块字：`>` 三行右向箭头 + `_` 光标。这是全篇唯一一处对源图的改动，
+///   和 Clawd 一样属于「为了这个尺寸下还认得出脸」的必要手绘。`>_` 与云身同色、靠黑屏衬出。
 enum CodexPetSprite {
-    /// 26 列 × 26 行 = 25 行本体 + 顶上留一行给弹跳（与 Clawd 同构：留白写进网格，
+    /// 16 列 × 16 行 = 15 行本体 + 顶上留一行给弹跳（与 Clawd 同构：留白写进网格，
     /// 弹跳时整只上抬一格而画布不变，旁边指示灯不会被挤动）
-    static let cols = 26
-    static let rows = 26
+    static let cols = 16
+    static let rows = 16
 
     /// 云身与提示符同色 `#5090F0`；终端屏 `#101010`。取自源图量化后的两个主色
     static let bodyColor = Color(red: 0x50 / 255, green: 0x90 / 255, blue: 0xF0 / 255)
     static let screenColor = Color(red: 0x10 / 255, green: 0x10 / 255, blue: 0x10 / 255)
 
-    /// 本体 25 行（`b` 云身/提示符、`k` 终端屏、`.` 透明）
+    /// 本体 15 行（`b` 云身/提示符、`k` 终端屏、`.` 透明）。第 7–9 行屏内的 `b` 是烙印的 `>`，
+    /// 第 9 行右侧那截 `bbb` 是光标 `_`
     static let character = [
-        ".........bbbbbb...........",
-        "........bbbbbbbb.bbb......",
-        ".......bbbbbbbbbbbbbb.....",
-        "......bbbbbbbbbbbbbbbb....",
-        "......bbbbbbbbbbbbbbbb....",
-        "...bbbbbbbbbbbbbbbbbbbb...",
-        "..bbbbbbbbbbbbbbbbbbbbbb..",
-        ".bbbbbbbbbbbbbbbbbbbbbbbb.",
-        ".bbbbbbbkkkkkkkkkkkkbbbbbb",
-        "bbbbbbbkkkkkkkkkkkkkkbbbbb",
-        "bbbbbbbkkkkkkkkkkkkkkbbbbb",
-        "bbbbbbbkkkbkkkkkkkkkkbbbbb",
-        "bbbbbbbkkkkbkkkkkkkkkbbbbb",
-        "bbbbbbbkkkkbkkkkkkkkkbbbbb",
-        "bbbbbbbkkkbkkkkkkkkkkbbbb.",
-        "..bbbbbkkkkkkkkbbbbkkbbbb.",
-        "..bbbbbkkkkkkkkkkkkkkbbbb.",
-        "..bbbbbbkkkkkkkkkkkkbbbbb.",
-        "..bbbbbbbbbbbbbbbbbbbbbb..",
-        "...bbbbbbbbbbbbbbbbbbbb...",
-        "..bbbbbbbbbbbbbbbbbbbbbbb.",
-        "..bbbb.bbbbbbbbbbbb..bbbb.",
-        "..bbb..bbbb....bbbb...bbb.",
-        "...b...bbbb....bbbb....b..",
-        "........bbb....bbb........",
+        ".....bbbbb......",
+        "....bbbbbbbbb...",
+        "....bbbbbbbbb...",
+        "..bbbbbbbbbbbb..",
+        ".bbbbbbbbbbbbbb.",
+        "bbbbbkkkkkkkkbbb",
+        "bbbbkkkkkkkkkbbb",
+        "bbbbkbbkkkkkkbbb",
+        "bbbbkkbbkkkkkbbb",
+        ".bbbkbbkkbbbkbb.",
+        ".bbbbkkkkkkkbbb.",
+        "..bbbbbbbbbbbb..",
+        ".bbbbbbbbbbbbbb.",
+        ".bb.bbb..bbb.bb.",
+        ".....bb..bbb....",
     ]
 
     private static let blankRow = String(repeating: ".", count: cols)
@@ -56,7 +51,7 @@ enum CodexPetSprite {
     static let hopping = character + [blankRow]
 }
 
-/// 把两色网格画出来：按色归并成两条 path 再落笔（一帧近 500 格，逐格 fill 是 500 次绘制，
+/// 把两色网格画出来：按色归并成两条 path 再落笔（逐格 fill 是每格一次绘制，
 /// 归并后只剩两次）。`drawingGroup()` 再合成一层位图，弹跳重绘时不必逐帧重走 Canvas。
 private struct CodexPetCanvas: View {
     let grid: [String]
@@ -92,8 +87,8 @@ struct CodexPetSlotView: View {
 
     /// 每帧 0.3 秒 → 一次完整弹跳 0.6 秒，和 Clawd 走一步的节奏对齐，看着像同一个世界里的
     private static let frameInterval: TimeInterval = 0.3
-    /// 24pt 宽。原件近正方（含留白 26×26），高度随之 24pt——比 Clawd（约 20pt）高 4pt，
-    /// 在 `test与Clawd槽位同高` 允许的 8pt 内；再大就顶破 38pt 刘海高度
+    /// 24pt 宽。网格近正方（含留白 16×16），每格 1.5pt，高度随之 24pt——比 Clawd（约 20pt）
+    /// 高 4pt，在 `test与Clawd槽位同高` 允许的 8pt 内；再大就顶破 38pt 刘海高度
     private static let spriteWidth: CGFloat = 24
     private static let spriteHeight: CGFloat = 24.0 / CGFloat(CodexPetSprite.cols) * CGFloat(CodexPetSprite.rows)
 

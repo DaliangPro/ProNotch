@@ -41,30 +41,35 @@ final class CodexPetSlotViewTests: XCTestCase {
         }
     }
 
-    /// 得有一整块黑色终端屏——那是这只的辨识主体。掉了就只剩一朵纯蓝云，认不出是 Codex
+    /// 得有一整块黑色终端屏——那是这只的辨识主体。掉了就只剩一朵纯蓝云，认不出是 Codex。
+    /// 阈值按 16×15 粗网格定（本体黑格约 40 出头），不是 26 列那版的量级
     func test有成块的终端屏() {
         let black = CodexPetSprite.character.reduce(0) { $0 + $1.filter { $0 == "k" }.count }
-        XCTAssertGreaterThan(black, 80, "黑屏只剩 \(black) 格，终端脸没了")
+        XCTAssertGreaterThan(black, 30, "黑屏只剩 \(black) 格，终端脸没了")
     }
 
-    /// 屏上的 `>_` 提示符是蓝格嵌在黑屏里。数「四邻皆黑的蓝格」——那只能是屏内的字，
-    /// 不会是云身边缘。掉到 0 说明脸被降采样吞平了
+    /// 屏上的 `>_` 提示符是蓝格嵌在黑屏里。取黑屏包围盒，数**严格落在盒内**的蓝格——
+    /// 云身的蓝在盒外，落进盒内的只能是烙印的 `>_`。粗网格下笔画有 2 格宽，
+    /// 不能用「四邻皆黑」判（相邻笔画格就是蓝邻居），得用包围盒内计数
     func test终端屏上留着提示符() {
         let g = CodexPetSprite.character
         func at(_ y: Int, _ x: Int) -> Character {
-            guard g.indices.contains(y) else { return "." }
             let row = g[y]
-            guard x >= 0, x < row.count else { return "." }
             return row[row.index(row.startIndex, offsetBy: x)]
         }
-        var glyph = 0
+        // 黑屏包围盒
+        var minX = Int.max, maxX = -1, minY = Int.max, maxY = -1
         for y in g.indices {
-            for x in 0..<g[y].count where at(y, x) == "b" {
-                if at(y - 1, x) == "k" && at(y + 1, x) == "k"
-                    && at(y, x - 1) == "k" && at(y, x + 1) == "k" { glyph += 1 }
+            for x in 0..<g[y].count where at(y, x) == "k" {
+                minX = min(minX, x); maxX = max(maxX, x)
+                minY = min(minY, y); maxY = max(maxY, y)
             }
         }
-        XCTAssertGreaterThanOrEqual(glyph, 1, "屏内一个被黑屏包住的提示符像素都没有")
+        var glyph = 0
+        for y in (minY + 1)...(maxY - 1) {
+            for x in (minX + 1)...(maxX - 1) where at(y, x) == "b" { glyph += 1 }
+        }
+        XCTAssertGreaterThanOrEqual(glyph, 4, "屏内的提示符像素只剩 \(glyph) 格，`>_` 被抹平了")
     }
 
     /// 落地与弹起必须真的错开一格，否则「弹跳」是原地不动
