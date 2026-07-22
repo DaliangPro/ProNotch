@@ -161,6 +161,11 @@ extension AppDelegate {
             // 渲染实例没有 NotchWindowController 的设置联动，这里手动同步一次
             // （可用 -notchLeftSlot none -notchRightSlot none 参数验证「两侧全关」形态）
             cvm.sideSlotsActive = self.env.settings.sideSlotsActive
+            // -notchSlotBusy：把 Agent 槽位置成「工作中」再渲染。
+            // 工作状态只由 hook 回调置入，不造一个的话快照永远只拍得到空闲态
+            if CommandLine.arguments.contains("-notchSlotBusy") {
+                self.env.agentActivity.markBusy(.claude, session: "snapshot")
+            }
             let root = ZStack(alignment: .top) {
                 Color(white: 0.3)
                 NotchContainerView()

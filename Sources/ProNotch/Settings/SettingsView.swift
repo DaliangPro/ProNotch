@@ -316,7 +316,7 @@ struct SettingsView: View {
             Text(label).font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
             Spacer()
             Menu {
-                ForEach(NotchSlot.allCases, id: \.self) { slot in
+                ForEach(NotchSlot.available(agents: settings.enabledAgents), id: \.self) { slot in
                     Button(slot.title) { selection.wrappedValue = slot }
                 }
             } label: {

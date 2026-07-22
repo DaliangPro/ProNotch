@@ -222,6 +222,10 @@ final class SettingsStore: ObservableObject {
             // 与完成提醒联动（大梁老师定）：家关闭即卸它的钩子——设置里该家的提醒行随之
             // 隐藏，不能留一个没有界面可关的孤儿钩子继续点亮光晕；重新接入且光晕总开关
             // 开着则恢复。变更后广播一次，正亮着的光晕立即按新状态熄灭
+            // 槽位选的是某家 Agent，而那家刚被取消勾选 → 收回该侧。
+            // 否则菜单上会挂着一个已经不在选项列表里的当前值，而刘海那侧渲染的是空白
+            if let a = leftSlot.requiredAgent, !enabledAgents.contains(a) { leftSlot = .none }
+            if let a = rightSlot.requiredAgent, !enabledAgents.contains(a) { rightSlot = .none }
             let removed = oldValue.subtracting(enabledAgents).filter(\.supportsGlow)
             let added = enabledAgents.subtracting(oldValue).filter(\.supportsGlow)
             guard !removed.isEmpty || !added.isEmpty else { return }

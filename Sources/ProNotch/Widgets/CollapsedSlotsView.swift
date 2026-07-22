@@ -2,13 +2,27 @@ import SwiftUI
 
 /// 收起态功能区可选内容（大梁老师定的自由功能区，新组件在此扩展）
 enum NotchSlot: String, CaseIterable {
-    case none, memory, weather
+    case none, memory, weather, agentClaude
 
     var title: String {
         switch self {
         case .none: return "关闭"
         case .memory: return "内存占用"
         case .weather: return "实时天气"
+        case .agentClaude: return "Claude Code"
+        }
+    }
+
+    /// 该槽位依赖哪一家 Agent 被勾选。与 Agent 无关的槽位返回 nil
+    var requiredAgent: AgentKind? {
+        self == .agentClaude ? .claude : nil
+    }
+
+    /// 菜单里能选什么，取决于用户勾了哪几家（大梁老师定的口径：
+    /// 扫描发现什么、设置里才出现什么）——没接入的家不该出现在选项里
+    static func available(agents: Set<AgentKind>) -> [NotchSlot] {
+        allCases.filter { slot in
+            slot.requiredAgent.map(agents.contains) ?? true
         }
     }
 }
@@ -20,6 +34,7 @@ struct CollapsedSlotsView: View {
     @EnvironmentObject var settings: SettingsStore
     @EnvironmentObject var memory: MemoryStore
     @EnvironmentObject var weather: WeatherStore
+    @EnvironmentObject var agentActivity: AgentActivityStore
     /// 收起态低频心跳：10 秒刷内存（微秒级 syscall）；天气走 store 内置 15 分钟节流
     private let ticker = Timer.publish(every: 10, on: .main, in: .common).autoconnect()
 
@@ -62,6 +77,9 @@ struct CollapsedSlotsView: View {
         case .none: Color.clear
         case .memory: memorySlot
         case .weather: weatherSlot
+        // 展开时整块淡出，此时再跑动画是白烧 CPU——动画只在收起且真在工作时才有
+        case .agentClaude:
+            ClawdSlotView(working: agentActivity.working.contains(.claude) && !vm.isExpanded)
         }
     }
 
