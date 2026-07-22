@@ -164,7 +164,9 @@ extension AppDelegate {
             // -notchSlotBusy：把 Agent 槽位置成「工作中」再渲染。
             // 工作状态只由 hook 回调置入，不造一个的话快照永远只拍得到空闲态
             if CommandLine.arguments.contains("-notchSlotBusy") {
-                self.env.agentActivity.markBusy(.claude, session: "snapshot")
+                for kind in AgentKind.allCases {
+                    self.env.agentActivity.markBusy(kind, session: "snapshot")
+                }
             }
             let root = ZStack(alignment: .top) {
                 Color(white: 0.3)

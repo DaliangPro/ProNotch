@@ -2,7 +2,7 @@ import SwiftUI
 
 /// 收起态功能区可选内容（大梁老师定的自由功能区，新组件在此扩展）
 enum NotchSlot: String, CaseIterable {
-    case none, memory, weather, agentClaude
+    case none, memory, weather, agentClaude, agentCodex
 
     var title: String {
         switch self {
@@ -10,12 +10,17 @@ enum NotchSlot: String, CaseIterable {
         case .memory: return "内存占用"
         case .weather: return "实时天气"
         case .agentClaude: return "Claude Code"
+        case .agentCodex: return "Codex"
         }
     }
 
     /// 该槽位依赖哪一家 Agent 被勾选。与 Agent 无关的槽位返回 nil
     var requiredAgent: AgentKind? {
-        self == .agentClaude ? .claude : nil
+        switch self {
+        case .agentClaude: return .claude
+        case .agentCodex: return .codex
+        default: return nil
+        }
     }
 
     /// 菜单里能选什么，取决于用户勾了哪几家（大梁老师定的口径：
@@ -80,6 +85,8 @@ struct CollapsedSlotsView: View {
         // 展开时整块淡出，此时再跑动画是白烧 CPU——动画只在收起且真在工作时才有
         case .agentClaude:
             ClawdSlotView(working: agentActivity.working.contains(.claude) && !vm.isExpanded)
+        case .agentCodex:
+            CodexPetSlotView(working: agentActivity.working.contains(.codex) && !vm.isExpanded)
         }
     }
 
