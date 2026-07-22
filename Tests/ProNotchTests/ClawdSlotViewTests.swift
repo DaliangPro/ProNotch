@@ -4,8 +4,8 @@ import SwiftUI
 
 /// Clawd 槽位的素材完整性与尺寸边界。
 ///
-/// 素材是从 Claude Code 二进制里解出来的官方原件，不是手画的——
-/// 网格一旦被改歪（少一列、多一行），肉眼在 36×12pt 上根本看不出来，只能靠断言钉住。
+/// 素材是从官方精灵表 `claude.ai/clawd-frames/all-sprite.png` 逐像素解出来的原件，不是手画的——
+/// 网格一旦被改歪（少一列、多一行、错一格），肉眼在 28×19.7pt 上根本看不出来，只能靠断言钉住。
 /// 尺寸更要钉：刘海右侧槽位可用宽度只有 50pt，超了就是被裁掉半只 Clawd。
 @MainActor
 final class ClawdSlotViewTests: XCTestCase {
@@ -15,9 +15,16 @@ final class ClawdSlotViewTests: XCTestCase {
     /// 收起态刘海高度（14 寸 MBP 典型值）
     private let slotHeight: CGFloat = 38
 
-    func test两个姿态的网格尺寸一致() {
-        for (name, grid) in [("standing", ClawdSprite.standing), ("armsUp", ClawdSprite.armsUp)] {
-            XCTAssertEqual(grid.count, 5, "\(name) 行数不对")
+    private var allFrames: [(String, [String])] {
+        [("standing", ClawdSprite.standing)]
+            + ClawdSprite.walking.enumerated().map { ("walk\($0.offset)", $0.element) }
+    }
+
+    /// 五帧共用同一坐标系（弹跳靠网格内的留白表现），尺寸必须完全一致，
+    /// 否则切帧时整只会缩放，旁边的指示灯跟着横向跳
+    func test五帧网格尺寸一致() {
+        for (name, grid) in allFrames {
+            XCTAssertEqual(grid.count, ClawdSprite.rows, "\(name) 行数不对")
             for (i, row) in grid.enumerated() {
                 XCTAssertEqual(row.count, ClawdSprite.cols,
                                "\(name) 第 \(i) 行是 \(row.count) 列，应为 \(ClawdSprite.cols)")
@@ -25,32 +32,59 @@ final class ClawdSlotViewTests: XCTestCase {
         }
     }
 
-    /// 网格只认 # 与 .：混进别的字符会被当成空白静默吞掉，画出来缺一块
-    func test网格只含约定的两种字符() {
-        for grid in [ClawdSprite.standing, ClawdSprite.armsUp] {
+    /// 网格只认 . # o：混进别的字符会被 `ClawdCanvas` 当成主体画出来，多一块糊在身上
+    func test网格只含约定的三种字符() {
+        for (name, grid) in allFrames {
             for row in grid {
-                XCTAssertTrue(row.allSatisfy { $0 == "#" || $0 == "." }, "混入了非法字符：\(row)")
+                XCTAssertTrue(row.allSatisfy { $0 == "." || $0 == "#" || $0 == "o" },
+                              "\(name) 混入了非法字符：\(row)")
             }
         }
     }
 
-    /// 举手帧要比站立帧更宽（触手抬起来伸出去），否则动画看着没动
-    func test举手帧确实比站立帧多铺了像素() {
-        func filled(_ g: [String]) -> Int { g.reduce(0) { $0 + $1.filter { $0 == "#" }.count } }
-        XCTAssertGreaterThan(filled(ClawdSprite.armsUp), filled(ClawdSprite.standing),
-                             "两帧像素数一样，多半是复制粘贴时没改")
+    /// 每帧都得留着两只眼睛。眼睛是这只唯一的第二个颜色，掉了就成一块纯色饼
+    func test每帧都是两只眼睛() {
+        for (name, grid) in allFrames {
+            guard let eyeRow = grid.first(where: { $0.contains("o") }) else {
+                return XCTFail("\(name) 一只眼睛都没有")
+            }
+            // 数横向游程：连续的 o 算一只
+            var runs = 0
+            var prev: Character = "."
+            for ch in eyeRow {
+                if ch == "o" && prev != "o" { runs += 1 }
+                prev = ch
+            }
+            XCTAssertEqual(runs, 2, "\(name) 眼睛数量是 \(runs)，应为 2")
+        }
     }
 
-    /// 站立帧第 2 行有且仅有两个缺口——那是眼睛。填死了就成一块砖
-    func test站立帧留着两只眼睛() {
-        let eyes = ClawdSprite.standing[1]
-        let gaps = eyes.enumerated().filter { $0.element == "." && (3...14).contains($0.offset) }
-        XCTAssertEqual(gaps.count, 2, "眼睛数量不对：\(eyes)")
+    /// 走路四帧必须两两不同：官方 20 帧里 0…3 是重复的静止帧，
+    /// 抽帧时下标写错（比如抽成 0…3）就会得到一个不动的「走路」动画
+    func test走路四帧互不相同() {
+        let frames = ClawdSprite.walking
+        for i in frames.indices {
+            for j in frames.indices where j > i {
+                XCTAssertNotEqual(frames[i], frames[j], "walk\(i) 与 walk\(j) 完全一样")
+            }
+        }
     }
 
-    /// 顶上那一行留白是给弹跳用的。rows 若等于内容行数，举手帧上抬时会顶出画布被裁
-    func test网格高度给弹跳留了一行() {
-        XCTAssertEqual(ClawdSprite.rows, ClawdSprite.standing.count + 1)
+    /// 空闲用站立、工作用走路，两态姿态得真不一样，否则黄灯亮了人还杵着
+    func test站立与走路是不同姿态() {
+        for (i, frame) in ClawdSprite.walking.enumerated() {
+            XCTAssertNotEqual(frame, ClawdSprite.standing, "walk\(i) 和站立帧一模一样")
+        }
+    }
+
+    /// 高度得由原件比例算出，不能手填。
+    /// 比的是 `ceil` 后的值——`fittingSize` 会把 19.70 报成 20.0，向上取整到整点。
+    /// 精度因此只到 1pt，但「拉扁 / 抻长」这类错法差的是好几 pt，照样拦得住
+    func test槽位高度保持原件比例() throws {
+        let size = try fittingSize(working: false)
+        let expected = 28.0 / CGFloat(ClawdSprite.cols) * CGFloat(ClawdSprite.rows)
+        XCTAssertEqual(size.height, expected.rounded(.up),
+                       "高度偏离原件比例（应约 \(String(format: "%.2f", expected))pt），Clawd 被拉扁或抻长了")
     }
 
     func test空闲态尺寸塞得进槽位() throws {
