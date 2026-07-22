@@ -73,10 +73,15 @@ struct ClawdSlotView: View {
 
     /// 每帧 0.38 秒：再快像抽搐，再慢就不像在使劲干活了
     private static let frameInterval: TimeInterval = 0.38
-    /// 36×24 = 每格 2×4pt，即原件在终端里的真实比例（子像素 1:2）。
-    /// 加上 4pt 间距与 6pt 指示灯共 46pt，卡在右槽 50pt 可用宽度内
-    private static let spriteWidth: CGFloat = 36
-    private static let spriteHeight: CGFloat = 24
+    /// 28×18.67 = 每格约 1.56×3.11pt，仍是原件在终端里的真实比例（子像素 1:2）。
+    ///
+    /// 宽度不是按可用空间取的，是**按体量对齐 Codex 槽位**（大梁老师反馈原先 36pt 太大）：
+    /// Clawd 是 18:5 的扁长形，Codex 近正方，同样宽度下扁长的那个看着大一圈。
+    /// 28pt 是两者视觉分量拉平的那一档
+    private static let spriteWidth: CGFloat = 28
+    /// 格子高是格子宽的两倍（子像素 1:2），别漏掉那个 2——
+    /// 漏了会把 Clawd 压扁一半，而这个尺寸下肉眼看不出来，只有 `test与Clawd槽位同高` 拦得住
+    private static let spriteHeight: CGFloat = 28.0 / 18 * 2 * 6
 
     var body: some View {
         HStack(spacing: 4) {
