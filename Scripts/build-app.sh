@@ -46,11 +46,23 @@ cp Resources/TabIconLauncher.png "$APP_DIR/Contents/Resources/TabIconLauncher.pn
 # 优先用与正式安装版相同的固定证书：TCC 权限（屏幕录制等）绑定 bundle id + 签名，
 # 若 debug 构建以 ad-hoc 签名运行过，同 bundle id 换了签名会作废已授的录屏权限
 #（2026-07 实测踩坑）；无固定证书（他人机器）才回退 ad-hoc
+#
+# 证书在却签失败时**必须报错退出**，不能悄悄回退 ad-hoc：那正好是作废录屏权限的
+# 那条路，而降级本身没有任何提示，事后只看到「录屏权限莫名没了」，查不到这里。
+# 私钥 ACL 收紧后（P2-22）首次调用会弹钥匙串授权，非交互环境下就会签不上——
+# 2026-07-21 实测遇到过一次，当时错误被 2>&1 吞掉，产物静默变成 ad-hoc。
 SIGN_ID="ProNotch Local Signing"
 if security find-identity -p codesigning -v 2>/dev/null | grep -q "$SIGN_ID"; then
-    codesign --force --sign "$SIGN_ID" "$APP_DIR" >/dev/null 2>&1 \
-        || codesign --force --sign - "$APP_DIR" >/dev/null 2>&1 || true
+    if ! ERR=$(codesign --force --sign "$SIGN_ID" "$APP_DIR" 2>&1); then
+        echo "❌ 用固定证书「$SIGN_ID」签名失败：" >&2
+        echo "   $ERR" >&2
+        echo "   若是钥匙串授权弹框被跳过，手动跑一次授权后重试：" >&2
+        echo "   codesign --force --sign \"$SIGN_ID\" \"$APP_DIR\"" >&2
+        echo "   （不自动回退 ad-hoc：同 bundle id 换签名会作废已授的录屏权限）" >&2
+        exit 1
+    fi
 else
+    echo "提示: 本机没有「$SIGN_ID」证书，回退 ad-hoc 签名；录屏权限需重新授权"
     codesign --force --sign - "$APP_DIR" >/dev/null 2>&1 || echo "提示: 临时签名失败，不影响本机运行"
 fi
 echo "已生成: ${APP_DIR}（$(lipo -archs "$APP_DIR/Contents/MacOS/ProNotch" 2>/dev/null || echo 未知架构)）"
