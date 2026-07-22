@@ -76,7 +76,8 @@ enum GlowHookInstaller {
     /// v4：URL 追加 session（Claude 读 stdin 的 session_id / Codex 读 payload 的 thread-id），供 Agent 页瞬时点亮
     /// v5：URL 追加 token，应用侧恒定时间校验；无令牌的回调一律丢弃
     /// v6：投递前先确认 ProNotch 在运行，不再把退出的 App 拉起来
-    private static let scriptFormat = 6
+    /// v7：后台子任务还在跑就不提醒（background_tasks 非空即闭嘴）
+    private static let scriptFormat = 7
 
     /// 投递回调前先确认 ProNotch 还在运行。
     ///
@@ -118,13 +119,59 @@ enum GlowHookInstaller {
         return s.contains("PRONOTCH_FMT=\(scriptFormat)") && s.contains("token=\(token)")
     }
 
+    /// 把载荷压掉全部空白再比对结构键：JSON 序列化带不带空格因实现而异，
+    /// 压平之后 `"background_tasks": []` 与 `"background_tasks":[]` 长得一模一样，
+    /// 下面的 case 就不必为每种排版各写一条 pattern
+    private static let compactSnippet =
+        #"compact=$(printf '%s' "$payload" | tr -d '[:space:]')"#
+
+    /// 「主 Agent 回合结束」≠「任务完成」，别把前者当后者报。
+    ///
+    /// 病灶：派出后台子 Agent 的那一刻主回合就结束了，触发一次货真价实的 Stop；
+    /// 此后每个子 Agent 完成都会唤醒主循环、再产生一个短回合、再触发一次 Stop。
+    /// 用户看到的就是「一个 sub Agent 干完就提醒，可整个任务还早着呢」。
+    ///
+    /// 判据不能用事件名——Stop 与 SubagentStop 在 Claude Code 里本就互斥
+    /// （分发处只有一句 `let l = o ? "SubagentStop" : "Stop"`，且只查这一个事件名的
+    /// 注册表），只注册 Stop 的我们压根不会被子 Agent 调用。真正的判据是载荷里的
+    /// `background_tasks`：它只收 status ∈ {running, pending} 且未被前台化的任务，
+    /// 非空就说明后台还有活在跑，这次 Stop 不该响。
+    ///
+    /// 字段缺失一律放行：老版本 Claude Code 不带它，Kimi / Grok 更没有。
+    /// 认不出来就维持原有行为——不能因为读不到就把提醒全吞了。
+    private static let backgroundTasksGuard = """
+    case "$compact" in
+      *'"background_tasks":[]'*) ;;
+      *'"background_tasks":['*) exit 0 ;;
+    esac
+    """
+
+    /// 事件名对不上就丢弃：本脚本只处理主 Agent 的 Stop。
+    ///
+    /// 目前 ProNotch 只往 `Stop` 上注册，这条纯属兜底——但用户会自己往 hooks 里加东西
+    /// （这台机器上 vibe-island 就挂了 13 个事件），万一哪天本脚本被挂到 SubagentStop
+    /// 之类的事件上，有这条就不会误报。
+    ///
+    /// 只给 Claude 用：`"hook_event_name":"Stop"` 这个取值是在 Claude Code 二进制里
+    /// 实证过的；Kimi / Grok 的事件名拼写没核实，照搬同一套过滤有把它们正常回调
+    /// 全吞掉的风险。
+    private static let claudeEventGuard = """
+    case "$compact" in
+      *'"hook_event_name":"Stop"'*) ;;
+      *'"hook_event_name":'*) exit 0 ;;
+    esac
+    """
+
     /// stdin JSON 型转发脚本（Claude / Kimi / Grok 三家同构）
     private static func stdinNotifyScript(source: String, token: String) -> String {
-        """
+        var guards = [compactSnippet, backgroundTasksGuard]
+        if source == "claude" { guards.append(claudeEventGuard) }
+        return """
         #!/bin/bash
         # ProNotch · \(source) 完成提醒（自动生成，勿手改）· PRONOTCH_FMT=\(scriptFormat)
         \(hostDetectSnippet)
         payload=$(cat)
+        \(guards.joined(separator: "\n"))
         host=$(detect_host)
         sid=$(printf '%s' "$payload" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
         url="pronotch://done?source=\(source)&token=\(token)"

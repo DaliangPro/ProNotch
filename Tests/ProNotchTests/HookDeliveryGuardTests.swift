@@ -95,11 +95,16 @@ final class HookDeliveryGuardTests: XCTestCase {
                       "守卫让脚本提前退出了，后面的转发块（别人的 notify）会被一起掐掉")
     }
 
-    func test格式号已升级_旧脚本会被判过期() throws {
+    /// 不写死具体数字（每升一版这条就会假失败一次），只钉住「不许退回 v7 之前」——
+    /// v7 是引入 background_tasks 过滤的那版，退回去等于把这次修的病放回来
+    func test格式号不低于引入过滤的那版() throws {
         let script = try XCTUnwrap(try installedScripts()["claude"])
-        XCTAssertTrue(script.contains("PRONOTCH_FMT=6"),
-                      "改了脚本内容却不升格式号，老用户的旧脚本永远不会被重写")
-        XCTAssertFalse(script.contains("PRONOTCH_FMT=5"))
+        let marker = try XCTUnwrap(
+            script.range(of: #"PRONOTCH_FMT=\d+"#, options: .regularExpression),
+            "脚本头少了 PRONOTCH_FMT 标记，迁移就无从判断新旧")
+        let version = Int(script[marker].dropFirst("PRONOTCH_FMT=".count)) ?? 0
+        XCTAssertGreaterThanOrEqual(version, 7,
+                                    "格式号退回 v7 之前，老用户的脚本不会被刷新到带过滤的版本")
     }
 
     func test四个脚本语法都合法() throws {
@@ -114,21 +119,33 @@ final class HookDeliveryGuardTests: XCTestCase {
     // MARK: - 真实行为
 
     /// 把脚本里的 open 换成落标记文件，用指定进程名跑一遍，回报「是否投递」与退出码
-    private func deliver(scriptNamed name: String, watching process: String) throws -> (delivered: Bool, status: Int32) {
+    private func deliver(scriptNamed name: String, watching process: String,
+                         payload: String = #"{"session_id":"abc123"}"#)
+    throws -> (delivered: Bool, status: Int32) {
         var script = try XCTUnwrap(try installedScripts()[name])
-        let marker = tmp.appendingPathComponent("\(name)-\(process)-delivered")
+        // 同一个 name+process 会跑多次（只换载荷），标记文件名得各不相同，否则互相串味
+        let slug = UUID().uuidString.prefix(8)
+        let marker = tmp.appendingPathComponent("\(name)-\(slug)-delivered")
         script = script
             .replacingOccurrences(of: "pgrep -x ProNotch", with: "pgrep -x \(process)")
             .replacingOccurrences(of: #"open -g "$url""#, with: "touch '\(marker.path)'")
-        let file = tmp.appendingPathComponent("\(name)-\(process).sh")
+        let file = tmp.appendingPathComponent("\(name)-\(slug).sh")
         try script.write(to: file, atomically: true, encoding: .utf8)
 
         // Claude/Kimi/Grok 从 stdin 读 JSON；Codex 从 $1 读 payload
-        let payload = #"{"session_id":"abc123"}"#
         let args = name == "codex" ? [file.path, #"{"type":"agent-turn-complete","thread-id":"t1"}"#]
                                    : [file.path]
         let result = try run("/bin/bash", args, stdin: payload)
         return (FileManager.default.fileExists(atPath: marker.path), result.status)
+    }
+
+    /// 造一份 Claude Code 的 Stop 载荷。
+    /// `tasks` 传 nil 表示整个 background_tasks 字段缺失（老版本 Claude Code 的样子）
+    private func stopPayload(backgroundTasks tasks: String?, event: String? = "Stop") -> String {
+        var parts = [#""session_id":"abc123""#]
+        if let event { parts.append(#""hook_event_name":"\#(event)""#) }
+        if let tasks { parts.append(#""background_tasks":\#(tasks)"#) }
+        return "{\(parts.joined(separator: ","))}"
     }
 
     func test进程不在时不投递_也就不会把App拉起来() throws {
@@ -188,6 +205,77 @@ final class HookDeliveryGuardTests: XCTestCase {
             XCTAssertEqual(try deliver(scriptNamed: name, watching: ghost).status, 0,
                            "\(name) 漏了非零退出码，Claude Code 会报 hook 失败")
         }
+    }
+
+    // MARK: - 后台子任务没收口就别提醒
+
+    /// 「主 Agent 回合结束」≠「任务完成」：派出后台子 Agent 的那一刻主回合就结束了，
+    /// 触发一次货真价实的 Stop；此后每个子 Agent 完成还会各唤醒主循环一次、
+    /// 各再触发一次 Stop。用户看到的就是「一个 sub Agent 干完就提醒，可任务还早着」
+    func test后台子任务还在跑时不提醒() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        let running = #"[{"id":"t1","type":"subagent","status":"running","description":"摸清槽位"}]"#
+        let r = try deliver(scriptNamed: "claude", watching: probe.name,
+                            payload: stopPayload(backgroundTasks: running))
+        XCTAssertFalse(r.delivered, "后台还有子 Agent 在跑就提醒，正是这次要修的病")
+        XCTAssertEqual(r.status, 0, "吞掉提醒也得安静地成功，非零会被 Claude Code 当成 hook 失败")
+    }
+
+    func test后台任务全部收口才提醒() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        let r = try deliver(scriptNamed: "claude", watching: probe.name,
+                            payload: stopPayload(backgroundTasks: "[]"))
+        XCTAssertTrue(r.delivered, "空数组代表真的干完了，这一下必须响，否则提醒功能整个失效")
+    }
+
+    /// 老版本 Claude Code 的载荷根本没有这个字段。认不出来就得维持原行为——
+    /// 不能因为读不到就把提醒全吞了
+    func test没有background_tasks字段时照常提醒() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        let r = try deliver(scriptNamed: "claude", watching: probe.name,
+                            payload: stopPayload(backgroundTasks: nil))
+        XCTAssertTrue(r.delivered, "字段缺失被当成「有后台任务」，老版本用户的提醒会全哑")
+    }
+
+    /// JSON 带不带空格因序列化实现而异，脚本先把空白压平再比对，换个排版不能就漏
+    func test带空格的JSON排版一样认得出() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        let spaced = #"{ "session_id" : "abc" , "background_tasks" : [ { "id" : "t1" } ] }"#
+        let r = try deliver(scriptNamed: "claude", watching: probe.name, payload: spaced)
+        XCTAssertFalse(r.delivered, "换一种 JSON 排版就认不出后台任务了")
+    }
+
+    /// 兜底：本脚本只处理主 Agent 的 Stop。ProNotch 目前只往 Stop 上注册，
+    /// 但用户会自己往 hooks 里加东西（这台机器上 vibe-island 就挂了 13 个事件）
+    func testClaude事件名不是Stop就丢弃() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        let r = try deliver(scriptNamed: "claude", watching: probe.name,
+                            payload: stopPayload(backgroundTasks: "[]", event: "SubagentStop"))
+        XCTAssertFalse(r.delivered, "被挂到 SubagentStop 上也照报，等于没兜住")
+        XCTAssertEqual(r.status, 0)
+    }
+
+    /// Kimi / Grok 的事件名取值没实证过，不能照搬 Claude 那套过滤——
+    /// 万一它们发的不是 "Stop"，一过滤就把正常回调全吞了
+    func testKimi和Grok不做事件名过滤() throws {
+        let scripts = try installedScripts()
+        for name in ["kimi", "grok"] {
+            XCTAssertFalse(try XCTUnwrap(scripts[name]).contains("hook_event_name"),
+                           "\(name) 的事件名取值没实证过，贸然过滤会把正常回调吞掉")
+        }
+    }
+
+    /// Codex 走 notify + agent-turn-complete，与 Claude 的 Stop 完全两套机制，
+    /// 载荷里没有 background_tasks 这类字段，子任务模型也不同——本轮不动它
+    func testCodex本轮不接背景任务过滤() throws {
+        let script = try XCTUnwrap(try installedScripts()["codex"])
+        XCTAssertFalse(script.contains("background_tasks"),
+                       "Codex 载荷里没这个字段，加了过滤只是白跑一趟且容易误伤")
     }
 
     // MARK: - 跑进程
