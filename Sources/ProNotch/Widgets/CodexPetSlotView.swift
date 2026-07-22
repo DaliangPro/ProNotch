@@ -1,47 +1,49 @@
 import SwiftUI
 
-/// Codex 官方吉祥物「终端云」的像素原件（大梁老师提供的 ChatGPT 出图，1254² 放大像素画）。
+/// Codex 官方吉祥物「终端云」的像素原件（大梁老师提供的第二张 ChatGPT 出图，1254² 像素画）。
 ///
-/// **换掉了此前从 CDN 图集降采样的那版**：旧版是官方 terminal pet（抱笔记本的小机器人），
-/// 带多层明暗渐变，放进 26pt 槽位后和隔壁 Clawd 的实心块完全不是一个精细度，
-/// 并排像成品挨着草稿。这版是一朵蓝云顶着黑色终端屏、屏上一个蓝色 `>_` 提示符，
-/// **只有蓝、黑两色，扁平无渐变**——和 Clawd 的两色实心块正好同一路画风，
-/// 「不是一个画风」的问题到此收口。
+/// **换掉了此前那张有机曲线出图**：上一张云身是抗锯齿曲线，降采样到任何列数边缘都带一圈
+/// 碎块锯齿角（大梁老师反馈「碎块角太多」），只能手工重画剪影凑合。这张是**真正网格对齐的
+/// 像素画**——每条边都是规整整块台阶、真·像素风，可无损提取原生网格，天生没有碎块角。
 ///
-/// **不是照着源图降采样的**：自动降采样 AI 出图会把云的有机曲线 + 抗锯齿缩成一圈单格台阶，
-/// 云边全是碎块锯齿角，脏、不像素画（大梁老师反馈「碎块角太多」）。所以这份是**手工重画的
-/// 干净剪影**——只借源图的比例（云顶 + 终端屏 + 三只脚），每条边都是规整整块台阶、无单格突刺，
-/// 和 Clawd 一样是刻意画的像素，不是缩出来的噪点。
+/// 三色（比上一张多一色）：身体蓝 `#5580F4`、终端屏黑 `#101010`、提示符浅蓝 `#95CDFD`。
+/// 上一张的 `>_` 与云身同色、只能靠黑屏衬出；这张的 `>_` 是**独立浅蓝**，脸更清楚。
+/// 造型也更全：圆角三层顶 + 大黑屏 + 屏内 `>` 箭头与右下 `_` 光标 + 底部 5 条触须腿。
+/// 仍只有平涂色块、无渐变，和 Clawd 的两色实心块同一路画风。
 ///
-/// 屏上的 `>_` 同样手绘：`>` 三行右向箭头 + `_` 光标，与云身同色、靠黑屏衬出。
+/// 网格照原图比例定为 22 列——原图是干净像素画，这个列数能规整还原 5 条腿与 `>_` 而不糊。
 enum CodexPetSprite {
-    /// 16 列 × 16 行 = 15 行本体 + 顶上留一行给弹跳（与 Clawd 同构：留白写进网格，
+    /// 22 列 × 18 行 = 17 行本体 + 顶上留一行给弹跳（与 Clawd 同构：留白写进网格，
     /// 弹跳时整只上抬一格而画布不变，旁边指示灯不会被挤动）
-    static let cols = 16
-    static let rows = 16
+    static let cols = 22
+    static let rows = 18
 
-    /// 云身与提示符同色 `#5090F0`；终端屏 `#101010`。取自源图量化后的两个主色
-    static let bodyColor = Color(red: 0x50 / 255, green: 0x90 / 255, blue: 0xF0 / 255)
+    /// 三个平涂色，取自原图量化后的中位色
+    static let bodyColor = Color(red: 0x55 / 255, green: 0x80 / 255, blue: 0xF4 / 255)
     static let screenColor = Color(red: 0x10 / 255, green: 0x10 / 255, blue: 0x10 / 255)
+    /// 提示符 `>_` 的浅蓝，比身体蓝更亮，把脸从黑屏里衬出来
+    static let promptColor = Color(red: 0x95 / 255, green: 0xCD / 255, blue: 0xFD / 255)
 
-    /// 本体 15 行（`b` 云身/提示符、`k` 终端屏、`.` 透明）。第 6–8 行屏内的 `b` 是手绘的 `>`，
-    /// 第 9 行那截 `bbb` 是光标 `_`。第 13–14 行是三只脚
+    /// 本体 17 行（`b` 身体、`k` 终端屏、`c` 提示符浅蓝、`.` 透明）。
+    /// 第 6–8 行屏内的 `c` 是 `>` 箭头，第 9 行右侧的 `cccc` 是 `_` 光标，末 3 行是 5 条腿
     static let character = [
-        ".....bbbbbb.....",
-        "...bbbbbbbbbb...",
-        "..bbbbbbbbbbbb..",
-        ".bbbbbbbbbbbbbb.",
-        ".bbbbbbbbbbbbbb.",
-        ".bbkkkkkkkkkkbb.",
-        ".bbkbbkkkkkkkbb.",
-        ".bbkkbbkkkkkkbb.",
-        ".bbkbbkkkkkkkbb.",
-        ".bbkkkkkbbbkkbb.",
-        ".bbkkkkkkkkkkbb.",
-        ".bbbbbbbbbbbbbb.",
-        ".bbbbbbbbbbbbbb.",
-        "..bb...bb...bb..",
-        "..bb...bb...bb..",
+        ".......bbbbbbbb.......",
+        ".......bbbbbbbb.......",
+        ".....bbbbbbbbbbbb.....",
+        "...bbbbbbbbbbbbbbbb...",
+        "..bbbbbbbbbbbbbbbbbb..",
+        "..bbkkkkkkkkkkkkkkbb..",
+        "..bbkkcckkkkkkkkkkbb..",
+        "..bbkkkkcckkkkkkkkbb..",
+        "..bbkkcckkkkkkkkkkbb..",
+        "..bbkkkkkkkkkcccckbb..",
+        "..bbkkkkkkkkkkkkkkbb..",
+        "..bbbbbbbbbbbbbbbbbb..",
+        "...bbbbbbbbbbbbbbbb...",
+        "...bbbbbbbbbbbbbbbb...",
+        "....bb.bb.bb.bb.bb....",
+        "....bb.bb.bb.bb.bb....",
+        "....bb.bb.bb.bb.bb....",
     ]
 
     private static let blankRow = String(repeating: ".", count: cols)
@@ -51,8 +53,8 @@ enum CodexPetSprite {
     static let hopping = character + [blankRow]
 }
 
-/// 把两色网格画出来：按色归并成两条 path 再落笔（逐格 fill 是每格一次绘制，
-/// 归并后只剩两次）。`drawingGroup()` 再合成一层位图，弹跳重绘时不必逐帧重走 Canvas。
+/// 把三色网格画出来：按色归并成三条 path 再落笔（逐格 fill 是每格一次绘制，
+/// 归并后只剩三次）。`drawingGroup()` 再合成一层位图，弹跳重绘时不必逐帧重走 Canvas。
 private struct CodexPetCanvas: View {
     let grid: [String]
 
@@ -62,16 +64,22 @@ private struct CodexPetCanvas: View {
             let cellH = size.height / CGFloat(CodexPetSprite.rows)
             var body = Path()
             var screen = Path()
+            var prompt = Path()
             for (y, row) in grid.enumerated() {
                 for (x, ch) in row.enumerated() where ch != "." {
                     let rect = CGRect(x: CGFloat(x) * cellW, y: CGFloat(y) * cellH,
                                       width: cellW, height: cellH)
-                    if ch == "k" { screen.addRect(rect) } else { body.addRect(rect) }
+                    switch ch {
+                    case "k": screen.addRect(rect)
+                    case "c": prompt.addRect(rect)
+                    default: body.addRect(rect)
+                    }
                 }
             }
-            // 先铺云身再压黑屏：屏是嵌在云里的，顺序反了会被云身盖住
+            // 从底到面：身体 → 嵌在身体里的黑屏 → 压在黑屏上的提示符，顺序反了会被下层盖住
             ctx.fill(body, with: .color(CodexPetSprite.bodyColor))
             ctx.fill(screen, with: .color(CodexPetSprite.screenColor))
+            ctx.fill(prompt, with: .color(CodexPetSprite.promptColor))
         }
         .drawingGroup()
     }
@@ -87,8 +95,8 @@ struct CodexPetSlotView: View {
 
     /// 每帧 0.3 秒 → 一次完整弹跳 0.6 秒，和 Clawd 走一步的节奏对齐，看着像同一个世界里的
     private static let frameInterval: TimeInterval = 0.3
-    /// 24pt 宽。网格近正方（含留白 16×16），每格 1.5pt，高度随之 24pt——比 Clawd（约 20pt）
-    /// 高 4pt，在 `test与Clawd槽位同高` 允许的 8pt 内；再大就顶破 38pt 刘海高度
+    /// 24pt 宽。网格 22×18（含顶部弹跳留白），每格约 1.1pt，高度随之约 19.6pt——
+    /// 与 Clawd（约 19.7pt）几乎同高，并排最齐；远在 38pt 刘海高度内
     private static let spriteWidth: CGFloat = 24
     private static let spriteHeight: CGFloat = 24.0 / CGFloat(CodexPetSprite.cols) * CGFloat(CodexPetSprite.rows)
 

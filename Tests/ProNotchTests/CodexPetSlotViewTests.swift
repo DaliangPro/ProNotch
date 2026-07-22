@@ -4,7 +4,7 @@ import SwiftUI
 
 /// Codex 槽位的素材完整性与尺寸边界。
 ///
-/// 素材是照大梁老师提供的官方「终端云」比例手绘的干净剪影（见 `CodexPetSprite` 的说明），
+/// 素材照大梁老师提供的第二张官方「终端云」像素画比例还原（22 列三色，见 `CodexPetSprite` 的说明），
 /// 网格一旦被改歪，在 24pt 上肉眼看不出来，只能靠断言钉住。
 /// 尺寸同样要钉：右槽可用宽度只有 50pt。
 @MainActor
@@ -31,26 +31,25 @@ final class CodexPetSlotViewTests: XCTestCase {
         }
     }
 
-    /// 网格只认 . b k：混进别的字符会被 `CodexPetCanvas` 当成云身画出来，多一块糊在身上
-    func test网格只含约定的三种字符() {
+    /// 网格只认 . b k c：混进别的字符会被 `CodexPetCanvas` 的 default 分支当成身体画出来，多一块糊在身上
+    func test网格只含约定的四种字符() {
         for (name, grid) in allFrames {
             for row in grid {
-                XCTAssertTrue(row.allSatisfy { $0 == "." || $0 == "b" || $0 == "k" },
+                XCTAssertTrue(row.allSatisfy { $0 == "." || $0 == "b" || $0 == "k" || $0 == "c" },
                               "\(name) 混入了非法字符：\(row)")
             }
         }
     }
 
     /// 得有一整块黑色终端屏——那是这只的辨识主体。掉了就只剩一朵纯蓝云，认不出是 Codex。
-    /// 阈值按 16×15 粗网格定（本体黑格约 40 出头），不是 26 列那版的量级
+    /// 阈值按 22 列网格定（本体黑格约 70 出头）
     func test有成块的终端屏() {
         let black = CodexPetSprite.character.reduce(0) { $0 + $1.filter { $0 == "k" }.count }
-        XCTAssertGreaterThan(black, 30, "黑屏只剩 \(black) 格，终端脸没了")
+        XCTAssertGreaterThan(black, 40, "黑屏只剩 \(black) 格，终端脸没了")
     }
 
-    /// 屏上的 `>_` 提示符是蓝格嵌在黑屏里。取黑屏包围盒，数**严格落在盒内**的蓝格——
-    /// 云身的蓝在盒外，落进盒内的只能是烙印的 `>_`。粗网格下笔画有 2 格宽，
-    /// 不能用「四邻皆黑」判（相邻笔画格就是蓝邻居），得用包围盒内计数
+    /// 屏上的 `>_` 提示符是独立浅蓝格（`c`），必须都嵌在黑屏包围盒内——
+    /// 落在屏外就是画歪了。数量太少说明 `>` 或 `_` 掉了，脸就残了
     func test终端屏上留着提示符() {
         let g = CodexPetSprite.character
         func at(_ y: Int, _ x: Int) -> Character {
@@ -65,11 +64,21 @@ final class CodexPetSlotViewTests: XCTestCase {
                 minY = min(minY, y); maxY = max(maxY, y)
             }
         }
-        var glyph = 0
-        for y in (minY + 1)...(maxY - 1) {
-            for x in (minX + 1)...(maxX - 1) where at(y, x) == "b" { glyph += 1 }
+        var prompt = 0
+        for y in g.indices {
+            for x in 0..<g[y].count where at(y, x) == "c" {
+                prompt += 1
+                XCTAssertTrue(x >= minX && x <= maxX && y >= minY && y <= maxY,
+                              "提示符像素 (\(x),\(y)) 跑到黑屏外了")
+            }
         }
-        XCTAssertGreaterThanOrEqual(glyph, 4, "屏内的提示符像素只剩 \(glyph) 格，`>_` 被抹平了")
+        XCTAssertGreaterThanOrEqual(prompt, 6, "屏内的提示符像素只剩 \(prompt) 格，`>_` 残了")
+    }
+
+    /// 提示符浅蓝必须与身体蓝分色——同色就退回上一张「靠黑屏衬」的旧观感了
+    func test提示符与身体分色() {
+        XCTAssertNotEqual(CodexPetSprite.promptColor, CodexPetSprite.bodyColor,
+                          "提示符与身体同色，脸从黑屏里衬不出来")
     }
 
     /// 落地与弹起必须真的错开一格，否则「弹跳」是原地不动
