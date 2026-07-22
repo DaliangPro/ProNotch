@@ -66,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         env = AppEnvironment(
             launcher: launcher, clipboard: clipboard, snippets: snippets,
             chat: ChatStore(), usage: UsageStore(), agentSessions: AgentSessionsStore(),
+            agentActivity: AgentActivityStore(),
             quickActions: QuickActionsStore(), settings: SettingsStore(),
             memory: MemoryStore(), weather: WeatherStore())
         // 对齐核查：离屏渲染展开面板四页 PNG 后退出（-snapshotPanel）。同样须用正式签名实例跑
@@ -180,8 +181,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     // MARK: - 光晕提醒 pronotch:// 入口
 
-    /// 接收 pronotch://done?source=claude|codex —— 点亮对应颜色的「任务完成」光晕。
-    /// Claude Code / Codex 完成时由 hook 执行 `open "pronotch://done?source=…"` 触发。
+    /// 接收 hook 回调：`done` 点亮对应颜色的「任务完成」光晕，`busy` 只记「这家开工了」
+    /// 供刘海收起态的槽位显示。两者都由 hook 执行 `open "pronotch://…?source=…"` 触发。
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls { handleGlowURL(url) }
     }
@@ -197,7 +198,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func handleGlowURL(_ url: URL) {
-        guard url.scheme == "pronotch", url.host == "done" else { return }
+        guard url.scheme == "pronotch" else { return }
+        // done：这一回合真的结束了 —— 点亮光晕，并把该会话标回空闲
+        // busy：用户刚提交提问，回合开工 —— 只记状态给刘海槽位用，不点光晕
+        //（开工就闪一下会变成每次提问都打扰，那正是「完成提醒」要避免的）
+        guard let action = url.host, action == "done" || action == "busy" else { return }
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
         // 认证优先：这条 URL 谁都能调（本机任意进程、任意网页里的一个链接），
         // 伪造的回调不仅能乱点光晕，还能往会话表里塞宿主映射、把用户点卡片时引向别的 App。
@@ -206,7 +211,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if case .reject(let reason) = GlowCallbackAuth.decide(
             token: token, expected: GlowHookToken.current(.production),
             allowUnsigned: Self.allowsUnsignedGlowCallback) {
-            AppLog.app.error("已丢弃未通过认证的 pronotch://done 回调：\(reason, privacy: .public)")
+            AppLog.app.error("已丢弃未通过认证的 pronotch://\(action, privacy: .public) 回调：\(reason, privacy: .public)")
             return
         }
         let source = items?.first(where: { $0.name == "source" })?.value
@@ -218,6 +223,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // 不回退桌面版；否则光晕的 activeHosts 记成桌面版，切回 Obsidian 匹配不上、熄不掉
         // source 参数即 AgentKind 的 rawValue（claude/codex/kimi/grok），支持光晕的家统一走这一条路
         guard let kind = source.flatMap(AgentKind.init(rawValue:)), kind.supportsGlow else { return }
+
+        // 开工信号到此为止：只更新槽位要的活动状态，不碰光晕也不动会话表
+        guard action == "done" else {
+            env?.agentActivity.markBusy(kind, session: session)
+            return
+        }
+        env?.agentActivity.markIdle(kind, session: session)
         let effectiveHost = (host?.isEmpty == false) ? host
             : env?.agentSessions.knownHost(for: session, source: kind)
         glowController?.notifyCompletion(kind, host: effectiveHost)

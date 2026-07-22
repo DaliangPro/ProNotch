@@ -77,7 +77,8 @@ enum GlowHookInstaller {
     /// v5：URL 追加 token，应用侧恒定时间校验；无令牌的回调一律丢弃
     /// v6：投递前先确认 ProNotch 在运行，不再把退出的 App 拉起来
     /// v7：后台子任务还在跑就不提醒（background_tasks 非空即闭嘴）
-    private static let scriptFormat = 7
+    /// v8：四家各加挂一条 UserPromptSubmit 开工信号，供刘海收起态槽位显示工作状态
+    private static let scriptFormat = 8
 
     /// 投递回调前先确认 ProNotch 还在运行。
     ///
@@ -162,6 +163,55 @@ enum GlowHookInstaller {
     esac
     """
 
+    /// 「开始工作」信号脚本：四家共用，来源经 `$1` 传入。
+    ///
+    /// 挂在各家的 `UserPromptSubmit` 上——用户提交提问即开工，回合结束的 done 回调即收工，
+    /// 一个回合恰好两个事件，零轮询。这是刘海收起态唯一拿得到「正在工作」的路子：
+    /// AgentSessionsStore 收起时根本不扫描，而光晕链路只有「刚完成」没有「开始」。
+    private static func busyNotifyScript(token: String) -> String {
+        """
+        #!/bin/bash
+        # ProNotch · Agent 开始工作信号（自动生成，勿手改）· PRONOTCH_FMT=\(scriptFormat)
+        \(hostDetectSnippet)
+        src="$1"
+        [ -n "$src" ] || exit 0
+        # stdin 是终端就别 cat：各家在 UserPromptSubmit 上是否喂管道没有逐一实证过，
+        # 真赶上没喂的，cat 会一直等到 hook 超时——每次提问卡上几秒，比不显示状态糟得多
+        if [ -t 0 ]; then payload=""; else payload=$(cat); fi
+        host=$(detect_host)
+        # session_id 是 Claude / Kimi / Grok 的叫法，thread-id 是 Codex 的；抓不到就不带，
+        # 应用侧会退化成「把这一家整个标记为工作中」
+        sid=$(printf '%s' "$payload" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
+        [ -n "$sid" ] || sid=$(printf '%s' "$payload" | sed -n 's/.*"thread-id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
+        url="pronotch://busy?source=$src&token=\(token)"
+        [ -n "$host" ] && url="$url&host=$host"
+        [ -n "$sid" ] && url="$url&session=$sid"
+        \(deliverGuard)
+        """
+    }
+
+    /// 注册进各家配置的 busy 命令行。路径含空格（Application Support），须引号包裹
+    private static func busyCommand(_ paths: GlowHookPaths, source: String) -> String {
+        "\"\(paths.busyScript)\" \(source)"
+    }
+
+    /// 把共用的 busy 脚本落位（已是当前格式就不动）。四家都会调它，内容相同，重复调用无副作用。
+    ///
+    /// 刻意在写配置**之前**落位：没人引用的脚本只是个无害孤儿，
+    /// 而配置指向一个不存在的脚本，会让每次 UserPromptSubmit 都报 hook 失败
+    private static func ensureBusyScript(token: String, _ paths: GlowHookPaths) -> Bool {
+        if scriptIsCurrent(paths.busyScript, token: token) { return true }
+        guard let staged = AtomicConfigWriter.stageScript(busyNotifyScript(token: token),
+                                                          finalPath: paths.busyScript) else { return false }
+        return AtomicConfigWriter.commitScript(from: staged, to: paths.busyScript)
+    }
+
+    /// 四家都退干净了才收走共用脚本，不留孤儿也不误删还在被别家引用的
+    private static func cleanupBusyScriptIfUnused(_ paths: GlowHookPaths) {
+        guard !AgentKind.allCases.contains(where: { isInstalled($0, paths: paths) }) else { return }
+        try? FileManager.default.removeItem(atPath: paths.busyScript)
+    }
+
     /// stdin JSON 型转发脚本（Claude / Kimi / Grok 三家同构）
     private static func stdinNotifyScript(source: String, token: String) -> String {
         var guards = [compactSnippet, backgroundTasksGuard]
@@ -206,6 +256,14 @@ enum GlowHookInstaller {
             ($0["command"] as? String)?.contains("claude-notify.sh") == true
         } == true
     }
+    /// 开工信号条目（挂在 UserPromptSubmit 上）。与 `entryIsOurs` 认的是两拨不同的
+    /// 特征串（busy / agent-busy.sh vs done / claude-notify.sh），互不误伤
+    private static func entryIsOurBusy(_ entry: [String: Any]) -> Bool {
+        (entry["hooks"] as? [[String: Any]])?.contains {
+            let c = ($0["command"] as? String) ?? ""
+            return c.contains("pronotch://busy") || c.contains("agent-busy.sh")
+        } == true
+    }
 
     private static func isClaudeInstalled(_ paths: GlowHookPaths) -> Bool {
         guard let data = FileManager.default.contents(atPath: paths.claudeSettings),
@@ -228,27 +286,45 @@ enum GlowHookInstaller {
         }
         var hooks = root["hooks"] as? [String: Any] ?? [:]
         var stop = hooks["Stop"] as? [[String: Any]] ?? []
+        var prompt = hooks["UserPromptSubmit"] as? [[String: Any]] ?? []
         let oursEntries = stop.filter(entryIsOurs)
+        let ourBusyEntries = prompt.filter(entryIsOurBusy)
 
         var staged: String?
         if on {
             // 拿不到令牌就不装：装了也是一条谁都能伪造的回调，不如不装
             guard let token = GlowHookToken.ensure(paths) else { return false }
-            // 已是当前格式（脚本最新 + 仅一条指向脚本的 Stop 条目）→ 幂等跳过
-            if scriptIsCurrent(paths.claudeScript, token: token), oursEntries.count == 1,
-               entryIsCurrentClaude(oursEntries[0]) { return true }
+            // 已是当前格式（两个脚本都最新 + 两个事件各仅一条指向脚本的条目）→ 幂等跳过
+            if scriptIsCurrent(paths.claudeScript, token: token),
+               scriptIsCurrent(paths.busyScript, token: token),
+               oursEntries.count == 1, entryIsCurrentClaude(oursEntries[0]),
+               ourBusyEntries.count == 1 { return true }
             staged = AtomicConfigWriter.stageScript(stdinNotifyScript(source: "claude", token: token),
                                                     finalPath: paths.claudeScript)
             guard staged != nil else { return false }
+            // 共用的开工脚本先落位，配置才敢指过去
+            guard ensureBusyScript(token: token, paths) else {
+                AtomicConfigWriter.discardScript(staged)
+                return false
+            }
             stop.removeAll(where: entryIsOurs)   // 清掉旧内联 / 重复条目，再装新版
             stop.append(["hooks": [["type": "command", "command": claudeCommand(paths)]]])
+            prompt.removeAll(where: entryIsOurBusy)
+            prompt.append(["hooks": [["type": "command",
+                                      "command": busyCommand(paths, source: "claude")]]])
         } else {
-            if oursEntries.isEmpty { return true }
+            if oursEntries.isEmpty, ourBusyEntries.isEmpty { return true }
             stop.removeAll(where: entryIsOurs)
+            prompt.removeAll(where: entryIsOurBusy)
         }
 
         AtomicConfigWriter.backup(p)
         if stop.isEmpty { hooks.removeValue(forKey: "Stop") } else { hooks["Stop"] = stop }
+        if prompt.isEmpty {
+            hooks.removeValue(forKey: "UserPromptSubmit")
+        } else {
+            hooks["UserPromptSubmit"] = prompt
+        }
         if hooks.isEmpty { root.removeValue(forKey: "hooks") } else { root["hooks"] = hooks }
 
         guard writeJSON(root, to: p) else {
@@ -259,6 +335,7 @@ enum GlowHookInstaller {
             return AtomicConfigWriter.commitScript(from: staged!, to: paths.claudeScript)
         }
         try? fm.removeItem(atPath: paths.claudeScript)   // 配置改成功后才删脚本
+        cleanupBusyScriptIfUnused(paths)
         return true
     }
 
@@ -274,8 +351,11 @@ enum GlowHookInstaller {
     /// No such file），hook 静默失败、完成提醒就此失灵，且日志里什么都不留。
     /// 外层用 TOML 单引号（literal 串，不做转义），内层双引号原样落到 shell 手里。
     /// Claude / Codex / Grok 三家的 command 早已带引号，只有这里漏了
-    nonisolated static func kimiHookCommandLine(for script: String) -> String {
-        "command = '\"\(script)\"'"
+    /// `argument` 供开工脚本传来源（四家共用一个脚本，靠 $1 区分）
+    nonisolated static func kimiHookCommandLine(for script: String,
+                                                argument: String? = nil) -> String {
+        let arg = argument.map { " \($0)" } ?? ""
+        return "command = '\"\(script)\"\(arg)'"
     }
 
     private static func isKimiInstalled(_ paths: GlowHookPaths) -> Bool {
@@ -291,15 +371,18 @@ enum GlowHookInstaller {
         guard fm.fileExists(atPath: paths.kimiConfig),
               let toml = try? String(contentsOfFile: paths.kimiConfig, encoding: .utf8) else { return false }
         let commandLine = kimiHookCommandLine(for: paths.kimiScript)
+        let busyLine = kimiHookCommandLine(for: paths.busyScript, argument: "kimi")
         let installed = toml.contains(kimiScriptMarker(paths))
 
         if on {
             guard let token = GlowHookToken.ensure(paths) else { return false }
-            // 幂等：已接入、脚本最新、且配置已是当前格式（带边界标记的块）→ 不动文件。
+            // 幂等：已接入、两个脚本都最新、且配置已是当前格式（带边界标记、两条 hook 都在）→ 不动文件。
             // 必须连配置行一起验——只验脚本的话，早期写成裸路径的用户永远修不好
             if installed, fm.fileExists(atPath: paths.kimiScript),
                scriptIsCurrent(paths.kimiScript, token: token),
-               toml.contains(commandLine), toml.contains(KimiHookBlock.beginMarker) { return true }
+               scriptIsCurrent(paths.busyScript, token: token),
+               toml.contains(commandLine), toml.contains(busyLine),
+               toml.contains(KimiHookBlock.beginMarker) { return true }
 
             // 已有引用但不是当前格式 → 先精确摘掉旧的，摘不干净就整笔放弃
             var base = toml
@@ -313,13 +396,17 @@ enum GlowHookInstaller {
             guard let staged = AtomicConfigWriter.stageScript(
                     stdinNotifyScript(source: "kimi", token: token),
                     finalPath: paths.kimiScript) else { return false }
+            guard ensureBusyScript(token: token, paths) else {
+                AtomicConfigWriter.discardScript(staged)
+                return false
+            }
             AtomicConfigWriter.backup(paths.kimiConfig)
-            let block = KimiHookBlock.render(commandLine: commandLine)
+            let block = KimiHookBlock.render(commandLine: commandLine, busyCommandLine: busyLine)
             let newToml = base.hasSuffix("\n") ? base + "\n" + block + "\n" : base + "\n\n" + block + "\n"
             let result = AtomicConfigWriter.write(newToml, to: paths.kimiConfig) { text in
                 // 结构校验：写出去的必须能再被自己摘回来，否则说明拼错了
                 text.contains(KimiHookBlock.beginMarker) && text.contains(KimiHookBlock.endMarker)
-                    && text.contains(commandLine)
+                    && text.contains(commandLine) && text.contains(busyLine)
             }
             guard result.isSuccess else {
                 AtomicConfigWriter.discardScript(staged)
@@ -332,6 +419,7 @@ enum GlowHookInstaller {
         switch KimiHookBlock.remove(from: toml, scriptPath: paths.kimiScript) {
         case .notPresent:
             try? fm.removeItem(atPath: paths.kimiScript)   // 残留脚本顺手清掉
+            cleanupBusyScriptIfUnused(paths)
             return true
         case .ambiguous:
             return false                                   // 定位不了就不动，宁可让用户手删
@@ -342,6 +430,7 @@ enum GlowHookInstaller {
             }
             guard result.isSuccess else { return false }
             try? fm.removeItem(atPath: paths.kimiScript)
+            cleanupBusyScriptIfUnused(paths)
             return true
         }
     }
@@ -361,16 +450,23 @@ enum GlowHookInstaller {
 
         if on {
             guard let token = GlowHookToken.ensure(paths) else { return false }
-            // 幂等：钩子文件在 + 脚本最新 → 不动文件
-            if isGrokInstalled(paths), scriptIsCurrent(paths.grokScript, token: token) { return true }
+            // 幂等：钩子文件在 + 两个脚本都最新 → 不动文件
+            if isGrokInstalled(paths), scriptIsCurrent(paths.grokScript, token: token),
+               scriptIsCurrent(paths.busyScript, token: token) { return true }
             guard let staged = AtomicConfigWriter.stageScript(
                     stdinNotifyScript(source: "grok", token: token),
                     finalPath: paths.grokScript) else { return false }
+            guard ensureBusyScript(token: token, paths) else {
+                AtomicConfigWriter.discardScript(staged)
+                return false
+            }
             try? fm.createDirectory(atPath: paths.grokHooksDir, withIntermediateDirectories: true)
             // 路径含空格（Application Support），command 经 shell 解释，须引号包裹
-            let root: [String: Any] = ["hooks": ["Stop": [
-                ["hooks": [["type": "command", "command": "\"\(paths.grokScript)\""]]]
-            ]]]
+            let root: [String: Any] = ["hooks": [
+                "Stop": [["hooks": [["type": "command", "command": "\"\(paths.grokScript)\""]]]],
+                "UserPromptSubmit": [["hooks": [["type": "command",
+                                                 "command": busyCommand(paths, source: "grok")]]]]
+            ]]
             guard writeJSON(root, to: paths.grokHookFile) else {
                 AtomicConfigWriter.discardScript(staged)
                 return false
@@ -380,6 +476,7 @@ enum GlowHookInstaller {
         // pronotch.json 整个文件都是我们写的：直接删即还原（不碰别家的钩子文件）
         try? fm.removeItem(atPath: paths.grokHookFile)
         try? fm.removeItem(atPath: paths.grokScript)
+        cleanupBusyScriptIfUnused(paths)
         return true
     }
 
@@ -400,6 +497,53 @@ enum GlowHookInstaller {
             && FileManager.default.fileExists(atPath: paths.codexScript)
     }
 
+    /// Codex 的开工信号单走 `~/.codex/hooks.json`（Claude 同构 schema）。
+    ///
+    /// 之所以不跟完成提醒同路：完成走 `config.toml` 的 `notify`，那条链上压根没有「开始」事件。
+    /// hooks.json 确实被 Codex 执行——ProNotch 早期版本往这里挂过 Stop，后来正是因为它
+    /// **真的触发了**（多发一个无 host 的完成信号）才写了 `cleanCodexHooksOrphan` 去清；
+    /// 机内 confirmo 与 vibe-island 也都在此注册 UserPromptSubmit。
+    ///
+    /// 注意 `cleanCodexHooksOrphan` 只删 Stop 下含 `pronotch://done` 的条目，
+    /// 本条挂在 UserPromptSubmit 且特征串是 `busy`，不会被它误清。
+    @discardableResult
+    private static func setCodexBusy(_ on: Bool, token: String?, _ paths: GlowHookPaths) -> Bool {
+        let p = paths.codexHooks
+        let fm = FileManager.default
+        var root: [String: Any] = [:]
+        if let data = fm.contents(atPath: p) {
+            guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+            root = obj
+        } else if !on {
+            return true   // 文件都不存在，卸载无事可做
+        }
+        var hooks = root["hooks"] as? [String: Any] ?? [:]
+        var prompt = hooks["UserPromptSubmit"] as? [[String: Any]] ?? []
+        let ours = prompt.filter(entryIsOurBusy)
+
+        if on {
+            guard let token else { return false }
+            if ours.count == 1, scriptIsCurrent(paths.busyScript, token: token) { return true }
+            guard ensureBusyScript(token: token, paths) else { return false }
+            prompt.removeAll(where: entryIsOurBusy)
+            prompt.append(["hooks": [["type": "command",
+                                      "command": busyCommand(paths, source: "codex"),
+                                      "timeout": 5]]])
+        } else {
+            if ours.isEmpty { return true }
+            prompt.removeAll(where: entryIsOurBusy)
+        }
+
+        AtomicConfigWriter.backup(p)
+        if prompt.isEmpty {
+            hooks.removeValue(forKey: "UserPromptSubmit")
+        } else {
+            hooks["UserPromptSubmit"] = prompt
+        }
+        if hooks.isEmpty { root.removeValue(forKey: "hooks") } else { root["hooks"] = hooks }
+        return writeJSON(root, to: p)
+    }
+
     @discardableResult
     private static func setCodexInstalled(_ on: Bool, _ paths: GlowHookPaths) -> Bool {
         let fm = FileManager.default
@@ -415,6 +559,9 @@ enum GlowHookInstaller {
 
         if on {
             guard let token = GlowHookToken.ensure(paths) else { return false }
+            // 开工信号是槽位显示用的附属能力，走的还是另一个文件。
+            // 它失败不该把「完成提醒」这个主功能一起判失败——顶多槽位不亮，提醒照常
+            setCodexBusy(true, token: token, paths)
             if inChain {
                 // 已在 notify 链中。被 computer-use 等套在外层时，我们是「下游」，本就不该再向下转发；
                 // 直接指向时，previous 取脚本自己记录的原值。绝不把「含我们自己的当前链」抓来当 previous，
@@ -443,7 +590,11 @@ enum GlowHookInstaller {
             return AtomicConfigWriter.commitScript(from: staged, to: paths.codexScript)
         }
 
-        if !inChain { return true }
+        setCodexBusy(false, token: nil, paths)
+        if !inChain {
+            cleanupBusyScriptIfUnused(paths)
+            return true
+        }
         if directlyOurs {
             // notify 直接是我们：还原原 notify（或删整条）+ 删脚本
             AtomicConfigWriter.backup(paths.codexConfig)
@@ -456,11 +607,13 @@ enum GlowHookInstaller {
             }
             guard result.isSuccess else { return false }
             try? fm.removeItem(atPath: paths.codexScript)
+            cleanupBusyScriptIfUnused(paths)
             return true
         }
         // 被外层套壳：notify 归上游（computer-use 等）管，不动它；只删我们的脚本即可
         // （上游转发到缺失脚本无害，不会再点亮光晕）。
         try? fm.removeItem(atPath: paths.codexScript)
+        cleanupBusyScriptIfUnused(paths)
         return true
     }
 

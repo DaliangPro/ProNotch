@@ -22,6 +22,13 @@ struct GlowHookPaths: Sendable {
     var grokScript: String { scriptDir + "/grok-notify.sh" }
     var codexScript: String { scriptDir + "/codex-notify.sh" }
 
+    /// 「开始工作」信号脚本，四家共用一个，来源由注册时的 $1 传入。
+    ///
+    /// 不跟着完成脚本一家一份：内容完全相同（只差那个参数），四份就是四份要同步刷新的副本。
+    /// 也不跟完成脚本合成一个文件按事件名分支——Kimi / Grok 的事件名取值没实证过，
+    /// 分支不可靠，而分开注册是各家配置本来就支持的
+    var busyScript: String { scriptDir + "/agent-busy.sh" }
+
     static var production: GlowHookPaths {
         let home = NSHomeDirectory()
         return GlowHookPaths(

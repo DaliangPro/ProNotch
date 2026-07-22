@@ -271,8 +271,14 @@ final class GlowHookInstallerConfigTests: XCTestCase {
         let toml = read(paths.kimiConfig)
         XCTAssertTrue(toml.contains(KimiHookBlock.beginMarker))
         XCTAssertTrue(toml.contains(GlowHookInstaller.kimiHookCommandLine(for: paths.kimiScript)))
-        XCTAssertEqual(toml.components(separatedBy: "[[hooks]]").count - 1, 1,
-                       "升级不能变成两段 hooks")
+        XCTAssertFalse(toml.contains("command = \"\(paths.kimiScript)\""),
+                       "旧的裸路径 command 必须被摘掉，留着会被 shell 从空格切断")
+        XCTAssertEqual(
+            toml.components(separatedBy: GlowHookInstaller.kimiHookCommandLine(for: paths.kimiScript)).count - 1,
+            1, "升级不能把完成提醒挂成两条")
+        // 托管块现在含两条 hook：Stop（完成提醒）+ UserPromptSubmit（开工信号）
+        XCTAssertEqual(toml.components(separatedBy: "[[hooks]]").count - 1, 2,
+                       "升级后应恰好是我们那两条 hook，多出来就是旧块没摘干净")
     }
 
     func testKimi保留用户自己的hooks段() throws {
@@ -366,6 +372,119 @@ final class GlowHookInstallerConfigTests: XCTestCase {
         XCTAssertTrue(GlowHookInstaller.setInstalled(.grok, false, paths: paths))
         XCTAssertFalse(fm.fileExists(atPath: paths.grokHookFile))
         XCTAssertFalse(fm.fileExists(atPath: paths.grokScript))
+    }
+
+    // MARK: - 开工信号（UserPromptSubmit）
+
+    /// 从 Claude 同构的 JSON 钩子文件里取某事件下的全部 command
+    private func jsonHookCommands(_ path: String, event: String) -> [String] {
+        guard let data = fm.contents(atPath: path),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let hooks = root["hooks"] as? [String: Any],
+              let entries = hooks[event] as? [[String: Any]] else { return [] }
+        return entries.flatMap {
+            ($0["hooks"] as? [[String: Any]] ?? []).compactMap { $0["command"] as? String }
+        }
+    }
+
+    func testClaude开工信号挂在UserPromptSubmit并随卸载摘除() throws {
+        try write("""
+        {"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"/user/own.sh"}]}]}}
+        """, to: paths.claudeSettings)
+
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))
+        XCTAssertTrue(fm.fileExists(atPath: paths.busyScript), "开工脚本必须落位")
+        XCTAssertEqual(jsonHookCommands(paths.claudeSettings, event: "UserPromptSubmit"),
+                       ["/user/own.sh", "\"\(paths.busyScript)\" claude"],
+                       "用户自己的提交钩子必须原样排在前")
+
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, false, paths: paths))
+        XCTAssertEqual(jsonHookCommands(paths.claudeSettings, event: "UserPromptSubmit"),
+                       ["/user/own.sh"])
+        XCTAssertFalse(fm.fileExists(atPath: paths.busyScript), "四家都退了，共用脚本才该收走")
+    }
+
+    func testGrok开工信号写进同一份钩子文件() throws {
+        try fm.createDirectory(atPath: paths.grokHome, withIntermediateDirectories: true)
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.grok, true, paths: paths))
+        XCTAssertEqual(jsonHookCommands(paths.grokHookFile, event: "UserPromptSubmit"),
+                       ["\"\(paths.busyScript)\" grok"])
+        XCTAssertEqual(jsonHookCommands(paths.grokHookFile, event: "Stop"),
+                       ["\"\(paths.grokScript)\""])
+    }
+
+    func testKimi开工信号与完成提醒同在一段托管块() throws {
+        try write("model = \"kimi\"\n", to: paths.kimiConfig)
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.kimi, true, paths: paths))
+
+        let toml = read(paths.kimiConfig)
+        XCTAssertTrue(toml.contains(
+            GlowHookInstaller.kimiHookCommandLine(for: paths.busyScript, argument: "kimi")))
+        XCTAssertTrue(toml.contains("event = \"UserPromptSubmit\""))
+        // 标记必须仍是全文唯一的一对，否则 remove 会判 ambiguous 拒绝卸载
+        XCTAssertEqual(toml.components(separatedBy: KimiHookBlock.beginMarker).count - 1, 1)
+
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.kimi, false, paths: paths))
+        XCTAssertEqual(read(paths.kimiConfig).trimmingCharacters(in: .whitespacesAndNewlines),
+                       "model = \"kimi\"", "两条 hook 必须被整段摘干净")
+    }
+
+    func testCodex开工信号走hooks_json而完成提醒仍走notify() throws {
+        try prepareCodex("model = \"gpt-5\"\n")
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.codex, true, paths: paths))
+
+        XCTAssertEqual(jsonHookCommands(paths.codexHooks, event: "UserPromptSubmit"),
+                       ["\"\(paths.busyScript)\" codex"])
+        XCTAssertTrue(read(paths.codexConfig).contains(paths.codexScript),
+                      "完成提醒仍旧只走 config.toml 的 notify")
+
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.codex, false, paths: paths))
+        XCTAssertEqual(jsonHookCommands(paths.codexHooks, event: "UserPromptSubmit"), [])
+    }
+
+    func testCodex开工信号不误清别家的提交钩子() throws {
+        try prepareCodex("model = \"gpt-5\"\n")
+        try write("""
+        {"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command","command":"/other/tool.js"}]}]}}
+        """, to: paths.codexHooks)
+
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.codex, true, paths: paths))
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.codex, false, paths: paths))
+        XCTAssertEqual(jsonHookCommands(paths.codexHooks, event: "UserPromptSubmit"),
+                       ["/other/tool.js"])
+    }
+
+    /// 孤儿清理只认 Stop 下的 done，不能顺手把 UserPromptSubmit 下的 busy 一起带走
+    func testCodex孤儿清理不误伤开工信号() throws {
+        try prepareCodex("model = \"gpt-5\"\n")
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.codex, true, paths: paths))
+        // 手工造一条早期版本留下的 Stop 孤儿
+        var root = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(fm.contents(atPath: paths.codexHooks)))
+                as? [String: Any])
+        var hooks = try XCTUnwrap(root["hooks"] as? [String: Any])
+        hooks["Stop"] = [["hooks": [["type": "command", "command": "open pronotch://done?source=codex"]]]]
+        root["hooks"] = hooks
+        try write(String(decoding: try JSONSerialization.data(withJSONObject: root), as: UTF8.self),
+                  to: paths.codexHooks)
+
+        XCTAssertTrue(GlowHookInstaller.cleanCodexHooksOrphan(paths: paths))
+        XCTAssertEqual(jsonHookCommands(paths.codexHooks, event: "Stop"), [])
+        XCTAssertEqual(jsonHookCommands(paths.codexHooks, event: "UserPromptSubmit"),
+                       ["\"\(paths.busyScript)\" codex"], "开工信号不该被孤儿清理带走")
+    }
+
+    func test四家共用一个开工脚本_有人还在用就不删() throws {
+        try write("{}", to: paths.claudeSettings)
+        try fm.createDirectory(atPath: paths.grokHome, withIntermediateDirectories: true)
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.grok, true, paths: paths))
+
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, false, paths: paths))
+        XCTAssertTrue(fm.fileExists(atPath: paths.busyScript), "Grok 还接着，脚本不能删")
+
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.grok, false, paths: paths))
+        XCTAssertFalse(fm.fileExists(atPath: paths.busyScript))
     }
 
     // MARK: - 原子写入与权限

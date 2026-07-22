@@ -1,10 +1,10 @@
 import SwiftUI
 
-/// 应用级数据层：十个 Store 在启动时一次建齐、全程存活。
+/// 应用级数据层：十一个 Store 在启动时一次建齐、全程存活。
 ///
 /// 它们之所以不挂在刘海窗口上，是因为换屏（接显示器、合盖）要重建窗口，
-/// 而对话记录、剪贴板监听这些状态不能跟着窗口一起没。既然十个总是同进同出，
-/// 就打成一个值传——此前它们是 AppDelegate 的十个独立属性，
+/// 而对话记录、剪贴板监听这些状态不能跟着窗口一起没。既然它们总是同进同出，
+/// 就打成一个值传——此前它们是 AppDelegate 的一堆独立属性，
 /// 每加一个 Store 都要同步改构造函数签名和三处注入链，加漏一处编译期还发现不了。
 ///
 /// 注：`snippets` 不进 `injecting`——常用话术只在设置窗用，刘海面板里没有它的消费者。
@@ -16,6 +16,7 @@ struct AppEnvironment {
     let chat: ChatStore
     let usage: UsageStore
     let agentSessions: AgentSessionsStore
+    let agentActivity: AgentActivityStore
     let quickActions: QuickActionsStore
     let settings: SettingsStore
     let memory: MemoryStore
@@ -34,6 +35,7 @@ extension View {
             .environmentObject(env.settings)
             .environmentObject(env.usage)
             .environmentObject(env.agentSessions)
+            .environmentObject(env.agentActivity)
             .environmentObject(env.memory)
             .environmentObject(env.weather)
     }

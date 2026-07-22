@@ -11,14 +11,25 @@ enum KimiHookBlock {
     static let beginMarker = "# >>> ProNotch managed hook BEGIN"
     static let endMarker = "# <<< ProNotch managed hook END"
 
-    static func render(commandLine: String) -> String {
+    /// 两条 hook 渲染进同一段托管块：完成提醒（Stop）与开工信号（UserPromptSubmit）。
+    /// 合成一段而不是分成两段，是因为摘除逻辑要求边界标记全文唯一——
+    /// 两段就是两对标记，`remove` 会直接判 `.ambiguous` 拒绝卸载。
+    ///
+    /// 开工信号超时给 5 秒（完成提醒是 15）：它挂在用户每次提交提问的路径上，
+    /// 卡住就是卡住用户本人，宁可放弃这一次的状态点亮
+    static func render(commandLine: String, busyCommandLine: String) -> String {
         """
         \(beginMarker)
-        # ProNotch 完成提醒（自动生成，卸载请在 ProNotch 设置里取消勾选）
+        # ProNotch 完成提醒 + 工作状态（自动生成，卸载请在 ProNotch 设置里取消勾选）
         [[hooks]]
         event = "Stop"
         \(commandLine)
         timeout = 15
+
+        [[hooks]]
+        event = "UserPromptSubmit"
+        \(busyCommandLine)
+        timeout = 5
         \(endMarker)
         """
     }

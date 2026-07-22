@@ -27,7 +27,8 @@ final class HookDeliveryGuardTests: XCTestCase {
 
     // MARK: - 取脚本
 
-    /// 装一套 hook 到临时目录，取回生成的四个脚本原文
+    /// 装一套 hook 到临时目录，取回生成的脚本原文
+    /// （四家各一份完成提醒，外加四家共用的那份开工信号）
     private func installedScripts() throws -> [String: String] {
         let paths = GlowHookPaths.rooted(at: tmp.path)
         for dir in [paths.scriptDir, paths.codexDir, paths.grokHooksDir,
@@ -45,7 +46,8 @@ final class HookDeliveryGuardTests: XCTestCase {
 
         var out: [String: String] = [:]
         for (name, path) in ["claude": paths.claudeScript, "codex": paths.codexScript,
-                             "kimi": paths.kimiScript, "grok": paths.grokScript] {
+                             "kimi": paths.kimiScript, "grok": paths.grokScript,
+                             "busy": paths.busyScript] {
             out[name] = try String(contentsOfFile: path, encoding: .utf8)
         }
         return out
@@ -53,7 +55,7 @@ final class HookDeliveryGuardTests: XCTestCase {
 
     // MARK: - 静态守卫
 
-    func test四个脚本都先确认ProNotch在运行才投递() throws {
+    func test每个脚本都先确认ProNotch在运行才投递() throws {
         for (name, script) in try installedScripts() {
             XCTAssertTrue(script.contains("pgrep -x ProNotch"),
                           "\(name) 少了运行检查，会把用户刚关掉的 App 拉回来")
@@ -107,7 +109,7 @@ final class HookDeliveryGuardTests: XCTestCase {
                                     "格式号退回 v7 之前，老用户的脚本不会被刷新到带过滤的版本")
     }
 
-    func test四个脚本语法都合法() throws {
+    func test每个脚本语法都合法() throws {
         for (name, script) in try installedScripts() {
             let file = tmp.appendingPathComponent("\(name)-syntax.sh")
             try script.write(to: file, atomically: true, encoding: .utf8)
@@ -132,9 +134,14 @@ final class HookDeliveryGuardTests: XCTestCase {
         let file = tmp.appendingPathComponent("\(name)-\(slug).sh")
         try script.write(to: file, atomically: true, encoding: .utf8)
 
-        // Claude/Kimi/Grok 从 stdin 读 JSON；Codex 从 $1 读 payload
-        let args = name == "codex" ? [file.path, #"{"type":"agent-turn-complete","thread-id":"t1"}"#]
-                                   : [file.path]
+        // Claude/Kimi/Grok 从 stdin 读 JSON；Codex 从 $1 读 payload；
+        // 开工脚本四家共用，$1 是来源
+        var args = [file.path]
+        switch name {
+        case "codex": args.append(#"{"type":"agent-turn-complete","thread-id":"t1"}"#)
+        case "busy":  args.append("claude")
+        default:      break
+        }
         let result = try run("/bin/bash", args, stdin: payload)
         return (FileManager.default.fileExists(atPath: marker.path), result.status)
     }
@@ -276,6 +283,64 @@ final class HookDeliveryGuardTests: XCTestCase {
         let script = try XCTUnwrap(try installedScripts()["codex"])
         XCTAssertFalse(script.contains("background_tasks"),
                        "Codex 载荷里没这个字段，加了过滤只是白跑一趟且容易误伤")
+    }
+
+    // MARK: - 开工信号
+
+    /// 开工信号是给刘海槽位用的状态，不该点亮光晕——URL 走 busy 不走 done
+    func test开工脚本发的是busy不是done() throws {
+        let script = try XCTUnwrap(try installedScripts()["busy"])
+        XCTAssertTrue(script.contains("pronotch://busy"))
+        XCTAssertFalse(script.contains("pronotch://done"),
+                       "开工就点亮光晕，等于每次提问都打扰一次，正是完成提醒要避免的")
+    }
+
+    /// 四家共用一个脚本，来源全靠 $1。没传就没法归属，宁可什么都不做
+    func test开工脚本缺来源参数时安静退出() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        var script = try XCTUnwrap(try installedScripts()["busy"])
+        let marker = tmp.appendingPathComponent("busy-nosrc")
+        script = script
+            .replacingOccurrences(of: "pgrep -x ProNotch", with: "pgrep -x \(probe.name)")
+            .replacingOccurrences(of: #"open -g "$url""#, with: "touch '\(marker.path)'")
+        let file = tmp.appendingPathComponent("busy-nosrc.sh")
+        try script.write(to: file, atomically: true, encoding: .utf8)
+
+        let r = try run("/bin/bash", [file.path], stdin: #"{"session_id":"abc"}"#)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path),
+                       "没来源也投递，应用侧认不出是哪家，只会拿到一条废回调")
+        XCTAssertEqual(r.status, 0, "非零退出会被各家当成 hook 失败报错")
+    }
+
+    func test开工脚本在App没跑时不投递() throws {
+        let ghost = "ProNotchGhost\(UUID().uuidString.prefix(8))"
+        let r = try deliver(scriptNamed: "busy", watching: ghost)
+        XCTAssertFalse(r.delivered, "开工信号也会把用户刚关掉的 App 拉回来")
+        XCTAssertEqual(r.status, 0)
+    }
+
+    func test开工脚本在App运行时照常投递() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        XCTAssertTrue(try deliver(scriptNamed: "busy", watching: probe.name).delivered,
+                      "开工信号不投递，槽位就永远显示空闲")
+    }
+
+    /// stdin 没被喂管道时 `cat` 会一直等到 hook 超时——那是卡用户本人的每一次提问。
+    /// 各家在 UserPromptSubmit 上是否喂 stdin 没有逐一实证，这条兜底不能少
+    func test开工脚本在stdin是终端时不阻塞() throws {
+        let script = try XCTUnwrap(try installedScripts()["busy"])
+        XCTAssertTrue(script.contains("[ -t 0 ]"),
+                      "少了终端判断，遇上不喂 stdin 的家，每次提问都要卡到 hook 超时")
+    }
+
+    /// Codex 的会话字段叫 thread-id，不叫 session_id。取不到会话就只能把整家标记成工作中，
+    /// 多开几个会话时会互相抹掉状态
+    func test开工脚本认得出Codex的thread_id() throws {
+        let script = try XCTUnwrap(try installedScripts()["busy"])
+        XCTAssertTrue(script.contains("thread-id"), "Codex 的会话字段没取，多会话状态会串")
+        XCTAssertTrue(script.contains("session_id"), "另外三家的会话字段不能丢")
     }
 
     // MARK: - 跑进程
