@@ -8,12 +8,12 @@ import SwiftUI
 /// **只有蓝、黑两色，扁平无渐变**——和 Clawd 的两色实心块正好同一路画风，
 /// 「不是一个画风」的问题到此收口。
 ///
-/// 取法两段拼的：
-/// - **轮廓**按面积多数投票从源图降到 **16 列**的粗颗粒——大梁老师反馈 26 列那版云边碎块太多、
-///   比 Clawd 显得精细，降到 16 列后每格 1.5pt，颗粒感与 Clawd 齐平。
-/// - **屏上的 `>_`** 在 16 列这么粗时会被降采样抹平（黑屏塌成纯方块，认不出终端），
-///   所以是**手工烙印**的粗块字：`>` 三行右向箭头 + `_` 光标。这是全篇唯一一处对源图的改动，
-///   和 Clawd 一样属于「为了这个尺寸下还认得出脸」的必要手绘。`>_` 与云身同色、靠黑屏衬出。
+/// **不是照着源图降采样的**：自动降采样 AI 出图会把云的有机曲线 + 抗锯齿缩成一圈单格台阶，
+/// 云边全是碎块锯齿角，脏、不像素画（大梁老师反馈「碎块角太多」）。所以这份是**手工重画的
+/// 干净剪影**——只借源图的比例（云顶 + 终端屏 + 三只脚），每条边都是规整整块台阶、无单格突刺，
+/// 和 Clawd 一样是刻意画的像素，不是缩出来的噪点。
+///
+/// 屏上的 `>_` 同样手绘：`>` 三行右向箭头 + `_` 光标，与云身同色、靠黑屏衬出。
 enum CodexPetSprite {
     /// 16 列 × 16 行 = 15 行本体 + 顶上留一行给弹跳（与 Clawd 同构：留白写进网格，
     /// 弹跳时整只上抬一格而画布不变，旁边指示灯不会被挤动）
@@ -24,24 +24,24 @@ enum CodexPetSprite {
     static let bodyColor = Color(red: 0x50 / 255, green: 0x90 / 255, blue: 0xF0 / 255)
     static let screenColor = Color(red: 0x10 / 255, green: 0x10 / 255, blue: 0x10 / 255)
 
-    /// 本体 15 行（`b` 云身/提示符、`k` 终端屏、`.` 透明）。第 7–9 行屏内的 `b` 是烙印的 `>`，
-    /// 第 9 行右侧那截 `bbb` 是光标 `_`
+    /// 本体 15 行（`b` 云身/提示符、`k` 终端屏、`.` 透明）。第 6–8 行屏内的 `b` 是手绘的 `>`，
+    /// 第 9 行那截 `bbb` 是光标 `_`。第 13–14 行是三只脚
     static let character = [
-        ".....bbbbb......",
-        "....bbbbbbbbb...",
-        "....bbbbbbbbb...",
+        ".....bbbbbb.....",
+        "...bbbbbbbbbb...",
         "..bbbbbbbbbbbb..",
         ".bbbbbbbbbbbbbb.",
-        "bbbbbkkkkkkkkbbb",
-        "bbbbkkkkkkkkkbbb",
-        "bbbbkbbkkkkkkbbb",
-        "bbbbkkbbkkkkkbbb",
-        ".bbbkbbkkbbbkbb.",
-        ".bbbbkkkkkkkbbb.",
-        "..bbbbbbbbbbbb..",
         ".bbbbbbbbbbbbbb.",
-        ".bb.bbb..bbb.bb.",
-        ".....bb..bbb....",
+        ".bbkkkkkkkkkkbb.",
+        ".bbkbbkkkkkkkbb.",
+        ".bbkkbbkkkkkkbb.",
+        ".bbkbbkkkkkkkbb.",
+        ".bbkkkkkbbbkkbb.",
+        ".bbkkkkkkkkkkbb.",
+        ".bbbbbbbbbbbbbb.",
+        ".bbbbbbbbbbbbbb.",
+        "..bb...bb...bb..",
+        "..bb...bb...bb..",
     ]
 
     private static let blankRow = String(repeating: ".", count: cols)
