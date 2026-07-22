@@ -227,9 +227,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // 开工信号到此为止：只更新槽位要的活动状态，不碰光晕也不动会话表
         guard action == "done" else {
             env?.agentActivity.markBusy(kind, session: session)
+            // 开工/收工都埋一条：这条链路成功时在界面之外没有任何可观测点
+            //（光晕至少还会亮一下，槽位状态不配槽位就完全看不见），
+            // 排查「黄灯不亮」时得能分清是没投递到还是投递了没画
+            AppLog.app.debug("槽位记账：\(kind.rawValue, privacy: .public) 开工")
             return
         }
         env?.agentActivity.markIdle(kind, session: session)
+        AppLog.app.debug("槽位记账：\(kind.rawValue, privacy: .public) 收工")
         let effectiveHost = (host?.isEmpty == false) ? host
             : env?.agentSessions.knownHost(for: session, source: kind)
         glowController?.notifyCompletion(kind, host: effectiveHost)
