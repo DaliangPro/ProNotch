@@ -197,13 +197,15 @@ struct AgentWaitCardView: View {
     /// 它到底要干什么：工具名 + 那一行入参。
     /// 等宽字体是必要的——这里躺着的是要跑的命令和要写的路径，看错一个字符就按错了。
     ///
-    /// 块本身整宽（左右各留 `inset`，对称），块内文字**左对齐**：命令和路径是代码，
-    /// 逐字符核对靠的就是行首对齐，居中反而更难读（唯一一处不居中的地方）。
+    /// 块本身整宽（左右各留 `inset`，对称），块内文字**居中**（大梁老师定）：
+    /// 卡上其余内容全部居中，只有这一块贴着左边，看着像放歪了。
+    /// 逐字符核对仍靠等宽字形本身，不靠行首对齐——代价是命令满到第二行时两行各自居中、
+    /// 行首不再齐，所以这里维持 `lineLimit(2)` 与尾部截断，不让它长成一段左对齐的正文
     ///
     /// 高度写死两行：卡是从刘海里「长」出来的，那扇揭示窗的终态尺寸必须提前定下
     /// （见 `NotchGrownCard.grownHeight`）。让详情行数决定卡高，长命令就会被窗口裁掉半截
     private func detailBlock(_ request: AgentPermissionRequest) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(spacing: 4) {
             Text(request.tool)
                 .font(.system(size: 10, weight: .bold, design: .monospaced))
                 .foregroundColor(.white.opacity(0.45))
@@ -212,9 +214,10 @@ struct AgentWaitCardView: View {
                 .foregroundColor(.white.opacity(0.9))
                 .lineLimit(2)
                 .truncationMode(.tail)
-                .frame(maxWidth: .infinity, minHeight: 32, alignment: .topLeading)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity, minHeight: 32, alignment: .top)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 11).padding(.vertical, 9)
         .background(RoundedRectangle(cornerRadius: NotchGrownCardMetrics.innerRadius)
             .fill(Color.white.opacity(0.06)))
