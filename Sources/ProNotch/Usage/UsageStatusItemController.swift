@@ -137,11 +137,13 @@ final class UsageStatusItemController {
         // 双重过滤：接入勾选（设置 → Agent 每家总开关）∩ 菜单栏勾选（每家「菜单栏」小开关）——
         // 刘海里看全量、菜单栏只挑常用的。取消接入时数据被置 nil，
         // objectWillChange 会把这里再驱动一遍，标题即时增减
+        // 底色须是深色：logo 一律填白（见 brandImage），浅底会白 logo 糊在白底上。
+        // Kimi 原用「月之暗面白 #EDEDED」正是此坑——白 K 画在白底几乎看不见，改回其本色黑
         let tints: [AgentKind: NSColor] = [
             .claude: NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1),   // Claude 橙
             .codex: .systemCyan,
             .grok: .systemGray,
-            .kimi: NSColor(srgbRed: 0.929, green: 0.929, blue: 0.929, alpha: 1),     // 月之暗面白
+            .kimi: NSColor(srgbRed: 0.102, green: 0.102, blue: 0.102, alpha: 1),     // 月之暗面黑 #1A1A1A
         ]
         let items = AgentKind.allCases.filter {
             $0.supportsQuota && env.settings.enabledAgents.contains($0)
