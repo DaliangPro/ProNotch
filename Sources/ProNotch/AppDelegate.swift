@@ -311,11 +311,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // host 抓空时复用该会话之前抓对过的宿主（同 done 分支的理由），否则「打开终端」跳不过去
         let effectiveHost = (host?.isEmpty == false) ? host
             : env.agentSessions.knownHost(for: request.session, source: kind)
+        let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
+        let hostVisible = AgentHostVisibility.ownsTopWindow(host: effectiveHost)
+        // 「本身就是找你确认」的工具（见 AgentWaitPolicy.selfPromptingTools）：
+        // 放它回窗口里正常问，刘海只提醒一声——真正的选项在窗口里，卡上摆不出来
+        guard AgentWaitPolicy.canAnswerOnCard(tool: request.tool) else {
+            broker.answer(request, .terminal)
+            env.agentWait.present(
+                AgentWaitNotice(source: kind, session: request.session, host: effectiveHost,
+                                project: request.project),
+                frontmost: frontmost, hostWindowVisible: hostVisible)
+            AppLog.app.debug("拍板请求：\(kind.rawValue, privacy: .public) 工具 \(request.tool, privacy: .public) 是问你话类，已放回窗口、只提醒一声")
+            return
+        }
         env.agentWait.present(
             AgentWaitNotice(source: kind, session: request.session, host: effectiveHost,
                             project: request.project, request: request),
-            frontmost: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
-            hostWindowVisible: AgentHostVisibility.ownsTopWindow(host: effectiveHost))
+            frontmost: frontmost, hostWindowVisible: hostVisible)
         // 只记工具名：详情里躺着要跑的命令和要写的路径，日志是永久明文
         AppLog.app.debug("拍板请求：\(kind.rawValue, privacy: .public) 工具 \(request.tool, privacy: .public)")
     }

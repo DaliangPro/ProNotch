@@ -112,6 +112,27 @@ struct AgentPermissionBroker: Sendable {
         text.count <= detailLimit ? text : String(text.prefix(detailLimit)) + "…"
     }
 
+    /// 兜底二：入参是「数组套字典」时（AskUserQuestion 的 questions、TodoWrite 的 todos
+    /// 都是这种），从每一项里挑一句拼成一行。
+    ///
+    /// 不做这一层就会掉到压平 JSON：大梁老师实测看到的就是一坨带转义引号的入参，
+    /// 等于什么也没看到
+    private static let nestedKeys = ["questions", "todos", "edits"]
+    private static let nestedItemKeys = ["question", "content", "description", "new_string"]
+
+    private static func nestedDetail(_ input: [String: Any]) -> String? {
+        for key in nestedKeys {
+            guard let items = input[key] as? [[String: Any]] else { continue }
+            let parts = items.compactMap { item in
+                nestedItemKeys.lazy.compactMap { item[$0] as? String }
+                    .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            }
+            guard !parts.isEmpty else { continue }
+            return truncate(parts.joined(separator: " / "))
+        }
+        return nil
+    }
+
     /// 从入参里挑一行给人看的详情
     static func detail(tool: String, input: [String: Any]) -> String {
         for key in [detailKeys[tool]].compactMap({ $0 }) + fallbackKeys {
@@ -119,6 +140,7 @@ struct AgentPermissionBroker: Sendable {
             let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             if !text.isEmpty { return truncate(text) }
         }
+        if let nested = nestedDetail(input) { return nested }
         // 压平兜底：看不出是什么至少也别是空白一片，用户还能凭它判断要不要放行
         guard !input.isEmpty,
               let data = try? JSONSerialization.data(withJSONObject: input, options: [.sortedKeys]),

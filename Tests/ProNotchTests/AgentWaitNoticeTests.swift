@@ -35,6 +35,24 @@ final class AgentWaitNoticeTests: XCTestCase {
         XCTAssertTrue(AgentWaitPolicy.shouldNotify(type: ""))
     }
 
+    // MARK: - 哪些工具能摆到卡上答
+
+    /// 「问你话」本身就是一个工具（AskUserQuestion / ExitPlanMode），它照样触发
+    /// PermissionRequest，但摆到卡上是空转一轮：按「允许」只是允许它把问题显示出来，
+    /// 真正的选项在窗口里，卡上摆不出来；「不再询问」在这里更容易被当成答案。
+    /// 大梁老师实测到的正是这一幕——我要问他版本号，刘海弹的是「允许 / 不再询问」
+    func test问你话的工具不摆到卡上答() {
+        XCTAssertFalse(AgentWaitPolicy.canAnswerOnCard(tool: "AskUserQuestion"))
+        XCTAssertFalse(AgentWaitPolicy.canAnswerOnCard(tool: "ExitPlanMode"))
+    }
+
+    /// 真会动东西的工具照旧摆到卡上当场答——这才是拍板卡存在的理由
+    func test会动东西的工具照旧上卡() {
+        for tool in ["Bash", "Write", "Edit", "WebFetch", "mcp__x__do", ""] {
+            XCTAssertTrue(AgentWaitPolicy.canAnswerOnCard(tool: tool), "\(tool) 该能在卡上答")
+        }
+    }
+
     // MARK: - 项目名解码
 
     /// 项目名里有空格、中文、括号都很常见，直接拼进 URL 会被 open / URLComponents 打断，

@@ -73,6 +73,23 @@ enum AgentWaitPolicy {
     static func shouldNotify(type: String) -> Bool {
         type.isEmpty || notifyingTypes.contains(type)
     }
+
+    /// 本身就是「找你确认」的工具。它们照样会触发 `PermissionRequest`（那个钩子不分工具），
+    /// 但把它们摆到卡上是空转一轮：
+    ///
+    /// 大梁老师实测到的正是这一幕——我要问他版本号定哪个，刘海却弹出「允许一次 / 不再询问」。
+    /// 按「允许」只是允许它把问题显示出来，真正的选项（2.3.0 还是 2.2.2）在窗口里，
+    /// 卡上摆不出来（卡渲染的是权限建议，不是问题本身的选项）；而「不再询问」在这里的意思是
+    /// 「以后都允许我问你话」，更容易被当成答案。
+    ///
+    /// 所以这类请求直接放回窗口正常问，刘海只提醒一声「它在等你选」。
+    /// 名单放在 Swift 而不是钩子的 matcher 里：以后加新工具改这里就行，不必让用户重装钩子
+    static let selfPromptingTools: Set<String> = ["AskUserQuestion", "ExitPlanMode"]
+
+    /// 这个工具的授权请求能不能摆到卡上当场答
+    static func canAnswerOnCard(tool: String) -> Bool {
+        !selfPromptingTools.contains(tool)
+    }
 }
 
 /// 等待拍板提醒的状态层：一次挂一张卡，后来的排队等着。

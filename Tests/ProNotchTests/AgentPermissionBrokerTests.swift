@@ -102,6 +102,23 @@ final class AgentPermissionBrokerTests: XCTestCase {
         }
     }
 
+    /// 数组套字典的入参（AskUserQuestion 的 questions、TodoWrite 的 todos）要挑出人话。
+    /// 少这一层就掉到压平 JSON：大梁老师实测看到的就是一坨带转义引号的入参
+    func test数组套字典的入参挑出人话() {
+        let questions: [String: Any] = ["questions": [
+            ["header": "版本号", "question": "版本号定哪个？", "multiSelect": false],
+            ["header": "发布", "question": "现在发吗？"],
+        ]]
+        XCTAssertEqual(AgentPermissionBroker.detail(tool: "AskUserQuestion", input: questions),
+                       "版本号定哪个？ / 现在发吗？")
+        let todos: [String: Any] = ["todos": [["content": "跑一遍测试", "status": "pending"]]]
+        XCTAssertEqual(AgentPermissionBroker.detail(tool: "TodoWrite", input: todos), "跑一遍测试")
+        // 一项都挑不出来时仍要落到压平兜底，不能返回空
+        let opaque: [String: Any] = ["questions": [["header": "只有标题"]]]
+        XCTAssertTrue(AgentPermissionBroker.detail(tool: "AskUserQuestion", input: opaque)
+            .hasPrefix("{"), "挑不出人话时该退回压平 JSON")
+    }
+
     /// MCP 工具与将来的新工具入参名五花八门，一个都不命中时压平 JSON——
     /// 看不出是什么也别给一片空白，用户至少还能凭它判断
     func test认不出的工具压平入参兜底() {
