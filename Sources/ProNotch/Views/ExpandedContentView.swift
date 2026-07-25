@@ -708,57 +708,6 @@ private struct AppearanceSlider: View {
     }
 }
 
-/// 悬停中文提示气泡：刘海是后台非激活面板（LSUIElement），原生 .help 的 tooltip
-/// 只在所属 App 处于激活态时才弹，这里用不了——故自绘，在控件下方渲染。
-private struct NotchTip: ViewModifier {
-    let text: String
-    @State private var show = false
-    @State private var task: Task<Void, Never>?
-
-    func body(content: Content) -> some View {
-        content
-            .onHover { hovering in
-                task?.cancel()
-                if hovering {
-                    task = Task { @MainActor in
-                        try? await Task.sleep(nanoseconds: 600_000_000)   // 悬停约 0.6s 才弹
-                        guard !Task.isCancelled else { return }
-                        withAnimation(.easeOut(duration: 0.12)) { show = true }
-                    }
-                } else {
-                    withAnimation(.easeOut(duration: 0.12)) { show = false }
-                }
-            }
-            .overlay(alignment: .top) {
-                if show {
-                    Text(text)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.white)
-                        .lineLimit(1)
-                        .fixedSize()
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(Color.black.opacity(0.92))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                        .strokeBorder(Color.white.opacity(0.14), lineWidth: 0.5))
-                        )
-                        .offset(y: 32)   // 落到控件下方（不挡按钮本身）
-                        .transition(.opacity)
-                        .allowsHitTesting(false)
-                        .zIndex(999)
-                }
-            }
-    }
-}
-
-private extension View {
-    /// 悬停约 0.6s 后在控件下方弹出中文气泡说明（纯图标按钮用，告诉用户图标是干嘛的）
-    func notchTip(_ text: String) -> some View { modifier(NotchTip(text: text)) }
-}
-
 /// 刘海两侧快捷操作按钮：圆形可点击区域、悬停高亮
 private struct StripButton: View {
     let icon: String
@@ -854,8 +803,11 @@ private struct AppStoreIcon: View {
                 .renderingMode(.template)
                 .resizable()
                 .scaledToFit()
-                // 圆比方显小（光学错觉），直径 18 补偿后与 17 方框视觉等大；占位仍 17
-                .frame(width: 18, height: 18)
+                // 圆比方显小（光学错觉），直径 18 补偿后与 17 方框视觉等大；占位仍 17。
+                // 22.5 = 18 ÷ 0.8：本原件的圆只占画布 80%（四周留白），
+                // 直接给 18 的话圆实际只有 14.4pt，肉眼就比旁边几个小一圈（大梁老师指出）。
+                // 换原件时务必重算这个系数——按内容占比反推，别照抄数字
+                .frame(width: 22.5, height: 22.5)
                 .frame(width: 17, height: 17)
         } else {
             // swift run 裸二进制无 bundle 资源时兜底
