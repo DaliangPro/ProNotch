@@ -23,11 +23,12 @@ struct SettingsView: View {
     @EnvironmentObject var snippets: SnippetStore
 
     enum Section: String, CaseIterable, Identifiable {
+        /// 「通用」含原独立的「刘海面板」分区——刘海显示屏幕、全屏隐藏、两侧功能区都在这里，
+        /// 不再让用户为「刘海显示在哪块屏」和「刘海两侧放什么」跑两个分区
         case general = "通用"
-        case notch = "刘海面板"
         case glow = "Agent"
-        case widgets = "组件"
-        case clipboard = "剪贴板 & 常用话术"
+        case widgets = "功能组件"
+        case clipboard = "快捷剪切板"
         case screenshot = "超级截图"
         case chat = "AI 闪问"
         case about = "关于"
@@ -96,7 +97,6 @@ struct SettingsView: View {
     @ViewBuilder private var selectedContent: some View {
         switch selected {
         case .general:    generalContent
-        case .notch:      notchContent
         case .glow:       glowContent
         case .widgets:    widgetsContent
         case .clipboard:  clipboardContent
@@ -135,37 +135,30 @@ struct SettingsView: View {
         .overlay(Rectangle().fill(Color.white.opacity(0.07)).frame(width: 1), alignment: .trailing)
     }
 
-    // MARK: - 通用
+    // MARK: - 通用（含原「刘海面板」分区）
     private var generalContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             pageTitle("通用")
+
+            // 开机自启、全屏隐藏、显示屏幕合并一组：都是「App 何时何处出现」，
+            // 拆成两卡反而让用户在两个标题间找同一件事（检查更新已挪去「关于」页）
+            sectionLabel("启动与显示")
             SettingsCard {
                 toggleRow("开机自动启动", isOn: $settings.launchAtLogin)
                 CardDivider()
-                screenModeRow
+                toggleRow("全屏时隐藏刘海", isOn: $settings.hideNotchInFullscreen)
                 CardDivider()
-                updateRow
+                screenModeRow
+            }
+            if let hint = settings.loginItemHint {
+                noteText(hint, color: .orange)
             }
             Text("显示屏幕：主屏指菜单栏所在那块；只有一块屏时选「仅副屏幕」仍显示在主屏。")
                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 2)
-            if let hint = settings.loginItemHint {
-                noteText(hint, color: .orange)
-            }
-        }
-    }
 
-    // MARK: - 刘海面板
-    private var notchContent: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            pageTitle("刘海面板")
-            SettingsCard {
-                toggleRow("全屏时隐藏刘海", isOn: $settings.hideNotchInFullscreen)
-            }
-
-            Text("刘海两侧功能区").font(.system(size: 13, weight: .semibold))
-                .foregroundColor(.white.opacity(0.85)).padding(.top, 4)
+            sectionLabel("刘海两侧功能区")
             SettingsCard {
                 slotRow("左侧显示", selection: $settings.leftSlot)
                 CardDivider()
@@ -178,10 +171,10 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - 组件
+    // MARK: - 功能组件
     private var widgetsContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            pageTitle("组件")
+            pageTitle("功能组件")
 
             sectionLabel("内存")
             SettingsCard {
@@ -233,10 +226,10 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - 剪贴板
+    // MARK: - 快捷剪切板
     private var clipboardContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            pageTitle("剪贴板 & 常用话术")
+            pageTitle("快捷剪切板")
             SettingsCard {
                 // 关 = 停 0.5 秒轮询（真停机）；历史保留，清空是下面按钮的独立职责
                 toggleRow("记录剪贴板历史", isOn: $settings.clipboardEnabled)
@@ -284,53 +277,48 @@ struct SettingsView: View {
         .disabled(!settings.weatherAlertsEnabled)
     }
 
-    /// 功能区内容选择行（左/右侧共用）：菜单列出全部可选组件
-    /// 通用区「显示屏幕」：多显示器下刘海出现在哪几块屏
-    private var screenModeRow: some View {
-        HStack {
-            Text("显示屏幕").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
-            Spacer()
-            Menu {
-                ForEach(NotchScreenMode.allCases, id: \.self) { mode in
-                    Button(mode.title) { settings.notchScreenMode = mode }
+    /// 单选胶囊行：选项全摊在页面上一点即选，不再「点开下拉 → 再点一次」（大梁老师要求）。
+    /// 一行放得下就与标题同排；放不下自动折成「标题在上、选项在下」——
+    /// 两侧功能区最长那组含「Claude Code」，同排会顶出卡片右缘
+    private func pillPickerRow<T: Hashable>(_ label: String, options: [T],
+                                            title: @escaping (T) -> String,
+                                            isOn: @escaping (T) -> Bool,
+                                            select: @escaping (T) -> Void) -> some View {
+        let caption = Text(label).font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+        let pills = HStack(spacing: 6) {
+            ForEach(options, id: \.self) { opt in
+                let on = isOn(opt)
+                Button { select(opt) } label: {
+                    Text(title(opt)).font(.system(size: 12))
+                        .foregroundColor(on ? .white : .white.opacity(0.4))
+                        .padding(.horizontal, 9).padding(.vertical, 4)
+                        .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(on ? Color.cyan.opacity(0.26) : Color.white.opacity(0.07)))
                 }
-            } label: {
-                HStack(spacing: 4) {
-                    Text(settings.notchScreenMode.title).font(.system(size: 12))
-                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 9))
-                }
-                .foregroundColor(.white.opacity(0.85))
+                .buttonStyle(.plain)
             }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-            // 背景挂在 Menu 外层而非 label 内——borderlessButton 会吞掉 label 里的
-            // background，只剩那 10pt 内边距撑着，下拉右缘就比同卡的开关/按钮缩进一截。
-            // 刘海面板区两行都是下拉、一起缩进看不出来，这里与开关、按钮同卡才暴露
-            .padding(.horizontal, 10).padding(.vertical, 4)
-            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.12)))
+        }
+        return ViewThatFits(in: .horizontal) {
+            HStack { caption; Spacer(); pills }
+            VStack(alignment: .leading, spacing: 8) { caption; pills }
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
     }
 
+    /// 通用区「显示屏幕」：多显示器下刘海出现在哪几块屏
+    private var screenModeRow: some View {
+        pillPickerRow("显示屏幕", options: NotchScreenMode.allCases,
+                      title: { $0.title },
+                      isOn: { settings.notchScreenMode == $0 },
+                      select: { settings.notchScreenMode = $0 })
+    }
+
+    /// 功能区内容选择行（左/右侧共用）：全部可选组件直接列出来点
     private func slotRow(_ label: String, selection: Binding<NotchSlot>) -> some View {
-        HStack {
-            Text(label).font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
-            Spacer()
-            Menu {
-                ForEach(NotchSlot.available(agents: settings.enabledAgents), id: \.self) { slot in
-                    Button(slot.title) { selection.wrappedValue = slot }
-                }
-            } label: {
-                HStack(spacing: 4) {
-                    Text(selection.wrappedValue.title).font(.system(size: 12))
-                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 9))
-                }
-                .foregroundColor(.white.opacity(0.85))
-                .padding(.horizontal, 10).padding(.vertical, 4)
-                .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(Color.white.opacity(0.12)))
-            }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        }
-        .padding(.horizontal, 14).padding(.vertical, 10)
+        pillPickerRow(label, options: NotchSlot.available(agents: settings.enabledAgents),
+                      title: { $0.title },
+                      isOn: { selection.wrappedValue == $0 },
+                      select: { selection.wrappedValue = $0 })
     }
 
     /// 清空剪贴板历史（连图片文件一起删，不可恢复）：两步确认防误点，
@@ -572,12 +560,21 @@ struct SettingsView: View {
                     CardDivider()
                     toggleRow("与 AI 闪问 使用相同的 API 接口", isOn: $settings.translateUseChatAPI)
                 }
-                if !settings.translateUseChatAPI {
+                // 深度思考跟着模型走：它是「这个模型怎么跑」的设置，与地址/Key/模型同卡才好判断，
+                // 摆在上面那张行为开关卡里会让人以为跟模型无关（大梁老师指出）
+                if settings.translateUseChatAPI {
+                    SettingsCard { toggleRow("深度思考", isOn: $settings.translateThinking) }
+                } else {
                     APIEndpointEditor(baseURL: $settings.translateBaseURL, apiKey: $translateKey,
                                       model: $settings.translateModel,
-                                      urlPlaceholder: "https://api.xxx.com", modelPlaceholder: "gpt-4o-mini")
+                                      urlPlaceholder: "https://api.xxx.com", modelPlaceholder: "gpt-4o-mini",
+                                      thinking: $settings.translateThinking)
                         .onChange(of: translateKey) { _, v in settings.setTranslateAPIKey(v) }
                 }
+                Text("深度思考：DeepSeek v4 这类混合模型默认开着，翻译短句用不上它，关掉更快也更省。模型若不支持关闭，会自动按开启重发并提示一句，不影响翻译。")
+                    .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 2)
 
                 Text("翻译提示词").font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.white.opacity(0.85)).padding(.top, 4)
@@ -751,6 +748,28 @@ struct SettingsView: View {
                 .disabled(!settings.glowEnabled)
                 .opacity(settings.glowEnabled ? 1 : 0.4)
 
+                // 等你拍板：与完成提醒是两件事（那个说「跑完了」，这个说「跑一半在等你选」），
+                // 所以单独一块。只在上游给得出中途信号的家已接入时才出现（大梁老师的诚实渲染口径）
+                if !waitKinds.isEmpty {
+                    sectionLabel("等你拍板")
+                    SettingsCard {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("弹框等你选择时在刘海上拍板")
+                                    .font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+                                Text(waitCardCopy)
+                                    .font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer()
+                            ThemedSwitch(isOn: $settings.agentWaitNoticeEnabled)
+                        }
+                        .padding(.horizontal, 14).padding(.vertical, 11)
+                    }
+                    noteText("Codex 与 Grok 暂不支持：它们的钩子只有「开始」和「结束」，没有中途等待的信号。",
+                             color: .white.opacity(0.4))
+                }
+
                 sectionLabel("外观")
                 SettingsCard {
                     ForEach(glowKinds) { kind in
@@ -782,6 +801,27 @@ struct SettingsView: View {
     /// 支持完成钩子且已接入的家（光晕三区按这个渲染，随上方本地 Agent 勾选增减）
     private var glowKinds: [AgentKind] {
         AgentKind.allCases.filter { $0.supportsGlow && settings.enabledAgents.contains($0) }
+    }
+
+    /// 上游给得出「中途等你拍板」信号、且已勾选的家（Claude / Kimi）
+    private var waitKinds: [AgentKind] {
+        AgentKind.allCases.filter { $0.supportsWaitNotice && settings.enabledAgents.contains($0) }
+    }
+
+    /// 说明文案按能力分开写：能当场拍板的和只能提醒一声的是两种体验，
+    /// 混成一句会让人以为哪家都能在卡上按（诚实渲染，同能力模型的口径）
+    private var waitCardCopy: String {
+        let decide = waitKinds.filter(\.supportsPermissionCard).map(\.displayName)
+        let notify = waitKinds.filter { !$0.supportsPermissionCard }.map(\.displayName)
+        var parts: [String] = []
+        if !decide.isEmpty {
+            parts.append("\(decide.joined(separator: " / ")) 要授权时，刘海把它的真实选项摆上来，允许 / 拒绝当场按完，终端不再弹框")
+        }
+        if !notify.isEmpty {
+            parts.append("\(notify.joined(separator: " / ")) 只能弹卡说一声（上游的中途信号收不了答复），点它跳到对应终端")
+        }
+        parts.append("关闭后一切照旧由终端询问")
+        return parts.joined(separator: "；")
     }
 
     private func refreshGlowConnected() {
@@ -957,6 +997,9 @@ struct SettingsView: View {
                     .buttonStyle(.plain).disabled(!canFetchChatModels).fixedSize()
                 }
                 CardDivider()
+                // 与模型同卡：它管的是「这个模型怎么跑」。切换即生效，不必点保存
+                toggleRow("深度思考", isOn: $chatStore.thinkingEnabled)
+                CardDivider()
                 modelStatusRow
             }
             if let fetchError = chatStore.fetchError {
@@ -992,7 +1035,7 @@ struct SettingsView: View {
 
             saveRow
 
-            Text("每套配置各自保存地址、Key 与多个模型；兼容 OpenAI /v1/chat/completions。联网搜索在对话输入框左侧地球图标开关。改完点「保存」生效。")
+            Text("每套配置各自保存地址、Key 与多个模型；兼容 OpenAI /v1/chat/completions。联网搜索与深度思考在对话输入框左侧的地球、大脑图标随手开关。改完点「保存」生效。")
                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.35))
                 .fixedSize(horizontal: false, vertical: true).padding(.leading, 2)
         }
@@ -1259,6 +1302,10 @@ struct SettingsView: View {
                         .font(.system(size: 12))
                 }
                 .padding(.horizontal, 14).padding(.vertical, 11)
+                CardDivider()
+                // 检查更新从「通用」挪来这里：版本号就在同一张卡的第一行，
+                // 看到版本顺手就能查更新，不必再跑一趟「通用」页
+                updateRow
             }
             Text("把 MacBook 的刘海变成你的效率中心。")
                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.35)).padding(.leading, 2)
@@ -1406,6 +1453,8 @@ private struct APIEndpointEditor: View {
     @Binding var model: String
     var urlPlaceholder = "https://api.deepseek.com"
     var modelPlaceholder = "deepseek-chat"
+    /// 深度思考开关：传了就跟在「模型」行后面同卡显示（不传＝这套接口不提供该开关）
+    var thinking: Binding<Bool>?
 
     @State private var models: [String] = []
     @State private var busy = false
@@ -1430,6 +1479,15 @@ private struct APIEndpointEditor: View {
                     }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 }
                 pill("获取模型") { run(populate: true) }
+            }
+            if let thinking {
+                CardDivider()
+                HStack {
+                    Text("深度思考").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+                    Spacer()
+                    ThemedSwitch(isOn: thinking)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 10)
             }
             CardDivider()
             HStack(spacing: 10) {
