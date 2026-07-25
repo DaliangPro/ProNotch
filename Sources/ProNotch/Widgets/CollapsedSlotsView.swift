@@ -54,7 +54,8 @@ enum NotchSlot: String, CaseIterable {
         let trailingAir = Self.cornerInset + Self.dotEdgeGap   // 让开圆角直壁 + 可见留白
         switch self {
         case .none: return 0
-        case .memory: return 21 + Self.leadingPad + trailingAir       // 内存环直径 21
+        // 内存环外径 21：描边收在框内，不再向外多探（见 `CollapsedSlotsView.memorySlot`）
+        case .memory: return 21 + Self.leadingPad + trailingAir
         case .weather: return Self.fixedSideWidth                     // 最宽内容，正好等于固定框
         case .agentClaude: return ClawdSlotView.contentWidth + Self.leadingPad + trailingAir
         case .agentCodex: return CodexPetSlotView.contentWidth + Self.leadingPad + trailingAir
@@ -171,14 +172,26 @@ struct CollapsedSlotsView: View {
         }
     }
 
+    /// 环的描边宽度。描边压在环形路径上、向内外各探半个线宽，
+    /// 所以圆必须先往里收 `ringWidth / 2`，环的**外沿**才严格落在 21pt 框边上
+    private static let ringWidth: CGFloat = 2.5
+
     /// 内存圆环（大梁老师定）：环色随压力变、数字嵌环心，
-    /// 比图标+文字横排省一半宽度；% 由环形本身表意，环心只放数字
+    /// 比图标+文字横排省一半宽度；% 由环形本身表意，环心只放数字。
+    ///
+    /// 环收在 21pt 框**以内**（大梁老师定）：此前用 `stroke` 时描边向外多探 1.25pt，
+    /// 大卡张开时左侧外沿量到 12.0pt 而右侧 14.5pt——两侧的框本是严格对齐的，
+    /// 差的就是这圈描边。收进来后外沿正好压在 14pt 内容线上，代价是环小 2.5pt
     private var memorySlot: some View {
         ZStack {
-            Circle().stroke(Color.white.opacity(0.15), lineWidth: 2.5)
+            // strokeBorder 把描边画在圆的内侧，外沿即框边
+            Circle().strokeBorder(Color.white.opacity(0.15), lineWidth: Self.ringWidth)
             if let s = memory.snapshot {
-                Circle().trim(from: 0, to: min(1, s.usedPercent / 100))
-                    .stroke(s.loadColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                // 进度弧要 trim，而 trim 之后就不再是 InsettableShape 了，
+                // 所以先 inset 半个线宽再 trim，才与上面那圈同心同径
+                Circle().inset(by: Self.ringWidth / 2)
+                    .trim(from: 0, to: min(1, s.usedPercent / 100))
+                    .stroke(s.loadColor, style: StrokeStyle(lineWidth: Self.ringWidth, lineCap: .round))
                     .rotationEffect(.degrees(-90))   // 从 12 点方向顺时针走
                 Text("\(Int(s.usedPercent.rounded()))")
                     .font(.system(size: 9, weight: .semibold, design: .rounded))
