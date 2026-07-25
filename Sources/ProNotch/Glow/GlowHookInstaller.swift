@@ -78,7 +78,9 @@ enum GlowHookInstaller {
     /// v6：投递前先确认 ProNotch 在运行，不再把退出的 App 拉起来
     /// v7：后台子任务还在跑就不提醒（background_tasks 非空即闭嘴）
     /// v8：四家各加挂一条 UserPromptSubmit 开工信号，供刘海收起态槽位显示工作状态
-    private static let scriptFormat = 8
+    /// v9：Claude / Kimi 加挂 Notification 事件，中途弹框等你拍板时刘海弹卡提醒
+    /// v10：Claude 加挂 PermissionRequest 事件，授权直接在刘海卡上拍板（终端不再弹框）
+    private static let scriptFormat = 10
 
     /// 投递回调前先确认 ProNotch 还在运行。
     ///
@@ -195,6 +197,158 @@ enum GlowHookInstaller {
         "\"\(paths.busyScript)\" \(source)"
     }
 
+    /// 「等你拍板」信号脚本：Claude / Kimi 共用，来源经 `$1` 传入。
+    ///
+    /// 挂在各家的 `Notification` 事件上——Agent 跑到一半弹了授权框 / 选项框在等你选，
+    /// 这时既没有 Stop（回合没结束）也没有新的 UserPromptSubmit，是此前唯一没有任何
+    /// 提示的空档（大梁老师指出）。Claude Code 自带约 6 秒延迟才发这个事件，
+    /// 所以「你人就在跟前」时本来就不会响。
+    ///
+    /// 脚本只负责搬运，不做「哪种通知才值得弹」的判断——那份名单在
+    /// `AgentWaitPolicy` 里，改它不必让用户重装 hook。
+    ///
+    /// 项目名走 base64url 而不是直接拼进 query：目录名可以带空格和中文，
+    /// 裸拼会让 URL 在 `open` 或 URLComponents 那一关散架
+    private static func waitNotifyScript(token: String) -> String {
+        """
+        #!/bin/bash
+        # ProNotch · Agent 等你拍板信号（自动生成，勿手改）· PRONOTCH_FMT=\(scriptFormat)
+        \(hostDetectSnippet)
+        src="$1"
+        [ -n "$src" ] || exit 0
+        if [ -t 0 ]; then payload=""; else payload=$(cat); fi
+        host=$(detect_host)
+        sid=$(printf '%s' "$payload" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
+        ntype=$(printf '%s' "$payload" | sed -n 's/.*"notification_type"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
+        cwd=$(printf '%s' "$payload" | sed -n 's/.*"cwd"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
+        proj=$(printf '%s' "${cwd##*/}" | base64 | tr -d '\\n' | tr '+/' '-_' | tr -d '=')
+        url="pronotch://waiting?source=$src&token=\(token)"
+        [ -n "$host" ] && url="$url&host=$host"
+        [ -n "$sid" ] && url="$url&session=$sid"
+        [ -n "$ntype" ] && url="$url&type=$ntype"
+        [ -n "$proj" ] && url="$url&project=$proj"
+        \(deliverGuard)
+        """
+    }
+
+    /// 注册进各家配置的 wait 命令行（同 busyCommand，路径须引号包裹）
+    private static func waitCommand(_ paths: GlowHookPaths, source: String) -> String {
+        "\"\(paths.waitScript)\" \(source)"
+    }
+
+    /// 把共用的 wait 脚本落位（已是当前格式就不动）。理由同 ensureBusyScript：
+    /// 没人引用的脚本只是无害孤儿，配置指向不存在的脚本才会每次事件都报 hook 失败
+    private static func ensureWaitScript(token: String, _ paths: GlowHookPaths) -> Bool {
+        if scriptIsCurrent(paths.waitScript, token: token) { return true }
+        guard let staged = AtomicConfigWriter.stageScript(waitNotifyScript(token: token),
+                                                         finalPath: paths.waitScript) else { return false }
+        return AtomicConfigWriter.commitScript(from: staged, to: paths.waitScript)
+    }
+
+    /// 支持该能力的家全退干净了才收走共用脚本，不留孤儿也不误删还在被别家引用的
+    private static func cleanupWaitScriptIfUnused(_ paths: GlowHookPaths) {
+        let stillUsed = AgentKind.allCases.contains {
+            $0.supportsWaitNotice && isInstalled($0, paths: paths)
+        }
+        guard !stillUsed else { return }
+        try? FileManager.default.removeItem(atPath: paths.waitScript)
+    }
+
+    /// 拍板脚本的等待上限（秒）。写进配置的 `timeout`，Claude Code 到点会掐掉本脚本，
+    /// 那时它拿不到决策，就落回终端正常弹框——数据不会丢，只是卡白弹了一场。
+    ///
+    /// 大梁老师定的是「一直等到答复」，所以给到 6 小时：卡不会自己消失，
+    /// 人回来了照样能在卡上点。schema 里 timeout 只要求 positive、没有上限（已核对 zod 定义）
+    static let permissionWaitSeconds = 21600
+
+    /// 「在刘海上直接拍板」脚本：只有 Claude Code 一家。
+    ///
+    /// 挂在 `PermissionRequest` 上——这个事件在**终端弹框之前**触发，从二进制里抠出的
+    /// 实现（`NpT`）只认 allow / deny 两种回答，其余一律 `return`，也就是落回终端正常弹框。
+    /// 于是「不答」天然就是安全的兜底：ProNotch 没开、脚本出错、用户选「打开终端」，
+    /// 结果都一样——终端照原样问，什么都不会丢。
+    ///
+    /// 脚本刻意只当一根管子：写请求文件 → 投一条带 id 的 URL → 等答复文件 → 原样吐出。
+    /// 因为要回传的 `updatedPermissions`（「不再询问」那条规则）是入参 `permission_suggestions`
+    /// 的原样透传，是嵌套 JSON —— bash 里拿 sed 抠这种东西迟早出事，也没必要：
+    /// 整份答复由 Swift 拼好，脚本 `cat` 一下就完了
+    private static func permissionAskScript(token: String, dir: String) -> String {
+        """
+        #!/bin/bash
+        # ProNotch · Agent 权限拍板（自动生成，勿手改）· PRONOTCH_FMT=\(scriptFormat)
+        \(hostDetectSnippet)
+        src="$1"
+        [ -n "$src" ] || exit 0
+        # 没喂 stdin 就没有 tool_input 可看，卡上等于什么都显示不了 —— 直接让终端问
+        [ -t 0 ] && exit 0
+        payload=$(cat)
+        [ -n "$payload" ] || exit 0
+        # 没开着就别拦：这里必须先于写请求文件，否则会攒下一地没人取的孤儿
+        /usr/bin/pgrep -x ProNotch >/dev/null 2>&1 || exit 0
+        dir="\(dir)"
+        /bin/mkdir -p "$dir" 2>/dev/null || exit 0
+        /bin/chmod 700 "$dir" 2>/dev/null
+        # id 必须不可猜：别的本机进程猜中了就能替你按下「允许」
+        id=$(/usr/bin/head -c 16 /dev/urandom | /usr/bin/xxd -p | /usr/bin/tr -d '\\n')
+        [ -n "$id" ] || exit 0
+        req="$dir/$id.request.json"
+        res="$dir/$id.response.json"
+        umask 077
+        printf '%s' "$payload" > "$req" || exit 0
+        host=$(detect_host)
+        url="pronotch://permission?source=$src&token=\(token)&req=$id"
+        [ -n "$host" ] && url="$url&host=$host"
+        # 投递前再确认一次：上面那次 pgrep 到这里之间，用户完全可能刚把 ProNotch 关掉，
+        # 而 open 遇到没在跑的 App 会**把它启动起来**——那正是「关不掉，它自己又开了」那个病
+        \(deliverGuard)
+        # 第一段：等它把请求取走。ProNotch 取走的标志就是请求文件消失（它读完即删）。
+        # 一直没人取＝这条 URL 没送达（LaunchServices 抽风、刘海刚好被强杀）——
+        # 这时不能干等：卡根本没弹出来，「一直等到答复」等的是谁？约 10 秒后落回终端问
+        n=0
+        while [ -f "$req" ]; do
+          [ -f "$res" ] && break
+          /usr/bin/pgrep -x ProNotch >/dev/null 2>&1 || { /bin/rm -f "$req"; exit 0; }
+          n=$((n+1))
+          [ "$n" -gt 50 ] && { /bin/rm -f "$req"; exit 0; }
+          /bin/sleep 0.2
+        done
+        # 第二段：卡已经挂在刘海上了，等到答复为止（大梁老师定：不自己超时）。
+        # 只有一种情况提前收手：ProNotch 退出了，没人会来答了
+        while [ ! -f "$res" ]; do
+          /usr/bin/pgrep -x ProNotch >/dev/null 2>&1 || exit 0
+          /bin/sleep 0.2
+        done
+        # 「打开终端」写的是空文件：空 stdout 在 Claude Code 那边就是「没决策」，照旧弹框
+        /bin/cat "$res"
+        /bin/rm -f "$req" "$res"
+        exit 0
+        """
+    }
+
+    /// 注册进 Claude settings.json 的拍板命令行（路径含空格，须引号包裹）
+    private static func permissionCommand(_ paths: GlowHookPaths) -> String {
+        "\"\(paths.permissionScript)\" claude"
+    }
+
+    /// 把拍板脚本落位（已是当前格式就不动）。理由同 ensureBusyScript
+    private static func ensurePermissionScript(token: String, _ paths: GlowHookPaths) -> Bool {
+        if scriptIsCurrent(paths.permissionScript, token: token) { return true }
+        guard let staged = AtomicConfigWriter.stageScript(
+                permissionAskScript(token: token, dir: paths.permissionDir),
+                finalPath: paths.permissionScript) else { return false }
+        return AtomicConfigWriter.commitScript(from: staged, to: paths.permissionScript)
+    }
+
+    /// 只有 Claude 挂它，那家退了就收走。交换目录一并清掉：里面躺的是
+    /// 还没答复的请求，钩子都卸了也不会有人来取了
+    private static func cleanupPermissionScriptIfUnused(_ paths: GlowHookPaths) {
+        guard !AgentKind.allCases.contains(where: {
+            $0.supportsPermissionCard && isInstalled($0, paths: paths)
+        }) else { return }
+        try? FileManager.default.removeItem(atPath: paths.permissionScript)
+        try? FileManager.default.removeItem(atPath: paths.permissionDir)
+    }
+
     /// 把共用的 busy 脚本落位（已是当前格式就不动）。四家都会调它，内容相同，重复调用无副作用。
     ///
     /// 刻意在写配置**之前**落位：没人引用的脚本只是个无害孤儿，
@@ -264,6 +418,20 @@ enum GlowHookInstaller {
             return c.contains("pronotch://busy") || c.contains("agent-busy.sh")
         } == true
     }
+    /// 「等你拍板」条目（挂在 Notification 上）。特征串同样与前两拨互不重叠
+    private static func entryIsOurWait(_ entry: [String: Any]) -> Bool {
+        (entry["hooks"] as? [[String: Any]])?.contains {
+            let c = ($0["command"] as? String) ?? ""
+            return c.contains("pronotch://waiting") || c.contains("agent-wait.sh")
+        } == true
+    }
+    /// 拍板条目（挂在 PermissionRequest 上）。特征串与前三拨仍不重叠
+    private static func entryIsOurPermission(_ entry: [String: Any]) -> Bool {
+        (entry["hooks"] as? [[String: Any]])?.contains {
+            let c = ($0["command"] as? String) ?? ""
+            return c.contains("pronotch://permission") || c.contains("agent-permission.sh")
+        } == true
+    }
 
     private static func isClaudeInstalled(_ paths: GlowHookPaths) -> Bool {
         guard let data = FileManager.default.contents(atPath: paths.claudeSettings),
@@ -287,23 +455,31 @@ enum GlowHookInstaller {
         var hooks = root["hooks"] as? [String: Any] ?? [:]
         var stop = hooks["Stop"] as? [[String: Any]] ?? []
         var prompt = hooks["UserPromptSubmit"] as? [[String: Any]] ?? []
+        var notif = hooks["Notification"] as? [[String: Any]] ?? []
+        var perm = hooks["PermissionRequest"] as? [[String: Any]] ?? []
         let oursEntries = stop.filter(entryIsOurs)
         let ourBusyEntries = prompt.filter(entryIsOurBusy)
+        let ourWaitEntries = notif.filter(entryIsOurWait)
+        let ourPermEntries = perm.filter(entryIsOurPermission)
 
         var staged: String?
         if on {
             // 拿不到令牌就不装：装了也是一条谁都能伪造的回调，不如不装
             guard let token = GlowHookToken.ensure(paths) else { return false }
-            // 已是当前格式（两个脚本都最新 + 两个事件各仅一条指向脚本的条目）→ 幂等跳过
+            // 已是当前格式（四个脚本都最新 + 四个事件各仅一条指向脚本的条目）→ 幂等跳过
             if scriptIsCurrent(paths.claudeScript, token: token),
                scriptIsCurrent(paths.busyScript, token: token),
+               scriptIsCurrent(paths.waitScript, token: token),
+               scriptIsCurrent(paths.permissionScript, token: token),
                oursEntries.count == 1, entryIsCurrentClaude(oursEntries[0]),
-               ourBusyEntries.count == 1 { return true }
+               ourBusyEntries.count == 1, ourWaitEntries.count == 1,
+               ourPermEntries.count == 1 { return true }
             staged = AtomicConfigWriter.stageScript(stdinNotifyScript(source: "claude", token: token),
                                                     finalPath: paths.claudeScript)
             guard staged != nil else { return false }
-            // 共用的开工脚本先落位，配置才敢指过去
-            guard ensureBusyScript(token: token, paths) else {
+            // 三个共用脚本先落位，配置才敢指过去
+            guard ensureBusyScript(token: token, paths), ensureWaitScript(token: token, paths),
+                  ensurePermissionScript(token: token, paths) else {
                 AtomicConfigWriter.discardScript(staged)
                 return false
             }
@@ -312,10 +488,22 @@ enum GlowHookInstaller {
             prompt.removeAll(where: entryIsOurBusy)
             prompt.append(["hooks": [["type": "command",
                                       "command": busyCommand(paths, source: "claude")]]])
+            notif.removeAll(where: entryIsOurWait)
+            notif.append(["hooks": [["type": "command",
+                                     "command": waitCommand(paths, source: "claude")]]])
+            // 拍板这条要带 timeout：默认超时远短于人走回电脑前的时间，
+            // 到点被掐就白弹一张卡（终端会照常问，不丢事，但提醒等于没起作用）
+            perm.removeAll(where: entryIsOurPermission)
+            perm.append(["hooks": [["type": "command",
+                                    "command": permissionCommand(paths),
+                                    "timeout": permissionWaitSeconds]]])
         } else {
-            if oursEntries.isEmpty, ourBusyEntries.isEmpty { return true }
+            if oursEntries.isEmpty, ourBusyEntries.isEmpty, ourWaitEntries.isEmpty,
+               ourPermEntries.isEmpty { return true }
             stop.removeAll(where: entryIsOurs)
             prompt.removeAll(where: entryIsOurBusy)
+            notif.removeAll(where: entryIsOurWait)
+            perm.removeAll(where: entryIsOurPermission)
         }
 
         AtomicConfigWriter.backup(p)
@@ -324,6 +512,16 @@ enum GlowHookInstaller {
             hooks.removeValue(forKey: "UserPromptSubmit")
         } else {
             hooks["UserPromptSubmit"] = prompt
+        }
+        if notif.isEmpty {
+            hooks.removeValue(forKey: "Notification")
+        } else {
+            hooks["Notification"] = notif
+        }
+        if perm.isEmpty {
+            hooks.removeValue(forKey: "PermissionRequest")
+        } else {
+            hooks["PermissionRequest"] = perm
         }
         if hooks.isEmpty { root.removeValue(forKey: "hooks") } else { root["hooks"] = hooks }
 
@@ -336,6 +534,8 @@ enum GlowHookInstaller {
         }
         try? fm.removeItem(atPath: paths.claudeScript)   // 配置改成功后才删脚本
         cleanupBusyScriptIfUnused(paths)
+        cleanupWaitScriptIfUnused(paths)
+        cleanupPermissionScriptIfUnused(paths)
         return true
     }
 
@@ -372,16 +572,18 @@ enum GlowHookInstaller {
               let toml = try? String(contentsOfFile: paths.kimiConfig, encoding: .utf8) else { return false }
         let commandLine = kimiHookCommandLine(for: paths.kimiScript)
         let busyLine = kimiHookCommandLine(for: paths.busyScript, argument: "kimi")
+        let waitLine = kimiHookCommandLine(for: paths.waitScript, argument: "kimi")
         let installed = toml.contains(kimiScriptMarker(paths))
 
         if on {
             guard let token = GlowHookToken.ensure(paths) else { return false }
-            // 幂等：已接入、两个脚本都最新、且配置已是当前格式（带边界标记、两条 hook 都在）→ 不动文件。
+            // 幂等：已接入、三个脚本都最新、且配置已是当前格式（带边界标记、三条 hook 都在）→ 不动文件。
             // 必须连配置行一起验——只验脚本的话，早期写成裸路径的用户永远修不好
             if installed, fm.fileExists(atPath: paths.kimiScript),
                scriptIsCurrent(paths.kimiScript, token: token),
                scriptIsCurrent(paths.busyScript, token: token),
-               toml.contains(commandLine), toml.contains(busyLine),
+               scriptIsCurrent(paths.waitScript, token: token),
+               toml.contains(commandLine), toml.contains(busyLine), toml.contains(waitLine),
                toml.contains(KimiHookBlock.beginMarker) { return true }
 
             // 已有引用但不是当前格式 → 先精确摘掉旧的，摘不干净就整笔放弃
@@ -396,17 +598,19 @@ enum GlowHookInstaller {
             guard let staged = AtomicConfigWriter.stageScript(
                     stdinNotifyScript(source: "kimi", token: token),
                     finalPath: paths.kimiScript) else { return false }
-            guard ensureBusyScript(token: token, paths) else {
+            guard ensureBusyScript(token: token, paths), ensureWaitScript(token: token, paths) else {
                 AtomicConfigWriter.discardScript(staged)
                 return false
             }
             AtomicConfigWriter.backup(paths.kimiConfig)
-            let block = KimiHookBlock.render(commandLine: commandLine, busyCommandLine: busyLine)
+            let block = KimiHookBlock.render(commandLine: commandLine, busyCommandLine: busyLine,
+                                             waitCommandLine: waitLine)
             let newToml = base.hasSuffix("\n") ? base + "\n" + block + "\n" : base + "\n\n" + block + "\n"
             let result = AtomicConfigWriter.write(newToml, to: paths.kimiConfig) { text in
                 // 结构校验：写出去的必须能再被自己摘回来，否则说明拼错了
                 text.contains(KimiHookBlock.beginMarker) && text.contains(KimiHookBlock.endMarker)
                     && text.contains(commandLine) && text.contains(busyLine)
+                    && text.contains(waitLine)
             }
             guard result.isSuccess else {
                 AtomicConfigWriter.discardScript(staged)
@@ -420,6 +624,7 @@ enum GlowHookInstaller {
         case .notPresent:
             try? fm.removeItem(atPath: paths.kimiScript)   // 残留脚本顺手清掉
             cleanupBusyScriptIfUnused(paths)
+            cleanupWaitScriptIfUnused(paths)
             return true
         case .ambiguous:
             return false                                   // 定位不了就不动，宁可让用户手删
@@ -431,6 +636,7 @@ enum GlowHookInstaller {
             guard result.isSuccess else { return false }
             try? fm.removeItem(atPath: paths.kimiScript)
             cleanupBusyScriptIfUnused(paths)
+            cleanupWaitScriptIfUnused(paths)
             return true
         }
     }

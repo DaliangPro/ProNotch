@@ -106,9 +106,10 @@ final class NotchViewModel: ObservableObject {
     let notchRect: CGRect
     /// 展开后刘海下方面板的内容尺寸（原 720×340，大梁老师要求整体加大约 1/3）
     let panelSize = CGSize(width: 960, height: 455)
-    /// 收起态两侧功能区宽度（单侧）：左内存右天气（大梁老师定的自由功能区）。
-    /// 内容实测 42-49pt（含 100%/-12° 极值），56 留最小气口——首版 80 被嫌过宽
-    let sideSlotWidth: CGFloat = 56
+    /// 收起态两侧功能区宽度（单侧），**恒为 `NotchSlot.fixedSideWidth`（56pt），不随选哪个槽位/哪家 Agent 变**
+    /// （大梁老师定：图标该规整统一、刘海宽度恒定，绝不能让偏胖的图标去撑宽刘海）。
+    /// 由 NotchWindowController 在初始化时写入一次；默认 56 兜底（首版 80 被嫌过宽）。
+    @Published var sideSlotWidth: CGFloat = 56
     /// 两侧功能区是否启用（任一侧配了内容即 true，由设置驱动）；
     /// 关闭后收起态退回物理刘海原宽，侧区热区同步失效
     @Published var sideSlotsActive = true
@@ -122,11 +123,41 @@ final class NotchViewModel: ObservableObject {
 
     /// 天气预警横幅显示中（收起态）：横幅要接收点击，临时解除窗口的鼠标穿透。
     /// 只有不透明像素会截获点击（透明区按像素透传），假刘海黑条被点到无副作用
-    var alertBannerVisible = false {
-        didSet {
-            guard !isExpanded else { return }
-            panel?.ignoresMouseEvents = !alertBannerVisible
-        }
+    var alertBannerVisible = false { didSet { applyGrownCardHitTesting() } }
+
+    /// Agent「等你拍板」提醒卡显示中（收起态）。与预警各记一个标志而不是共用一个 Bool：
+    /// 共用的话，先收的那张会把还挂着的另一张的点击一起关掉
+    var agentWaitCardVisible = false { didSet { applyGrownCardHitTesting() } }
+
+    /// 收起态有任意一张大卡在场（两种卡都要接收点击）
+    var grownCardVisible: Bool { alertBannerVisible || agentWaitCardVisible }
+
+    /// 当前张开的「等你拍板」卡宽（0＝不在场）。两种卡各记自己的宽度，
+    /// 而不是共用一个字段：天气预警 8 秒自动收，收的时候若把共用字段清零，
+    /// 还挂着的拍板卡两侧图标就会缩回中间
+    @Published var agentCardWidth: CGFloat = 0
+    /// 当前张开的天气预警卡宽（0＝不在场）
+    @Published var alertCardWidth: CGFloat = 0
+
+    /// 收起态张开的大卡有多宽（0＝没有卡）。两张同时在场时以拍板卡为准——
+    /// 它一直挂着等答复，天气预警只停 8 秒。
+    ///
+    /// 两侧小图标（左内存右天气）靠它随卡张开一起向外走到卡的两边（大梁老师定：
+    /// 「随着刘海的拓展而移动到弹出的两边，而不是保持原来位置不变」）
+    var grownCardWidth: CGFloat { agentCardWidth > 0 ? agentCardWidth : alertCardWidth }
+
+    /// 正挂着一张「等你答复」的拍板卡（不是只提醒一声那种）。
+    ///
+    /// 这段时间**悬停不再展开面板**（大梁老师定）：卡是一件还没办完的事，
+    /// 鼠标往按钮上去的路上一旦扫过刘海，面板就长出来把卡整块盖住，
+    /// 还得移开、等它收回来才能接着按——那张卡就成了摆设。
+    /// 展开态本来就不显示这张卡（`showing` 带 `!isExpanded`），所以不会互相锁死：
+    /// 面板已经开着时照常按悬停规则收起，收起后卡回来才重新挂上这道闸
+    var answerCardPending = false
+
+    private func applyGrownCardHitTesting() {
+        guard !isExpanded else { return }
+        panel?.ignoresMouseEvents = !grownCardVisible
     }
 
     /// 全屏隐藏钩子：返回 true 时整个刘海窗口隐藏（外接屏假刘海会遮挡全屏内容）
@@ -366,7 +397,7 @@ final class NotchViewModel: ObservableObject {
                 scheduleCollapse()
             }
         } else {
-            if enterRect.contains(location) {
+            if hoverShouldExpand(at: location) {
                 if pendingExpand == nil { scheduleExpand() }
             } else {
                 pendingExpand?.cancel()
@@ -375,13 +406,19 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
+    /// 收起态悬停到这个点该不该展开。
+    /// 拍板卡在等答复时一律不展开（见 `answerCardPending`）
+    func hoverShouldExpand(at point: CGPoint) -> Bool {
+        !answerCardPending && enterRect.contains(point)
+    }
+
     private func scheduleExpand() {
         let work = DispatchWorkItem { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.pendingExpand = nil
-                // 触发时刻再校验一次，过滤快速划过
-                if self.enterRect.contains(NSEvent.mouseLocation) {
+                // 触发时刻再校验一次，过滤快速划过（也再问一次拍板卡在不在等）
+                if self.hoverShouldExpand(at: NSEvent.mouseLocation) {
                     self.expand()
                 }
             }
@@ -406,20 +443,36 @@ final class NotchViewModel: ObservableObject {
 
     // MARK: - 状态切换
 
-    /// 程序化展开（截图问 AI 等入口）：固定住不自动收起，直到鼠标真正进入面板后
-    /// 交还悬停规则；同时让面板成为 key 窗口，输入框聚焦即可直接打字。
-    /// 用户显式召唤压过「全屏自动隐藏」：曾因 guard hiddenForFullscreen 静默放弃，导致在全屏
-    /// App 里点「截图问 AI」刘海必不弹。面板本就具备 fullScreenAuxiliary，可临时现身盖在全屏
-    /// 空间上；收起时（collapse）重新评估，仍在全屏则恢复隐藏
-    func expandProgrammatically() {
+    /// 程序化展开并切到指定页（快捷键呼出闪问、截图问 AI、点天气预警卡等入口）：
+    /// 固定住不自动收起，直到鼠标真正进入面板后交还悬停规则；同时让面板成为 key 窗口，
+    /// 输入框聚焦即可直接打字。用户显式召唤压过「全屏自动隐藏」：曾因 guard hiddenForFullscreen
+    /// 静默放弃，导致在全屏 App 里点「截图问 AI」刘海必不弹。面板本就具备 fullScreenAuxiliary，
+    /// 可临时现身盖在全屏空间上；收起时（collapse）重新评估，仍在全屏则恢复隐藏。
+    ///
+    /// **activeTab 与 isExpanded 必须在同一动画事务里翻**。
+    ///
+    /// 若像旧写法那样先 `activeTab = tab`（裸事务）再单独展开
+    /// （另用 `withAnimation` 翻 isExpanded，另一个事务），SwiftUI 会把两次变更拆到
+    /// 不同渲染拍：首呼时目标页因 activeTab 变化先行挂载，而挂载那一拍 isExpanded 仍是
+    /// 旧值 false，页面出场动画（由 isExpanded 触发的 `pageEntrance`）读到 false 直接
+    /// 不播 → 整页元素停在 opacity 0，只剩空框；得等第二次（activeTab 已是目标页、
+    /// 只翻 isExpanded 走稳定路径）才正常。这正是「快捷键首呼闪问没 UI、第二次才有」的根因。
+    /// 合进同一 `withAnimation` 后，页面挂载即见 isExpanded=true，出场正常触发。
+    func expandProgrammatically(switchingTo tab: Tab) {
         if hiddenForFullscreen {
             hiddenForFullscreen = false
             forcedShowOverFullscreen = true
             panel?.orderFrontRegardless()
         }
-        if !isExpanded {
+        let willExpand = !isExpanded
+        if willExpand {
             debugPinned = true
-            expand()
+            panel?.ignoresMouseEvents = false
+            AppLog.window.info("展开")
+        }
+        withAnimation(.easeOut(duration: 0.22)) {
+            activeTab = tab
+            if willExpand { isExpanded = true }
         }
         NSApp.activate(ignoringOtherApps: true)
         panel?.makeKeyAndOrderFront(nil)
@@ -525,8 +578,8 @@ final class NotchViewModel: ObservableObject {
             }
         }
         // 收起后窗口对鼠标完全隐形，假刘海区域的点击会穿透到下层
-        // （预警横幅还挂着时除外——它需要接收点击，缩回后由 alertBannerVisible 恢复穿透）
-        panel?.ignoresMouseEvents = !alertBannerVisible
+        // （大卡还挂着时除外——它需要接收点击，缩回后由 grownCardVisible 恢复穿透）
+        panel?.ignoresMouseEvents = !grownCardVisible
         withAnimation(.spring(response: animationDuration, dampingFraction: 0.9)) {
             isExpanded = false
         }

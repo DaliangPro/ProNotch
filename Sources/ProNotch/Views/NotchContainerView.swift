@@ -12,12 +12,33 @@ struct NotchContainerView: View {
         vm.isExpanded ? vm.expandedShapeSize.height : vm.notchRect.height
     }
 
+    /// 当前可见的黑形状（收起态刘海条 / 展开态整块面板）。裁剪与命中区共用一份，
+    /// 免得两处参数各写一遍、日后改圆角只改一处漏另一处
+    private var revealShape: RevealNotchShape {
+        RevealNotchShape(width: shapeWidth, height: shapeHeight,
+                         topRadius: vm.isExpanded ? 12 : 6,
+                         bottomRadius: vm.isExpanded ? 20 : 10)
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
-            // 预警大卡垫底：从刘海形状背后弹出（形状不透明，缩回即被盖住），
+            // 两种大卡垫底：从刘海形状背后弹出（形状不透明，缩回即被盖住），
             // 层级在黑形状之下，滑动过程天然是「刘海绽放成一块大卡」
             WeatherAlertCardView()
+            AgentWaitCardView()
             notchLayer
+            // 两侧功能区（左内存右天气）压在最上层，而不是塞在 notchLayer 里面：
+            // 那一层被 `clipShape(revealShape)` 裁到收起态黑条宽（312pt），
+            // 图标一旦随大卡张开往外走就会被整块裁掉。搬到最上层后，
+            // 收起态它落在黑条上、大卡张开时落在卡的顶部留白带里，都不会被裁。
+            // 必须保持 `allowsHitTesting(false)`：它盖着卡的整条顶部，
+            // 接管点击就会把「点卡跳终端」吃掉
+            CollapsedSlotsView()
+                .opacity(vm.isExpanded ? 0 : 1)
+                .animation(vm.isExpanded ? .easeIn(duration: 0.1)
+                                         : .easeOut(duration: 0.15).delay(0.2),
+                           value: vm.isExpanded)
+                .allowsHitTesting(false)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
@@ -40,14 +61,6 @@ struct NotchContainerView: View {
                                          : .easeIn(duration: 0.1),
                            value: vm.isExpanded)
                 .allowsHitTesting(vm.isExpanded)
-            // 收起态两侧功能区（左内存右天气）：展开瞬间先快速隐去，收起完再淡回，
-            // 与内容层的透明度门控互为镜像
-            CollapsedSlotsView()
-                .opacity(vm.isExpanded ? 0 : 1)
-                .animation(vm.isExpanded ? .easeIn(duration: 0.1)
-                                         : .easeOut(duration: 0.15).delay(0.2),
-                           value: vm.isExpanded)
-                .allowsHitTesting(false)
         }
         // 布局恒定为展开尺寸，「长大」只发生在下面的裁剪窗口——布局若随形状一起长，
         // 常驻内容会在动画期间被钉到形状左缘、随扩张从左滑入 380pt
@@ -55,9 +68,13 @@ struct NotchContainerView: View {
         .frame(width: vm.expandedShapeSize.width,
                height: vm.expandedShapeSize.height,
                alignment: .top)
-        .clipShape(RevealNotchShape(width: shapeWidth, height: shapeHeight,
-                                    topRadius: vm.isExpanded ? 12 : 6,
-                                    bottomRadius: vm.isExpanded ? 20 : 10))
+        .clipShape(revealShape)
+        // 命中区必须跟着可见形状一起收：`clipShape` **只裁画面、不裁点击**，
+        // 上面那块 Color.black 的布局恒为整块面板尺寸，被裁掉看不见的那片黑照样把落在
+        // 「刘海以下」的点击全吃光——垫在黑形状底下的两种大卡（天气预警、Agent 等你拍板）
+        // 因此一个按钮都点不动（实测：整卡区域合成点击全被吞，见 probeGrownCardHits）。
+        // 收起态收到刘海条后，刘海以下的空白才让给大卡；展开态形状即整面板，行为不变
+        .contentShape(revealShape)
         .shadow(color: .black.opacity(vm.isExpanded ? 0.55 : 0), radius: 14, y: 5)
         // 展开弹跳 = NookX 式单次过冲（AX 实测对标：尺寸过冲约 8%、只冲一次、
         // 回落顺滑不折返）——Q 弹感来自「冲得狠 + 回得柔」，不是方向反复切换；
@@ -85,8 +102,6 @@ struct NotchContainerView: View {
 private struct WeatherAlertCardView: View {
     @EnvironmentObject var vm: NotchViewModel
     @EnvironmentObject var weather: WeatherStore
-    /// 周边光晕呼吸相位（大梁老师：预警必须让人看见）
-    @State private var glowPulse = false
     /// 正在展示的内容：退场动画期间仍要有东西可画，与 store 的 alert 解耦
     @State private var displayed: WeatherAlert?
     /// 出场/退场开关：驱动揭示裁剪与过冲弹跳，节奏对齐刘海展开
@@ -94,6 +109,9 @@ private struct WeatherAlertCardView: View {
 
     /// 预警橙：标签底色恒定用它，光晕才随天气变——标签管「这是预警」，光晕管「是哪种」
     private static let warnColor = Color(hex: "#FF9F0A")
+
+    /// 卡宽。抽成常量是因为两侧小图标要随卡张开外移到卡的两边（见 `NotchViewModel.grownCardWidth`）
+    static let cardWidth: CGFloat = 440
 
     /// 展开态不显示（面板都开着，没必要再挂卡）
     private var showing: Bool { weather.alert != nil && !vm.isExpanded }
@@ -120,12 +138,16 @@ private struct WeatherAlertCardView: View {
             vm.alertBannerVisible = on
             if on {
                 displayed = weather.alert
-                // 与刘海展开同款节奏：形状 easeOut 0.22 快速长大到位，弹跳由 keyframe 叠加
-                withAnimation(.easeOut(duration: 0.22)) { shown = true }
+                // 卡宽登记进 vm 并放在同一条动画事务里：两侧小图标靠它随卡张开一起外移
+                withAnimation(NotchGrownCardMotion.grow) {
+                    shown = true
+                    vm.alertCardWidth = Self.cardWidth
+                }
             } else {
-                // 与刘海收起同款弹簧缩回刘海里，收完再移除视图
-                withAnimation(.spring(response: 0.35, dampingFraction: 0.9)) {
+                // 缩回刘海里，收完再移除视图
+                withAnimation(NotchGrownCardMotion.shrink) {
                     shown = false
+                    vm.alertCardWidth = 0
                 } completion: {
                     if !showing { displayed = nil }
                 }
@@ -141,17 +163,16 @@ private struct WeatherAlertCardView: View {
                 displayed = weather.alert
                 shown = true
                 vm.alertBannerVisible = true
+                vm.alertCardWidth = Self.cardWidth
             }
         }
     }
 
     private func card(_ a: WeatherAlert) -> some View {
-        let glow = glowColor(a)
-        return Button {
+        NotchGrownCard(width: Self.cardWidth, grownHeight: 180, glow: glowColor(a), shown: shown) {
             weather.dismissAlert()
-            vm.activeTab = .widgets
-            vm.expandProgrammatically()
-        } label: {
+            vm.expandProgrammatically(switchingTo: .widgets)
+        } content: {
             VStack(spacing: 9) {
                 Text("恶劣天气预警")
                     .font(.system(size: 11, weight: .bold))
@@ -176,77 +197,6 @@ private struct WeatherAlertCardView: View {
                     .foregroundColor(.white.opacity(0.35))
                     .padding(.top, 2)
             }
-            .padding(.top, vm.notchRect.height + 12)   // 顶部让出摄像头/两侧功能区一条
-            .padding(.bottom, 16)
-            .frame(width: 440)
-            // 放大版刘海形状（与展开面板同一套语言）；描边跟随光晕色
-            .background(NotchShape(topRadius: 9, bottomRadius: 24).fill(Color.black))
-            .overlay(NotchShape(topRadius: 9, bottomRadius: 24)
-                .stroke(glow.opacity(0.35), lineWidth: 0.5))
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        // 与刘海展开同一扇「揭示窗」（大梁老师要求动画一致）：窗口从收起态
-        // 黑条尺寸平滑扩到整卡，内容钉在终态位置被逐渐揭示，物理上同种运动
-        .clipShape(RevealNotchShape(
-            width: shown ? 440 : vm.collapsedShapeWidth,
-            height: shown ? vm.notchRect.height + 180 : vm.notchRect.height,
-            topRadius: shown ? 9 : 6,
-            bottomRadius: shown ? 24 : 10))
-        // 周边呼吸光晕贴裁剪后的轮廓，颜色随天气（大梁老师：不同天气不同发光）
-        .shadow(color: glow.opacity(glowPulse ? 0.75 : 0.4),
-                radius: glowPulse ? 30 : 16, y: 5)
-        .shadow(color: glow.opacity(glowPulse ? 0.4 : 0.18),
-                radius: glowPulse ? 75 : 45, y: 10)
-        // 刘海展开的同款过冲：唯一一冲 +8%，弹簧滑回（NookX 式 Q 弹）
-        .keyframeAnimator(initialValue: CGFloat(1.0), trigger: shown) { view, scale in
-            view.scaleEffect(scale, anchor: .top)
-        } keyframes: { _ in
-            let on = shown
-            KeyframeTrack(\.self) {
-                LinearKeyframe(CGFloat(1.0), duration: 0.05)
-                CubicKeyframe(CGFloat(on ? 1.08 : 1.0), duration: 0.16)
-                SpringKeyframe(CGFloat(1.0), duration: 0.34,
-                               spring: Spring(duration: 0.34, bounce: 0.25))
-            }
-        }
-        .onAppear {
-            glowPulse = false
-            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
-                glowPulse = true
-            }
-        }
-    }
-}
-
-/// 展开揭示裁剪：在恒定布局（整块面板）内，只露出顶部中央 width×height 的刘海形状。
-/// 尺寸与圆角都可动画——「展开」就是这扇窗从刘海尺寸平滑扩到整面板，
-/// 内容全程钉在终态位置被逐渐揭示，物理上不可能再横移
-private struct RevealNotchShape: Shape {
-    var width: CGFloat
-    var height: CGFloat
-    var topRadius: CGFloat
-    var bottomRadius: CGFloat
-
-    var animatableData: AnimatablePair<AnimatablePair<CGFloat, CGFloat>,
-                                       AnimatablePair<CGFloat, CGFloat>> {
-        get {
-            AnimatablePair(AnimatablePair(width, height),
-                           AnimatablePair(topRadius, bottomRadius))
-        }
-        set {
-            width = newValue.first.first
-            height = newValue.first.second
-            topRadius = newValue.second.first
-            bottomRadius = newValue.second.second
-        }
-    }
-
-    func path(in rect: CGRect) -> Path {
-        let window = CGRect(x: rect.midX - width / 2, y: rect.minY,
-                            width: min(width, rect.width),
-                            height: min(height, rect.height))
-        return NotchShape(topRadius: topRadius, bottomRadius: bottomRadius)
-            .path(in: window)
     }
 }

@@ -11,16 +11,18 @@ enum KimiHookBlock {
     static let beginMarker = "# >>> ProNotch managed hook BEGIN"
     static let endMarker = "# <<< ProNotch managed hook END"
 
-    /// 两条 hook 渲染进同一段托管块：完成提醒（Stop）与开工信号（UserPromptSubmit）。
-    /// 合成一段而不是分成两段，是因为摘除逻辑要求边界标记全文唯一——
-    /// 两段就是两对标记，`remove` 会直接判 `.ambiguous` 拒绝卸载。
+    /// 三条 hook 渲染进同一段托管块：完成提醒（Stop）、开工信号（UserPromptSubmit）
+    /// 与等你拍板（Notification）。合成一段而不是分成三段，是因为摘除逻辑要求边界标记
+    /// 全文唯一——多段就是多对标记，`remove` 会直接判 `.ambiguous` 拒绝卸载。
     ///
     /// 开工信号超时给 5 秒（完成提醒是 15）：它挂在用户每次提交提问的路径上，
-    /// 卡住就是卡住用户本人，宁可放弃这一次的状态点亮
-    static func render(commandLine: String, busyCommandLine: String) -> String {
+    /// 卡住就是卡住用户本人，宁可放弃这一次的状态点亮。
+    /// 等你拍板同样给 5 秒——它触发时用户正被一个对话框挡着，更不能再卡他
+    static func render(commandLine: String, busyCommandLine: String,
+                       waitCommandLine: String) -> String {
         """
         \(beginMarker)
-        # ProNotch 完成提醒 + 工作状态（自动生成，卸载请在 ProNotch 设置里取消勾选）
+        # ProNotch 完成提醒 + 工作状态 + 等你拍板（自动生成，卸载请在 ProNotch 设置里取消勾选）
         [[hooks]]
         event = "Stop"
         \(commandLine)
@@ -29,6 +31,11 @@ enum KimiHookBlock {
         [[hooks]]
         event = "UserPromptSubmit"
         \(busyCommandLine)
+        timeout = 5
+
+        [[hooks]]
+        event = "Notification"
+        \(waitCommandLine)
         timeout = 5
         \(endMarker)
         """

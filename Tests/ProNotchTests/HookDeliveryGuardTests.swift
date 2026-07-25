@@ -28,7 +28,7 @@ final class HookDeliveryGuardTests: XCTestCase {
     // MARK: - 取脚本
 
     /// 装一套 hook 到临时目录，取回生成的脚本原文
-    /// （四家各一份完成提醒，外加四家共用的那份开工信号）
+    /// （四家各一份完成提醒，外加四家共用的开工信号，以及 Claude / Kimi 共用的等你拍板）
     private func installedScripts() throws -> [String: String] {
         let paths = GlowHookPaths.rooted(at: tmp.path)
         for dir in [paths.scriptDir, paths.codexDir, paths.grokHooksDir,
@@ -47,11 +47,15 @@ final class HookDeliveryGuardTests: XCTestCase {
         var out: [String: String] = [:]
         for (name, path) in ["claude": paths.claudeScript, "codex": paths.codexScript,
                              "kimi": paths.kimiScript, "grok": paths.grokScript,
-                             "busy": paths.busyScript] {
+                             "busy": paths.busyScript, "wait": paths.waitScript,
+                             "permission": paths.permissionScript] {
             out[name] = try String(contentsOfFile: path, encoding: .utf8)
         }
         return out
     }
+
+    /// 拍板脚本的交换目录（只有它用文件往来，别的脚本都是投一条 URL 就走）
+    private var permissionDir: String { GlowHookPaths.rooted(at: tmp.path).permissionDir }
 
     // MARK: - 静态守卫
 
@@ -135,12 +139,12 @@ final class HookDeliveryGuardTests: XCTestCase {
         try script.write(to: file, atomically: true, encoding: .utf8)
 
         // Claude/Kimi/Grok 从 stdin 读 JSON；Codex 从 $1 读 payload；
-        // 开工脚本四家共用，$1 是来源
+        // 开工 / 等你拍板 / 拍板三个脚本多家共用，$1 是来源
         var args = [file.path]
         switch name {
         case "codex": args.append(#"{"type":"agent-turn-complete","thread-id":"t1"}"#)
-        case "busy":  args.append("claude")
-        default:      break
+        case "busy", "wait", "permission": args.append("claude")
+        default: break
         }
         let result = try run("/bin/bash", args, stdin: payload)
         return (FileManager.default.fileExists(atPath: marker.path), result.status)
@@ -341,6 +345,229 @@ final class HookDeliveryGuardTests: XCTestCase {
         let script = try XCTUnwrap(try installedScripts()["busy"])
         XCTAssertTrue(script.contains("thread-id"), "Codex 的会话字段没取，多会话状态会串")
         XCTAssertTrue(script.contains("session_id"), "另外三家的会话字段不能丢")
+    }
+
+    // MARK: - 等你拍板信号
+
+    /// 把脚本的 open 换成把 URL 原文落盘，跑一遍取回那条 URL（没投递则返回 nil）
+    private func deliveredURL(scriptNamed name: String, watching process: String,
+                              payload: String, source: String = "claude") throws -> String? {
+        var script = try XCTUnwrap(try installedScripts()[name])
+        let slug = UUID().uuidString.prefix(8)
+        let marker = tmp.appendingPathComponent("\(name)-\(slug)-url")
+        script = script
+            .replacingOccurrences(of: "pgrep -x ProNotch", with: "pgrep -x \(process)")
+            .replacingOccurrences(of: #"open -g "$url""#,
+                                  with: "printf '%s' \"$url\" > '\(marker.path)'")
+        let file = tmp.appendingPathComponent("\(name)-\(slug).sh")
+        try script.write(to: file, atomically: true, encoding: .utf8)
+        _ = try run("/bin/bash", [file.path, source], stdin: payload)
+        return try? String(contentsOf: marker, encoding: .utf8)
+    }
+
+    /// 这个信号既不代表干完（不该点光晕）也不代表开工（不该动槽位状态），
+    /// 所以必须走自己的 host：走错了应用侧会当成另一件事处理
+    func test等你拍板脚本发的是waiting() throws {
+        let script = try XCTUnwrap(try installedScripts()["wait"])
+        XCTAssertTrue(script.contains("pronotch://waiting"))
+        XCTAssertFalse(script.contains("pronotch://done"),
+                       "中途等待被当成完成，光晕会在活还没干完时就亮")
+        XCTAssertFalse(script.contains("pronotch://busy"))
+    }
+
+    /// 类型要原样带上：值不值得打断的判断在 Swift 那侧（`AgentWaitPolicy`），
+    /// 脚本不带这个字段的话，空闲提醒之类也会一路弹到卡上
+    func test等你拍板URL带上通知类型() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        let payload = #"{"session_id":"abc","notification_type":"permission_prompt","cwd":"/Users/x/ProNotch"}"#
+        let url = try XCTUnwrap(try deliveredURL(scriptNamed: "wait", watching: probe.name,
+                                                payload: payload))
+        XCTAssertTrue(url.contains("type=permission_prompt"), "少了类型，应用侧没法过滤：\(url)")
+        XCTAssertTrue(url.contains("session=abc"))
+        XCTAssertTrue(url.contains("source=claude"))
+    }
+
+    /// 项目名走 base64url：cwd 末段常带空格与中文，裸拼进 URL 会被 open 从空格切断，
+    /// 卡面上就只剩半截项目名（或者整条 URL 废掉）
+    func test等你拍板项目名用base64url编码() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        let payload = #"{"session_id":"abc","notification_type":"permission_prompt","cwd":"/Users/x/我的 项目"}"#
+        let url = try XCTUnwrap(try deliveredURL(scriptNamed: "wait", watching: probe.name,
+                                                payload: payload))
+        let encoded = try XCTUnwrap(url.components(separatedBy: "project=").last)
+        XCTAssertFalse(encoded.contains(" "), "编码后不该还有空格：\(url)")
+        XCTAssertFalse(encoded.contains("+"), "base64 的 + 必须换成 -，否则在 URL 里被解成空格")
+        XCTAssertEqual(AgentWaitNotice.decodeProject(encoded), "我的 项目",
+                       "Swift 那侧解不回原名，卡面就是一串乱码")
+    }
+
+    func test等你拍板脚本在App没跑时不投递() throws {
+        let ghost = "ProNotchGhost\(UUID().uuidString.prefix(8))"
+        let r = try deliver(scriptNamed: "wait", watching: ghost)
+        XCTAssertFalse(r.delivered, "等你拍板信号也会把用户刚关掉的 App 拉回来")
+        XCTAssertEqual(r.status, 0, "Notification hook 返回非零会被当成 hook 失败报错")
+    }
+
+    func test等你拍板脚本缺来源参数时安静退出() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        var script = try XCTUnwrap(try installedScripts()["wait"])
+        let marker = tmp.appendingPathComponent("wait-nosrc")
+        script = script
+            .replacingOccurrences(of: "pgrep -x ProNotch", with: "pgrep -x \(probe.name)")
+            .replacingOccurrences(of: #"open -g "$url""#, with: "touch '\(marker.path)'")
+        let file = tmp.appendingPathComponent("wait-nosrc.sh")
+        try script.write(to: file, atomically: true, encoding: .utf8)
+
+        let r = try run("/bin/bash", [file.path], stdin: #"{"session_id":"abc"}"#)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+        XCTAssertEqual(r.status, 0)
+    }
+
+    /// 同开工脚本：Notification 事件是否喂 stdin 没有逐一实证，
+    /// `cat` 空等会一直卡到 hook 超时——而这个事件正是在用户等着拍板的时候发的
+    func test等你拍板脚本在stdin是终端时不阻塞() throws {
+        XCTAssertTrue(try XCTUnwrap(try installedScripts()["wait"]).contains("[ -t 0 ]"),
+                      "少了终端判断，遇上不喂 stdin 的家会卡到 hook 超时")
+    }
+
+    // MARK: - 在刘海上直接拍板
+
+    /// 跑一遍拍板脚本，并扮演 ProNotch：投递那一刻把答复直接写进去。
+    ///
+    /// 回报的 `out` 就是 Claude Code 真正会读到的 stdout——这个功能全部的输出就这一段，
+    /// 所以「答复能不能原样送到」只能这么验
+    private func runPermission(watching process: String,
+                               payload: String = #"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+                               respond: String) throws
+    -> (status: Int32, out: String, url: String, request: String, leftovers: [String]) {
+        var script = try XCTUnwrap(try installedScripts()["permission"])
+        let slug = UUID().uuidString.prefix(8)
+        let urlFile = tmp.appendingPathComponent("perm-\(slug)-url")
+        let reqCopy = tmp.appendingPathComponent("perm-\(slug)-request")
+        // 扮演 ProNotch：留下 URL 与请求原文各一份（脚本随后会把请求删掉），再落答复
+        let stub = """
+        printf '%s' "$url" > '\(urlFile.path)'; /bin/cp "$req" '\(reqCopy.path)'; \
+        printf '%s' '\(respond)' > "$res"
+        """
+        script = script
+            .replacingOccurrences(of: "pgrep -x ProNotch", with: "pgrep -x \(process)")
+            .replacingOccurrences(of: #"open -g "$url""#, with: stub)
+        let file = tmp.appendingPathComponent("perm-\(slug).sh")
+        try script.write(to: file, atomically: true, encoding: .utf8)
+
+        let result = try run("/bin/bash", [file.path, "claude"], stdin: payload)
+        let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: permissionDir)) ?? []
+        return (result.status, result.out,
+                (try? String(contentsOf: urlFile, encoding: .utf8)) ?? "",
+                (try? String(contentsOf: reqCopy, encoding: .utf8)) ?? "",
+                leftovers)
+    }
+
+    private func allowResponse() -> String {
+        #"{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}"#
+    }
+
+    /// 答复必须原样吐给 Claude Code：这段 JSON 就是「允许」本身，
+    /// 多一个字节少一个字节它都当成没决策，用户在卡上按的那一下等于白按
+    func test拍板脚本把答复原样吐出() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        let r = try runPermission(watching: probe.name, respond: allowResponse())
+        XCTAssertEqual(r.out, allowResponse())
+        XCTAssertEqual(r.status, 0)
+    }
+
+    /// 「打开终端」写的是空文件：空 stdout 在 Claude Code 那边就是「没决策」，照旧弹终端框。
+    /// 这条链路的兜底全靠它——不必为「不作决策」另发明一种信号
+    func test空答复对应打开终端_脚本不吐任何东西() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        let r = try runPermission(watching: probe.name, respond: "")
+        XCTAssertEqual(r.out, "", "吐出任何东西都会被当成一次决策")
+        XCTAssertEqual(r.status, 0)
+    }
+
+    /// 请求文件要写全整份载荷：`tool_input` 里躺着要跑的命令、要写的路径，
+    /// 截一半的话卡上就没东西可给人看了。而且答复取走后两个文件都得清干净
+    func test请求写全整份载荷_答完不留残件() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        let payload = #"{"tool_name":"Write","tool_input":{"file_path":"/tmp/a b.txt","content":"x"},"cwd":"/Users/x/我的 项目"}"#
+        let r = try runPermission(watching: probe.name, payload: payload, respond: allowResponse())
+        XCTAssertEqual(r.request, payload, "请求文件必须是原封不动的整份 JSON")
+        XCTAssertTrue(r.leftovers.isEmpty, "交换目录留了残件：\(r.leftovers)")
+    }
+
+    /// URL 只带 id 不带内容：`tool_input` 可以是整个文件内容，
+    /// 塞进 URL 会被 open 截断甚至整条废掉——这也是这条链路走文件不走 URL 的原因
+    func test拍板URL只带请求id() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        let payload = #"{"tool_name":"Bash","tool_input":{"command":"echo 有空格 与中文"}}"#
+        let r = try runPermission(watching: probe.name, payload: payload, respond: allowResponse())
+        XCTAssertTrue(r.url.hasPrefix("pronotch://permission?"), "走错 host：\(r.url)")
+        XCTAssertTrue(r.url.contains("&req="), "少了请求 id，应用侧取不到那条请求")
+        XCTAssertFalse(r.url.contains("有空格"), "入参不该出现在 URL 里：\(r.url)")
+        XCTAssertFalse(r.url.contains(" "), "URL 里带空格会被 open 从那里切断")
+
+        let id = try XCTUnwrap(requestID(r.url))
+        XCTAssertTrue(AgentPermissionBroker.isValidID(id), "id 不合规，应用侧会直接丢弃：\(id)")
+    }
+
+    /// 从投递出去的 URL 里取回 req 参数（后面还跟着 host，不能直接切到末尾）
+    private func requestID(_ url: String) -> String? {
+        URLComponents(string: url)?.queryItems?.first { $0.name == "req" }?.value
+    }
+
+    /// 脚本生成的 id 必须不可猜：本机任何进程猜中了，就能替用户按下「允许」
+    func test每次请求id都不同() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        var ids = Set<String>()
+        for _ in 0..<3 {
+            let r = try runPermission(watching: probe.name, respond: allowResponse())
+            ids.insert(try XCTUnwrap(requestID(r.url)))
+        }
+        XCTAssertEqual(ids.count, 3, "id 可预测就等于谁都能替你拍板")
+    }
+
+    /// ProNotch 没开就别拦：这一步必须**先于**写请求文件，
+    /// 否则每次授权都在交换目录里攒一个没人取的孤儿
+    func test拍板脚本在App没跑时不拦不留孤儿() throws {
+        let ghost = "ProNotchGhost\(UUID().uuidString.prefix(8))"
+        let r = try deliver(scriptNamed: "permission", watching: ghost)
+        XCTAssertFalse(r.delivered)
+        XCTAssertEqual(r.status, 0, "非零会被 Claude Code 当成 hook 失败")
+        let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: permissionDir)) ?? []
+        XCTAssertTrue(leftovers.isEmpty, "App 没开还写了请求文件：\(leftovers)")
+    }
+
+    /// 投递没送达（LaunchServices 抽风、刘海刚好被强杀）时必须自己收手。
+    /// 「一直等到答复」等的是一张真挂在刘海上的卡；卡都没弹出来还傻等，
+    /// 就是把终端那一轮锁死到钩子超时
+    func test请求没人取时有次数上限_不会无限等() throws {
+        let script = try XCTUnwrap(try installedScripts()["permission"])
+        let waitLines = script.split(separator: "\n").filter { $0.contains("-gt") }
+        XCTAssertFalse(waitLines.isEmpty, "第一段等待没有次数上限，投递失败就会一直等下去")
+    }
+
+    /// 第二段（卡已挂上、等人来按）反过来不能有上限，那是大梁老师定的「一直等到答复」；
+    /// 唯一的提前收手是 ProNotch 退出——没人会来答了
+    func test等答复期间盯着ProNotch是否还在() throws {
+        let script = try XCTUnwrap(try installedScripts()["permission"])
+        let loops = script.components(separatedBy: "while [ ! -f \"$res\" ]")
+        XCTAssertEqual(loops.count, 2, "少了等答复的循环，脚本会立刻返回空决策")
+        XCTAssertTrue(try XCTUnwrap(loops.last).contains("pgrep"),
+                      "等答复时不查进程，ProNotch 退出后这一轮会挂到钩子超时")
+    }
+
+    /// stdin 没喂管道时 `cat` 会一直等到超时——而这个事件恰恰卡在用户要授权的那一刻
+    func test拍板脚本在stdin是终端时不阻塞() throws {
+        XCTAssertTrue(try XCTUnwrap(try installedScripts()["permission"]).contains("[ -t 0 ]"),
+                      "少了终端判断，遇上不喂 stdin 的场景会卡到钩子超时")
     }
 
     // MARK: - 跑进程

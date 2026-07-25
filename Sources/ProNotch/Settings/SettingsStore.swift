@@ -184,6 +184,11 @@ final class SettingsStore: ObservableObject {
     @Published var translateEngine: String { didSet { UserDefaults.standard.set(translateEngine, forKey: PrefKey.translateEngine) } }
     /// 翻译提示词（可编辑）；其中 {lang} 翻译时替换为目标语言
     @Published var translatePrompt: String { didSet { UserDefaults.standard.set(translatePrompt, forKey: PrefKey.translatePrompt) } }
+    /// 深度思考（DeepSeek 等混合模型的 thinking 开关）。
+    /// 默认开＝什么都不发，随服务端默认走——只有关掉时才在请求体里加 `thinking:{type:disabled}`，
+    /// 这样不支持该字段的接口（OpenAI 等严格校验未知字段）不会平白多挨一个 400。
+    /// 翻译是短句进短句出，思考纯属白等：DeepSeek v4-flash 实测关掉后一次请求省数秒
+    @Published var translateThinking: Bool { didSet { UserDefaults.standard.set(translateThinking, forKey: PrefKey.translateThinking) } }
 
     nonisolated static let defaultTranslatePrompt = "You are a professional translation engine. Translate EVERY string in the input JSON array into {lang}, including single words, labels and UI text. If a string is already in {lang} keep it; otherwise you MUST translate it — never leave non-{lang} text untranslated. Keep as-is: product or brand names (e.g. deepseek, GitHub), code identifiers and function names (e.g. runTranslate, NaturalLanguage), all-letter acronyms (e.g. AI, API, OCR), code values with digits (e.g. status=200, v1.6.0), URLs, file paths and numbers. Return ONLY a JSON array of translated strings, same length and order, no explanations, no code fences."
 
@@ -273,6 +278,12 @@ final class SettingsStore: ObservableObject {
             }
         }
     }
+    /// 「等你拍板」提醒：Agent 跑到一半弹框等你选时刘海弹卡（与完成提醒各自独立）。
+    /// 只管弹不弹卡，不动 hook —— 钩子跟着完成提醒一起装，关掉这个开关只是不弹，
+    /// 免得为一个开关再走一轮配置改写
+    @Published var agentWaitNoticeEnabled: Bool {
+        didSet { persistGlow(agentWaitNoticeEnabled, PrefKey.agentWaitNoticeEnabled) }
+    }
     @Published var glowClaudeColorHex: String { didSet { persistGlow(glowClaudeColorHex, PrefKey.glowClaudeColorHex) } }
     @Published var glowCodexColorHex: String { didSet { persistGlow(glowCodexColorHex, PrefKey.glowCodexColorHex) } }
     @Published var glowKimiColorHex: String { didSet { persistGlow(glowKimiColorHex, PrefKey.glowKimiColorHex) } }
@@ -285,7 +296,6 @@ final class SettingsStore: ObservableObject {
         case .codex: return glowCodexColorHex
         case .kimi: return glowKimiColorHex
         case .grok: return glowGrokColorHex
-        default: return "#FFFFFF"
         }
     }
     /// 设置页取色器写回（与上面的读一一对应）
@@ -295,7 +305,6 @@ final class SettingsStore: ObservableObject {
         case .codex: glowCodexColorHex = hex
         case .kimi: glowKimiColorHex = hex
         case .grok: glowGrokColorHex = hex
-        default: break
         }
     }
     @Published var glowBreathPeriod: Double { didSet { persistGlow(glowBreathPeriod, PrefKey.glowBreathPeriod) } }
@@ -331,6 +340,7 @@ final class SettingsStore: ObservableObject {
         leftSlot = NotchSlot(rawValue: UserDefaults.standard.string(forKey: PrefKey.notchLeftSlot) ?? "") ?? .memory
         rightSlot = NotchSlot(rawValue: UserDefaults.standard.string(forKey: PrefKey.notchRightSlot) ?? "") ?? .weather
         glowEnabled = UserDefaults.standard.bool(forKey: PrefKey.glowEnabled)
+        agentWaitNoticeEnabled = UserDefaults.standard.bool(forKey: PrefKey.agentWaitNoticeEnabled)
         glowClaudeColorHex = UserDefaults.standard.string(forKey: PrefKey.glowClaudeColorHex) ?? PrefDefault.glowClaudeColor
         glowCodexColorHex = UserDefaults.standard.string(forKey: PrefKey.glowCodexColorHex) ?? PrefDefault.glowCodexColor
         glowKimiColorHex = UserDefaults.standard.string(forKey: PrefKey.glowKimiColorHex) ?? PrefDefault.glowKimiColor
@@ -346,6 +356,7 @@ final class SettingsStore: ObservableObject {
         translateEngine = UserDefaults.standard.string(forKey: PrefKey.translateEngine)
             ?? (SystemTranslator.isSupported ? "system" : "ai")
         translatePrompt = UserDefaults.standard.string(forKey: PrefKey.translatePrompt) ?? Self.defaultTranslatePrompt
+        translateThinking = UserDefaults.standard.object(forKey: PrefKey.translateThinking) as? Bool ?? true
         // Agent 勾选：有存值用存值；首启/升级则本机检测一次，检测到的默认全勾
         // （升级无感，大梁老师定）——目录 stat 检查毫秒级，不会拖慢启动
         let detected = Set(AgentProbe.detect().filter(\.installed).map(\.kind))

@@ -47,6 +47,8 @@ enum PrefKey {
     static let glowBreathPeriod = "glowBreathPeriod"
     static let glowIntensity = "glowIntensity"
     static let glowThickness = "glowThickness"
+    /// Agent 跑到一半弹框等你拍板时，刘海弹卡提醒（与完成提醒是两件事）
+    static let agentWaitNoticeEnabled = "agentWaitNoticeEnabled"
 
     // MARK: - 截图翻译
     static let translateTargetLang = "translateTargetLang"
@@ -56,10 +58,12 @@ enum PrefKey {
     static let translateParallel = "translateParallel"
     static let translateEngine = "translateEngine"
     static let translatePrompt = "translatePrompt"
+    static let translateThinking = "translateThinking"
 
     // MARK: - AI 闪问（ChatStore 拥有，翻译「复用闪问接口」时也要读）
     static let chatBaseURL = "chatBaseURL"
     static let chatModel = "chatModel"
+    static let chatThinkingEnabled = "chatThinkingEnabled"
 }
 
 /// 有默认值的设置项：默认值在此定义一次。
@@ -88,6 +92,7 @@ enum PrefDefault {
             PrefKey.clipboardEnabled: true,
             PrefKey.clipboardLimit: 200,
             PrefKey.glowEnabled: true,
+            PrefKey.agentWaitNoticeEnabled: true,
             PrefKey.glowClaudeColorHex: glowClaudeColor,
             PrefKey.glowCodexColorHex: glowCodexColor,
             PrefKey.glowKimiColorHex: glowKimiColor,

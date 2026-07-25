@@ -66,7 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         env = AppEnvironment(
             launcher: launcher, clipboard: clipboard, snippets: snippets,
             chat: ChatStore(), usage: UsageStore(), agentSessions: AgentSessionsStore(),
-            agentActivity: AgentActivityStore(),
+            agentActivity: AgentActivityStore(), agentWait: AgentWaitStore(),
             quickActions: QuickActionsStore(), settings: SettingsStore(),
             memory: MemoryStore(), weather: WeatherStore())
         // 对齐核查：离屏渲染展开面板四页 PNG 后退出（-snapshotPanel）。同样须用正式签名实例跑
@@ -124,6 +124,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         // 清除早期 hooks.json 接入残留的「无 host」pronotch 孤儿（与接入与否无关，幂等）
         GlowHookInstaller.cleanCodexHooksOrphan()
+        // 上次退出时还挂在卡上的拍板请求：卡的状态只在内存里，重启后没人来答了，
+        // 而脚本认进程名、看见新进程会继续等下去。开机就放它们回终端问（详见 releaseOrphans）
+        Task.detached(priority: .utility) {
+            let released = AgentPermissionBroker().releaseOrphans()
+            if released > 0 {
+                AppLog.glow.info("已放回终端询问的残留拍板请求：\(released, privacy: .public) 条")
+            }
+        }
 
         // 注：曾在此预热系统翻译（翻个 "Hi" 焐热 session），但未装目标语言包时预热会触发系统
         // 「下载语言包」弹框、出现在屏幕左下角，用户没主动翻译却被打扰。已移除——首次截图翻译
@@ -167,8 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 guard let self, let img else { return }
                 self.env.chat.attachScreenshot(img)
                 if let wc = self.windowControllers.first {
-                    wc.viewModel.activeTab = .chat
-                    wc.viewModel.expandProgrammatically()
+                    wc.viewModel.expandProgrammatically(switchingTo: .chat)
                 }
                 // 展开动画落定、面板成为 key 后再补一次聚焦，保证光标真正落进输入框
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
@@ -202,7 +209,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // done：这一回合真的结束了 —— 点亮光晕，并把该会话标回空闲
         // busy：用户刚提交提问，回合开工 —— 只记状态给刘海槽位用，不点光晕
         //（开工就闪一下会变成每次提问都打扰，那正是「完成提醒」要避免的）
-        guard let action = url.host, action == "done" || action == "busy" else { return }
+        // waiting：回合还没结束，但它弹了个框在等你拍板 —— 刘海弹一张提醒卡
+        // permission：它要授权了，而且这次能收我们的答复 —— 把真实选项摆到卡上当场拍板
+        guard let action = url.host,
+              action == "done" || action == "busy" || action == "waiting"
+                || action == "permission" else { return }
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
         // 认证优先：这条 URL 谁都能调（本机任意进程、任意网页里的一个链接），
         // 伪造的回调不仅能乱点光晕，还能往会话表里塞宿主映射、把用户点卡片时引向别的 App。
@@ -224,6 +235,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // source 参数即 AgentKind 的 rawValue（claude/codex/kimi/grok），支持光晕的家统一走这一条路
         guard let kind = source.flatMap(AgentKind.init(rawValue:)), kind.supportsGlow else { return }
 
+        // 等你拍板：回合没结束，不动槽位状态（它还在「工作中」，只是被你挡住了），
+        // 也不点光晕（那是完成提醒的语言），只弹一张卡
+        if action == "waiting" {
+            handleWaitingCallback(kind, items: items, host: host, session: session)
+            return
+        }
+        if action == "permission" {
+            handlePermissionCallback(kind, items: items, host: host)
+            return
+        }
+
         // 开工信号到此为止：只更新槽位要的活动状态，不碰光晕也不动会话表
         guard action == "done" else {
             env?.agentActivity.markBusy(kind, session: session)
@@ -239,6 +261,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             : env?.agentSessions.knownHost(for: session, source: kind)
         glowController?.notifyCompletion(kind, host: effectiveHost)
         env?.agentSessions.markTurnEnded(session: session, source: kind, host: host)
+    }
+
+    /// 「Agent 弹框等你拍板」回调：过滤掉不值得打扰的通知类型，再交给刘海弹卡。
+    ///
+    /// 三道闸都要过：这家仍被勾选（钩子已卸的残留信号不认）、用户没关这个提醒、
+    /// 通知类型确实是「在等你做决定」（`AgentWaitPolicy`）
+    private func handleWaitingCallback(_ kind: AgentKind, items: [URLQueryItem]?,
+                                       host: String?, session: String) {
+        guard let env, kind.supportsWaitNotice, GlowHookInstaller.isInstalled(kind),
+              env.settings.agentWaitNoticeEnabled else { return }
+        let type = items?.first(where: { $0.name == "type" })?.value ?? ""
+        guard AgentWaitPolicy.shouldNotify(type: type) else {
+            AppLog.app.debug("等你拍板：忽略类型 \(type, privacy: .public)")
+            return
+        }
+        // host 抓空时复用该会话之前抓对过的宿主（同 done 分支的理由），否则点卡跳不过去
+        let effectiveHost = (host?.isEmpty == false) ? host
+            : env.agentSessions.knownHost(for: session, source: kind)
+        let project = items?.first(where: { $0.name == "project" })?.value ?? ""
+        env.agentWait.present(
+            AgentWaitNotice(source: kind, session: session, host: effectiveHost,
+                            project: AgentWaitNotice.decodeProject(project)),
+            frontmost: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+            hostWindowVisible: AgentHostVisibility.ownsTopWindow(host: effectiveHost))
+        AppLog.app.debug("等你拍板：\(kind.rawValue, privacy: .public) 类型 \(type, privacy: .public)")
+    }
+
+    /// 「在刘海上直接拍板」回调：把 hook 写下的请求读出来摆到卡上。
+    ///
+    /// 与 waiting 最大的不同是**这条链路不能沉默**：终端那头正卡在钩子里等我们的答复，
+    /// 任何一条不弹卡的分支都必须写一份「不作决策」放它走，否则那一轮就干等到钩子超时。
+    /// 所以每个 return 之前都有一次 release
+    private func handlePermissionCallback(_ kind: AgentKind, items: [URLQueryItem]?, host: String?) {
+        let requestID = items?.first(where: { $0.name == "req" })?.value ?? ""
+        let broker = AgentPermissionBroker()
+        guard let request = broker.take(id: requestID) else {
+            // 请求文件读不出来（被清过、写坏了、id 不合法）：这里连该问什么都不知道，
+            // 放它回终端问是唯一诚实的做法
+            broker.release(id: requestID)
+            AppLog.app.error("拍板请求读不出来，已放回终端询问")
+            return
+        }
+        guard let env, kind.supportsPermissionCard, GlowHookInstaller.isInstalled(kind),
+              env.settings.agentWaitNoticeEnabled else {
+            broker.answer(request, .terminal)
+            return
+        }
+        // host 抓空时复用该会话之前抓对过的宿主（同 done 分支的理由），否则「打开终端」跳不过去
+        let effectiveHost = (host?.isEmpty == false) ? host
+            : env.agentSessions.knownHost(for: request.session, source: kind)
+        env.agentWait.present(
+            AgentWaitNotice(source: kind, session: request.session, host: effectiveHost,
+                            project: request.project, request: request),
+            frontmost: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
+            hostWindowVisible: AgentHostVisibility.ownsTopWindow(host: effectiveHost))
+        // 只记工具名：详情里躺着要跑的命令和要写的路径，日志是永久明文
+        AppLog.app.debug("拍板请求：\(kind.rawValue, privacy: .public) 工具 \(request.tool, privacy: .public)")
     }
 
     /// 应用更名（NotchHub → ProNotch，bundle id 一并变更）的一次性数据搬家：
@@ -312,8 +391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             vm.collapseNow()
             return
         }
-        vm.activeTab = .chat
-        vm.expandProgrammatically()
+        vm.expandProgrammatically(switchingTo: .chat)
         // 展开动画落定、面板成为 key 后聚焦输入框，直接打字
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             self?.env.chat.focusInputTick += 1
@@ -383,7 +461,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         editMenu.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = editMenu
         mainMenu.addItem(editItem)
+
+        // ⌘W 同理：没有主菜单就没有这个快捷键，设置窗只能靠点关闭按钮
+        let windowItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "窗口")
+        let close = NSMenuItem(title: "关闭", action: #selector(closeFrontWindow), keyEquivalent: "w")
+        close.target = self
+        windowMenu.addItem(close)
+        windowItem.submenu = windowMenu
+        mainMenu.addItem(windowItem)
         NSApp.mainMenu = mainMenu
+    }
+
+    /// ⌘W：关掉当前窗口。不直接挂 performClose: 是因为刘海面板不可关，
+    /// 快捷键落到它身上会「哔」一声——在刘海里打字时按 ⌘W 就中招了。
+    /// 只对真能关的窗口（设置、关于）动手，其余静默忽略
+    @objc private func closeFrontWindow() {
+        guard let window = NSApp.keyWindow, window.styleMask.contains(.closable) else { return }
+        window.performClose(nil)
     }
 
     /// 菜单栏图标：自绘「屏幕轮廓 + 顶部实心刘海」，模板图自动适配深浅菜单栏

@@ -179,6 +179,18 @@ final class HookCallbackAuthenticationTests: XCTestCase {
         }
     }
 
+    /// 等你拍板那条回调同样会被应用侧当真（弹卡、点它就跳去某个 App），
+    /// 不带令牌就等于给网页留了一个「让刘海弹卡并把你导去指定 App」的口子
+    func test等你拍板脚本的URL也带令牌() throws {
+        try prepareAgentHomes()
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))
+        let token = try XCTUnwrap(GlowHookToken.current(paths))
+
+        let text = read(paths.waitScript)
+        XCTAssertTrue(text.contains("token=\(token)"), "等你拍板脚本没带令牌")
+        XCTAssertTrue(text.contains("pronotch://waiting?source="))
+    }
+
     func test脚本里的令牌与文件里的一致() throws {
         try prepareAgentHomes()
         XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))

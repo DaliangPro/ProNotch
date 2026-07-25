@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 应用级数据层：十一个 Store 在启动时一次建齐、全程存活。
+/// 应用级数据层：十二个 Store 在启动时一次建齐、全程存活。
 ///
 /// 它们之所以不挂在刘海窗口上，是因为换屏（接显示器、合盖）要重建窗口，
 /// 而对话记录、剪贴板监听这些状态不能跟着窗口一起没。既然它们总是同进同出，
@@ -17,6 +17,7 @@ struct AppEnvironment {
     let usage: UsageStore
     let agentSessions: AgentSessionsStore
     let agentActivity: AgentActivityStore
+    let agentWait: AgentWaitStore
     let quickActions: QuickActionsStore
     let settings: SettingsStore
     let memory: MemoryStore
@@ -36,6 +37,7 @@ extension View {
             .environmentObject(env.usage)
             .environmentObject(env.agentSessions)
             .environmentObject(env.agentActivity)
+            .environmentObject(env.agentWait)
             .environmentObject(env.memory)
             .environmentObject(env.weather)
     }

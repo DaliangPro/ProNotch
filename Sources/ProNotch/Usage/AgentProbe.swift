@@ -81,6 +81,40 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
     /// Kimi config.toml [[hooks]] Stop 事件 / Grok hooks 目录独立 JSON（Stop 事件）
     var supportsGlow: Bool { true }
 
+    /// 是否支持「等你拍板」提醒（跑到一半弹框等你选时提示一下）。
+    ///
+    /// 这个能力取决于上游给不给信号，实测扫本机二进制得到：
+    /// - Claude Code：`Notification` 钩子，带 `notification_type` 区分授权框 / 选项框 / 空闲
+    /// - Kimi Code：二进制里同样有 `Notification` 事件，与 Claude 同构
+    /// - Codex：notify 只有 `agent-turn-complete`，hooks 只有 start/stop —— 没有中途信号
+    /// - Grok CLI：只扫到 `PreToolUse` —— 同样没有
+    ///
+    /// 不支持的家界面上不显示、不假装（与 supportsQuota 一个口径）
+    var supportsWaitNotice: Bool {
+        switch self {
+        case .claude, .kimi: return true
+        case .codex, .grok: return false
+        }
+    }
+
+    /// 是否支持「在刘海卡上直接拍板」（不只是提醒，而是把授权选项摆上来当场答复）。
+    ///
+    /// 比 `supportsWaitNotice` 严一档：提醒只要上游肯发信号，拍板还要求上游肯**收答复**。
+    /// 实测扫本机二进制：
+    /// - Claude Code：`PermissionRequest` 事件在终端弹框之前触发，收
+    ///   `hookSpecificOutput.decision = {behavior:"allow", updatedPermissions?} | {behavior:"deny"}`；
+    ///   不答则落回终端正常弹框
+    /// - Kimi Code：有同名事件，但走的是 `fireAndForgetTrigger` —— 发完就走，压根不等答复
+    /// - Codex / Grok：没有这个事件
+    ///
+    /// 只有这一家能拍板，其余家的提醒卡退化成「只读 + 打开终端」
+    var supportsPermissionCard: Bool {
+        switch self {
+        case .claude: return true
+        case .kimi, .codex, .grok: return false
+        }
+    }
+
     /// 对应桌面 App 的 bundle id（光晕「切到前台就熄灭」兜底识别用）；
     /// 无桌面版的家为 nil，宿主识别完全依赖 hook 的进程链探测
     var appBundleID: String? {
