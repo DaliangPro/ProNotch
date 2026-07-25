@@ -90,6 +90,14 @@ final class ChatStore: ObservableObject {
     @Published var webSearchEnabled: Bool {
         didSet { env.defaults.set(webSearchEnabled, forKey: "chatWebSearchEnabled") }
     }
+    /// 深度思考开关（切换即持久化）。默认开＝什么都不发、随服务端默认走；
+    /// 关掉才在请求体里加 thinking:{type:disabled}——DeepSeek v4 这类混合模型闲聊时不必先想一轮
+    @Published var thinkingEnabled: Bool {
+        didSet { env.defaults.set(thinkingEnabled, forKey: PrefKey.chatThinkingEnabled) }
+    }
+    /// 温和提醒（非报错）：如「模型不支持关闭深度思考，已按开启处理」。
+    /// 与 errorText 分开——它不是失败，回复照常出，不该染成红字
+    @Published var noticeText: String?
     /// 搜索引擎选择（duckduckgo / tavily / brave）与各自的 Key
     @Published private(set) var searchEngine: String
     @Published var draftSearchEngine: String
@@ -146,7 +154,8 @@ final class ChatStore: ObservableObject {
         }
         return ChatRequestConfig(providerID: currentProviderID, baseURL: baseURL,
                                  apiKey: apiKey, model: model,
-                                 searchEngine: engine, searchKey: key)
+                                 searchEngine: engine, searchKey: key,
+                                 thinking: thinkingEnabled)
     }
 
     /// 异步结果回来时是否还该采纳：Provider 没换人、配置没改过
@@ -184,6 +193,8 @@ final class ChatStore: ObservableObject {
         searchEngine = savedEngine
         draftSearchEngine = savedEngine
         webSearchEnabled = defaults.bool(forKey: "chatWebSearchEnabled")
+        // 没存过＝开（与服务端默认一致），不能用 bool(forKey:) —— 那样老用户一升级就被静默关掉
+        thinkingEnabled = defaults.object(forKey: PrefKey.chatThinkingEnabled) as? Bool ?? true
         // 模型列表持久化：右上角切换器不用每次先点「获取模型」
         availableModels = defaults.stringArray(forKey: "chatAvailableModels") ?? []
         customModels = defaults.stringArray(forKey: "chatCustomModels") ?? []
@@ -690,6 +701,7 @@ final class ChatStore: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !isStreaming, isConfigured else { return }
         errorText = nil
+        noticeText = nil
         let attachment = draftAttachment
         draftAttachment = nil
         ensureCurrentConversation()
@@ -866,12 +878,22 @@ final class ChatStore: ObservableObject {
         request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": config.model,
-            "messages": payload,
-            "stream": false,
-        ])
-        let (data, response) = try await env.transport.data(for: request)
+        let disable = ThinkingSupport.shared.shouldSendDisabled(
+            thinkingOn: config.thinking, baseURL: config.baseURL, model: config.model)
+        request.httpBody = try JSONSerialization.data(
+            withJSONObject: Self.requestBody(payload, config: config, stream: false, disableThinking: disable))
+        var (data, response) = try await env.transport.data(for: request)
+        // 模型不认 thinking 字段：摘掉重发。这是轻量内部任务（查询改写），
+        // 不弹提醒——正式对话那一路会说，不必重复打扰
+        if disable, let http = response as? HTTPURLResponse, (400...499).contains(http.statusCode) {
+            request.httpBody = try JSONSerialization.data(
+                withJSONObject: Self.requestBody(payload, config: config, stream: false, disableThinking: false))
+            let retry = try await env.transport.data(for: request)
+            if let h = retry.1 as? HTTPURLResponse, h.statusCode == 200 {
+                ThinkingSupport.shared.markUnsupported(baseURL: config.baseURL, model: config.model)
+                (data, response) = retry
+            }
+        }
         if let http = response as? HTTPURLResponse, http.statusCode != 200 {
             let detail = String(data: data, encoding: .utf8) ?? ""
             throw NSError(domain: "ProNotch", code: http.statusCode,
@@ -922,6 +944,15 @@ final class ChatStore: ObservableObject {
 
     // MARK: - 私有
 
+    /// 对话请求体。`thinking` 只在「用户关了开关 且 该模型没被记为不支持」时才写进去——
+    /// 开着＝不写这个字段、随服务端默认走，别家接口就不会因为一个陌生键平白 4xx。internal 供测试
+    static func requestBody<M>(_ messages: [M], config: ChatRequestConfig,
+                               stream: Bool, disableThinking: Bool) -> [String: Any] {
+        var body: [String: Any] = ["model": config.model, "messages": messages, "stream": stream]
+        if disableThinking { body["thinking"] = ThinkingSupport.disabledField }
+        return body
+    }
+
     private func stream(payload: [[String: Any]], config: ChatRequestConfig) async {
         defer {
             isStreaming = false
@@ -934,13 +965,12 @@ final class ChatStore: ObservableObject {
             request.timeoutInterval = 120
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
-            request.httpBody = try JSONSerialization.data(withJSONObject: [
-                "model": config.model,
-                "messages": payload,
-                "stream": true,
-            ])
+            let disable = ThinkingSupport.shared.shouldSendDisabled(
+                thinkingOn: config.thinking, baseURL: config.baseURL, model: config.model)
+            request.httpBody = try JSONSerialization.data(
+                withJSONObject: Self.requestBody(payload, config: config, stream: true, disableThinking: disable))
 
-            let (lines, response) = try await env.transport.stream(for: request)
+            var (lines, response) = try await env.transport.stream(for: request)
             if let http = response as? HTTPURLResponse, http.statusCode != 200 {
                 // 错误正文按行收，够拼错误信息即止（原先是收 4096 字节，同一条 JSON 错误的呈现一致）
                 var detail = ""
@@ -948,9 +978,26 @@ final class ChatStore: ObservableObject {
                     detail += line
                     if detail.count > 4096 { break }
                 }
-                throw NSError(domain: "ProNotch", code: http.statusCode,
-                              userInfo: [NSLocalizedDescriptionKey:
-                                  "HTTP \(http.statusCode) \(detail.prefix(200))"])
+                // 用户关了深度思考、模型却不认这个字段：摘掉重发一次。
+                // 这不是失败，别把用户吓成接口挂了——重发成功就只留一句提醒
+                var recovered = false
+                if disable, (400...499).contains(http.statusCode) {
+                    request.httpBody = try JSONSerialization.data(
+                        withJSONObject: Self.requestBody(payload, config: config, stream: true, disableThinking: false))
+                    let retry = try await env.transport.stream(for: request)
+                    if let h = retry.1 as? HTTPURLResponse, h.statusCode == 200 {
+                        ThinkingSupport.shared.markUnsupported(baseURL: config.baseURL, model: config.model)
+                        noticeText = ThinkingSupport.notice
+                        AppLog.chat.info("模型不支持关闭深度思考，已按开启重发")
+                        (lines, response) = retry
+                        recovered = true
+                    }
+                }
+                if !recovered {
+                    throw NSError(domain: "ProNotch", code: http.statusCode,
+                                  userInfo: [NSLocalizedDescriptionKey:
+                                      "HTTP \(http.statusCode) \(detail.prefix(200))"])
+                }
             }
 
             for try await line in lines {

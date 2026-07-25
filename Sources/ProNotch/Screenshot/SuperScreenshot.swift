@@ -41,6 +41,7 @@ final class SuperScreenshotController {
             return (.init(baseURL: c.baseURL, apiKey: c.apiKey, model: c.model,
                           parallel: s.translateParallel,
                           useSystemEngine: s.translateEngine == "system",
+                          thinking: s.translateThinking,
                           keyPending: c.keyPending),
                     s.translateTargetLang, s.translatePrompt)
         }

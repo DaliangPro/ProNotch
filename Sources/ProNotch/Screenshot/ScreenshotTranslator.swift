@@ -6,6 +6,8 @@ enum ScreenshotTranslator {
         var baseURL: String; var apiKey: String; var model: String
         var parallel: Bool = true
         var useSystemEngine: Bool = false   // true=优先系统翻译（失败降级到本 AI 配置）
+        /// 深度思考（DeepSeek 等混合模型）。true=不干预，随服务端默认；false=显式关掉
+        var thinking: Bool = true
         /// 端点和模型都配好了、只差 Key 还没落钥匙串。用来区分"没配"和"还没就绪"两种提示
         var keyPending: Bool = false
     }
@@ -15,6 +17,7 @@ enum ScreenshotTranslator {
     /// （渐进渲染用）；疑似未翻译只重试该块；失败块以空串占位（渲染时跳过=保留原文画面）。
     /// 仅当所有块都失败才抛错。
     static func translate(_ texts: [String], to lang: String, prompt: String, config: Config,
+                          onNotice: (@Sendable (String) -> Void)? = nil,
                           onPartial: (@Sendable (_ range: Range<Int>, _ chunk: [String], _ done: Int, _ total: Int) -> Void)? = nil) async throws -> [String] {
         // 提示词里的 {lang} 占位替换为目标语言；用户没留 {lang} 时按原样使用
         let raw = prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -25,7 +28,7 @@ enum ScreenshotTranslator {
         // 没机会介入（大梁老师实测慢的一环）；120 让零星片段也能切 3~4 块并发，先译完先上屏
         let ranges = config.parallel ? chunkRanges(texts, budget: 120) : [0..<texts.count]
         guard ranges.count > 1 else {
-            let out = try await translateChunk(texts, to: lang, system: system, config: config)
+            let out = try await translateChunk(texts, to: lang, system: system, config: config, onNotice: onNotice)
             onPartial?(0..<texts.count, out, 1, 1)
             return out
         }
@@ -38,7 +41,7 @@ enum ScreenshotTranslator {
                 guard next < ranges.count else { return }
                 let r = ranges[next]; next += 1
                 group.addTask {
-                    do { return (r, .success(try await translateChunk(Array(texts[r]), to: lang, system: system, config: config))) }
+                    do { return (r, .success(try await translateChunk(Array(texts[r]), to: lang, system: system, config: config, onNotice: onNotice))) }
                     catch { return (r, .failure(error)) }
                 }
             }
@@ -64,8 +67,9 @@ enum ScreenshotTranslator {
     /// 单块翻译：首轮整块请求 → 逐条核对，把「没回来的 / 原样回传但明显该翻的」单独小批补翻一次。
     /// 旧逻辑「过半未翻才整块重试」兜不住零散漏翻（模型只漏两三条时不达阈值，漏了就漏了）——
     /// 逐条核对后哪怕只漏一条也会补翻；补翻仍原样回传的视为专名/代号，保留不再纠缠。
-    private static func translateChunk(_ texts: [String], to lang: String, system: String, config: Config) async throws -> [String] {
-        var out = try await request(texts, system: system, temperature: 0.2, config: config)
+    private static func translateChunk(_ texts: [String], to lang: String, system: String, config: Config,
+                                       onNotice: (@Sendable (String) -> Void)?) async throws -> [String] {
+        var out = try await request(texts, system: system, temperature: 0.2, config: config, onNotice: onNotice)
         // 条数对不上（长输出被截断/丢尾条）：多则裁、少则空串占位，缺的交给下面按条补翻
         if out.count > texts.count { out = Array(out.prefix(texts.count)) }
         while out.count < texts.count { out.append("") }
@@ -80,7 +84,7 @@ enum ScreenshotTranslator {
         let harder = system + "\n\nThe previous attempt returned these strings unchanged or dropped them, which is WRONG. "
             + "Translate every remaining non-\(lang) word or phrase into \(lang) now, "
             + "but keep product/brand names, code identifiers, function names, acronyms, code values with digits, URLs and numbers unchanged."
-        if let fix = try? await request(suspects.map { texts[$0] }, system: harder, temperature: 0.5, config: config),
+        if let fix = try? await request(suspects.map { texts[$0] }, system: harder, temperature: 0.5, config: config, onNotice: onNotice),
            fix.count == suspects.count {
             for (k, i) in suspects.enumerated() {
                 let f = fix[k].trimmingCharacters(in: .whitespacesAndNewlines)
@@ -138,7 +142,8 @@ enum ScreenshotTranslator {
     }
 
     /// 单次翻译请求：JSON 数组进出，去掉可能的 ``` 包裹，解析成字符串数组
-    private static func request(_ texts: [String], system: String, temperature: Double, config: Config) async throws -> [String] {
+    private static func request(_ texts: [String], system: String, temperature: Double, config: Config,
+                                onNotice: (@Sendable (String) -> Void)?) async throws -> [String] {
         let url = try completionsURL(config.baseURL)
         let inputJSON = String(data: try JSONSerialization.data(withJSONObject: texts), encoding: .utf8) ?? "[]"
         var req = URLRequest(url: url)
@@ -146,12 +151,30 @@ enum ScreenshotTranslator {
         req.timeoutInterval = 30
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
-        let body: [String: Any] = ["model": config.model, "temperature": temperature,
-            "messages": [["role": "system", "content": system], ["role": "user", "content": inputJSON]]]
-        req.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let disable = ThinkingSupport.shared.shouldSendDisabled(
+            thinkingOn: config.thinking, baseURL: config.baseURL, model: config.model)
+        func body(_ off: Bool) throws -> Data {
+            try JSONSerialization.data(withJSONObject:
+                requestBody(inputJSON, system: system, temperature: temperature,
+                            model: config.model, disableThinking: off))
+        }
+        req.httpBody = try body(disable)
+        var (data, resp) = try await URLSession.shared.data(for: req)
+        // 模型不认 `thinking` 字段：摘掉重发一次，成功就只当提醒，不报错惊扰用户。
+        // 只有重发确实成功才记账——Key 失效、余额不足同样是 4xx，不能一律甩锅给深度思考
+        if disable, let http = resp as? HTTPURLResponse, (400...499).contains(http.statusCode) {
+            req.httpBody = try body(false)
+            let retry = try await URLSession.shared.data(for: req)
+            if let h = retry.1 as? HTTPURLResponse, (200...299).contains(h.statusCode) {
+                ThinkingSupport.shared.markUnsupported(baseURL: config.baseURL, model: config.model)
+                onNotice?(ThinkingSupport.notice)
+                (data, resp) = retry
+            }
+        }
         if let http = resp as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw err("接口返回 \(http.statusCode)")
+            // 带上接口自己的错误说明：光一个「接口返回 400」用户无从下手，
+            // 而模型名写错、余额不足、Key 失效全都是 4xx，差别只在这句话里
+            throw err("接口返回 \(http.statusCode)\(apiMessage(data).map { "：\($0)" } ?? "")")
         }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
@@ -179,6 +202,18 @@ enum ScreenshotTranslator {
         }
     }
 
+    /// 请求体。`thinking` 只在用户显式关掉深度思考时才出现——
+    /// 开着＝不写这个字段、随服务端默认走，这样 OpenAI 这类严格校验未知字段的接口
+    /// 不会因为我们多塞一个它不认识的键而平白 400（DeepSeek 官方取值：enabled / disabled，
+    /// 默认 enabled）。internal 供测试
+    static func requestBody(_ inputJSON: String, system: String, temperature: Double,
+                            model: String, disableThinking: Bool) -> [String: Any] {
+        var body: [String: Any] = ["model": model, "temperature": temperature,
+            "messages": [["role": "system", "content": system], ["role": "user", "content": inputJSON]]]
+        if disableThinking { body["thinking"] = ThinkingSupport.disabledField }
+        return body
+    }
+
     /// 端点规范化 + 安全策略（与 AI 闪问同一套判定，见 EndpointPolicy）。internal 供测试
     static func completionsURL(_ baseURL: String) throws -> URL {
         var raw = baseURL.trimmingCharacters(in: .whitespaces)
@@ -189,5 +224,19 @@ enum ScreenshotTranslator {
         try EndpointPolicy.validateUserAPIEndpoint(url)
         return url
     }
+    /// 从错误响应里抠出可读说明：OpenAI 兼容接口是 `{"error":{"message":…}}`，
+    /// 少数实现直接给 `{"message":…}` 或纯文本。截断到 120 字，别把整篇 HTML 报错塞进气泡（internal 供测试）
+    static func apiMessage(_ data: Data) -> String? {
+        var text: String?
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let e = json["error"] as? [String: Any] { text = e["message"] as? String }
+            else if let m = json["message"] as? String { text = m }
+        }
+        if text == nil, let raw = String(data: data, encoding: .utf8) { text = raw }
+        guard var t = text?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty else { return nil }
+        if t.count > 120 { t = String(t.prefix(120)) + "…" }
+        return t
+    }
+
     private static func err(_ m: String) -> NSError { NSError(domain: "translate", code: 0, userInfo: [NSLocalizedDescriptionKey: m]) }
 }

@@ -106,6 +106,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var translatePartial: [String]?    // 渐进翻译累积（空串=该块未回，渲染跳过保留原文）
     private var showingOriginal = false        // 译图在手时，是否临时显示原文
     private var translating = false            // 翻译请求进行中（翻译按钮呈「按下」高亮态）
+    private var translateNotice: String?       // 本轮的温和提醒（如模型不支持关深度思考），译完后顶替气泡
     private var hintView: NSView?              // 「翻译中…」/错误 提示气泡
     private var hintLabel: NSTextField?        // 气泡内文字（原位更新进度，不重建视图）
     private var hintSpinning = false           // 气泡当前是否带转圈
@@ -2887,6 +2888,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         showToolbar(for: sel)
         let outSize = sel.size
         translatePartial = nil
+        translateNotice = nil
         Task {
             let blocks = Self.recognizeBlocks(cropped)
             if blocks.isEmpty { await MainActor.run { self.translateFailed("未识别到文字") }; return }
@@ -2923,6 +2925,11 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             do {
                 let trans = try await ScreenshotTranslator.translate(
                     uniqueList, to: lang, prompt: prompt, config: config,
+                    onNotice: { [weak self] msg in
+                        // 「模型不支持关深度思考」这类是提醒不是失败：翻译照常出结果，
+                        // 只在译完后用气泡说一句，别把用户吓成接口挂了
+                        Task { @MainActor in self?.translateNotice = msg }
+                    },
                     onPartial: { [weak self] range, chunk, done, total in
                         // 渐进渲染：哪个片段先译完先就地填回哪个，不等全部译完
                         Task { @MainActor in
@@ -2952,11 +2959,21 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
 
     private func translateDone(_ img: NSImage) {
-        removeHint()
         translating = false
         translatePartial = nil
         translatedOverride = img
         showingOriginal = false
+        // 有提醒就把「翻译中…」换成提醒晾一会儿（译文已在屏上），没有则直接收气泡
+        if let notice = translateNotice {
+            translateNotice = nil
+            AppLog.screenshot.info("截图翻译提醒: \(notice, privacy: .public)")
+            showHint(notice)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.8) { [weak self] in
+                self?.removeHint(); if let s = self?.selection { self?.showToolbar(for: s) }
+            }
+        } else {
+            removeHint()
+        }
         if let sel = selection { showToolbar(for: sel) }
         needsDisplay = true
     }
@@ -2973,8 +2990,12 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     }
 
     private func translateFailed(_ msg: String) {
+        // 气泡 2.8 秒就没了，原先又不落日志——用户只记得「翻译失败」，
+        // 到底是模型名过期、Key 失效还是超时，事后无从查起。错因入日志（非敏感，公开级）
+        AppLog.screenshot.error("截图翻译失败: \(msg, privacy: .public)")
         translating = false
         translatePartial = nil
+        translateNotice = nil
         translatedOverride = nil   // 全部失败：不留半成品译图
         showHint("翻译失败：\(msg)")
         if let sel = selection { showToolbar(for: sel) }   // 翻译按钮即刻熄灭

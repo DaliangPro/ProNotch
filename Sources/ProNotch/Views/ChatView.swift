@@ -219,6 +219,13 @@ struct ChatView: View {
                             .foregroundColor(.red.opacity(0.8))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    // 提醒不是报错（如模型不支持关深度思考）：回复照常出，用灰橙色说一句就够
+                    if let notice = store.noticeText {
+                        Text(notice)
+                            .font(.system(size: 10))
+                            .foregroundColor(.orange.opacity(0.75))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                     Color.clear.frame(height: 1).id("bottom")
                 }
                 .padding(.trailing, 2)
@@ -246,9 +253,22 @@ struct ChatView: View {
                     .foregroundColor(store.webSearchEnabled ? .cyan : .white.opacity(0.35))
             }
             .buttonStyle(.plain)
-            .help(store.webSearchEnabled
+            // 用自绘气泡而非 .help：刘海是非激活面板，系统 tooltip 在这儿根本不弹
+            .notchTip(store.webSearchEnabled
                 ? "联网搜索已开启：先搜索再回答（点击关闭）"
-                : "联网搜索已关闭（点击开启）")
+                : "联网搜索已关闭：只用模型自身知识（点击开启）", edge: .aboveLeading)
+            // 深度思考随手开关：DeepSeek v4 这类混合模型默认先想一轮，闲聊问答用不上，
+            // 关掉明显更快。跟地球图标同一排——都是「这一问怎么答」的即时选择
+            Button {
+                store.thinkingEnabled.toggle()
+            } label: {
+                ThinkingBubbleIcon()
+                    .foregroundColor(store.thinkingEnabled ? .cyan : .white.opacity(0.35))
+            }
+            .buttonStyle(.plain)
+            .notchTip(store.thinkingEnabled
+                ? "深度思考已开启：模型先推理再作答，更准也更慢（点击关闭）"
+                : "深度思考已关闭：直接作答，更快（点击开启）", edge: .aboveLeading)
             // 默认单行、随内容增长到最多 6 行：粘贴带换行的内容也能看全。
             // 回车发送，⌘回车换行（IM 习惯；系统自带的 ⌥回车也保留）
             if let data = store.draftAttachment, let img = NSImage(data: data) {
@@ -486,3 +506,22 @@ private struct MessageBubble: View {
     }
 }
 
+
+/// 深度思考图标：大梁老师提供的思考气泡原图（bundle 资源），
+/// 模板渲染跟随前景色（开＝青、关＝灰）
+private struct ThinkingBubbleIcon: View {
+    var body: some View {
+        if let img = NSImage(named: "TabIconThinking") {
+            Image(nsImage: img)
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                // 16 = 13.8 ÷ 0.86：本原件内容只占画布 86% 高，按这个比例反推
+                // 才与旁边 13pt 的地球实际等大（换原件要重算，别照抄数字）
+                .frame(width: 16, height: 16)
+        } else {
+            // swift run 裸二进制无 bundle 资源时兜底
+            Image(systemName: "brain").font(.system(size: 13))
+        }
+    }
+}

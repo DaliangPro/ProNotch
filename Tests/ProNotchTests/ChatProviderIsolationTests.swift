@@ -293,7 +293,7 @@ final class ChatProviderIsolationTests: XCTestCase {
     func test端点规范化() throws {
         let config = ChatRequestConfig(providerID: UUID(), baseURL: "https://x.com/v1/",
                                        apiKey: "k", model: "m",
-                                       searchEngine: .duckduckgo, searchKey: "")
+                                       searchEngine: .duckduckgo, searchKey: "", thinking: true)
         XCTAssertEqual(try config.chatCompletionsURL().absoluteString,
                        "https://x.com/v1/chat/completions")
         XCTAssertEqual(try ChatRequestConfig.modelsURL(baseURL: "https://x.com/v1/chat/completions")

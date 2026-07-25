@@ -15,6 +15,8 @@ struct ChatRequestConfig: Sendable, Equatable {
     let model: String
     let searchEngine: SearchEngine
     let searchKey: String
+    /// 深度思考。true=不干预、随服务端默认；false=请求体里显式发 thinking:{type:disabled}
+    let thinking: Bool
 
     var isConfigured: Bool { !baseURL.isEmpty && !apiKey.isEmpty && !model.isEmpty }
 

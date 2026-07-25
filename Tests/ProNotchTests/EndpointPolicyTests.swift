@@ -58,7 +58,7 @@ final class EndpointPolicyTests: XCTestCase {
     func test闪问端点生成_公网明文被拒绝() {
         let config = ChatRequestConfig(providerID: UUID(), baseURL: "http://example.com/v1",
                                        apiKey: "k", model: "m",
-                                       searchEngine: .duckduckgo, searchKey: "")
+                                       searchEngine: .duckduckgo, searchKey: "", thinking: true)
         XCTAssertThrowsError(try config.chatCompletionsURL())
         XCTAssertThrowsError(try ChatRequestConfig.modelsURL(baseURL: "http://example.com"))
         XCTAssertNoThrow(try ChatRequestConfig.modelsURL(baseURL: "http://localhost:11434"))

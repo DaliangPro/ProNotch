@@ -40,4 +40,40 @@ final class TranslatorLogicTests: XCTestCase {
         XCTAssertFalse(ScreenshotTranslator.isRetryWorthySentence("Settings"))
         XCTAssertFalse(ScreenshotTranslator.isRetryWorthySentence("已经是中文了"))
     }
+
+    /// 深度思考开关：开着不许往请求体里塞 thinking——OpenAI 这类严格校验未知字段的接口
+    /// 会因为一个多余的键直接 400，而绝大多数用户根本不用 DeepSeek
+    func test深度思考开关_只在关闭时写入请求体() {
+        let on = ScreenshotTranslator.requestBody("[\"Save\"]", system: "sys", temperature: 0.2,
+                                                  model: "deepseek-v4-flash", disableThinking: false)
+        XCTAssertNil(on["thinking"], "默认（开启深度思考）不该出现 thinking 字段")
+        XCTAssertEqual(on["model"] as? String, "deepseek-v4-flash")
+
+        let off = ScreenshotTranslator.requestBody("[\"Save\"]", system: "sys", temperature: 0.2,
+                                                   model: "deepseek-v4-flash", disableThinking: true)
+        XCTAssertEqual(off["thinking"] as? [String: String], ["type": "disabled"],
+                       "关闭时须按 DeepSeek 官方取值发 thinking:{type:disabled}")
+        // 关思考不该动其他字段
+        XCTAssertEqual(off["temperature"] as? Double, 0.2)
+        XCTAssertEqual((off["messages"] as? [[String: String]])?.count, 2)
+    }
+
+    /// 接口报错说明必须原样带给用户：模型名过期、Key 失效、余额不足全是 4xx，
+    /// 只报「接口返回 400」等于什么都没说（大梁老师实测 deepseek-chat 下线即撞此坑）
+    func test接口错误说明_从各种响应体里抠出来() {
+        let openAI = #"{"error":{"message":"The supported API model names are deepseek-v4-pro or deepseek-v4-flash, but you passed deepseek-chat.","type":"invalid_request_error"}}"#
+        XCTAssertEqual(ScreenshotTranslator.apiMessage(Data(openAI.utf8)),
+                       "The supported API model names are deepseek-v4-pro or deepseek-v4-flash, but you passed deepseek-chat.")
+        // 少数实现把说明放顶层
+        XCTAssertEqual(ScreenshotTranslator.apiMessage(Data(#"{"message":"Insufficient Balance"}"#.utf8)), "Insufficient Balance")
+        // 非 JSON 直接当纯文本
+        XCTAssertEqual(ScreenshotTranslator.apiMessage(Data("Bad Gateway".utf8)), "Bad Gateway")
+        // 空体不硬凑一句空话
+        XCTAssertNil(ScreenshotTranslator.apiMessage(Data()))
+        // 整篇 HTML 报错要截断，不能撑爆提示气泡
+        let long = String(repeating: "长", count: 400)
+        let cut = ScreenshotTranslator.apiMessage(Data(long.utf8))
+        XCTAssertEqual(cut?.count, 121)   // 120 字 + 省略号
+        XCTAssertTrue(cut?.hasSuffix("…") == true)
+    }
 }
