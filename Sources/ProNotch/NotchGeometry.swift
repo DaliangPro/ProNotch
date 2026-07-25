@@ -20,7 +20,7 @@ enum NotchGeometry {
     /// 后者是「当前有键盘焦点」的屏，会随鼠标点击在屏间跳，刘海会跟着漂移。
     /// 选了「仅副屏」却只剩一块屏时退回主屏：否则刘海整个消失，用户只会当成 App 坏了
     static func screens(for mode: NotchScreenMode) -> [NSScreen] {
-        pick(NSScreen.screens, mode: mode)
+        dedupeMirrored(pick(NSScreen.screens, mode: mode), frame: { $0.frame })
     }
 
     /// 纯筛选（可单测）：列表首项即主屏，与 NSScreen.screens 的约定一致
@@ -32,6 +32,20 @@ enum NotchGeometry {
         case .secondary:
             let rest = Array(all.dropFirst())
             return rest.isEmpty ? [primary] : rest
+        }
+    }
+
+    /// 去掉镜像重复：镜像显示时 `NSScreen.screens` 会返回多块 `frame` 完全相同的屏，
+    /// 逐块建刘海窗会在**同一像素位置叠一层**——右侧槽关闭、只留左侧内存环时，
+    /// 就表现为「两个内存环叠在一起」（大梁老师实测报的 bug）。同 frame 只留第一块：
+    /// 一处像素一个刘海窗。非镜像的多屏 frame 各不相同，不受影响。
+    nonisolated static func dedupeMirrored<T>(_ items: [T], frame: (T) -> CGRect) -> [T] {
+        var seen: [CGRect] = []
+        return items.filter { item in
+            let f = frame(item)
+            if seen.contains(f) { return false }
+            seen.append(f)
+            return true
         }
     }
 

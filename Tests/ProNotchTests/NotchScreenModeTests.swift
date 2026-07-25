@@ -34,4 +34,32 @@ final class NotchScreenModeTests: XCTestCase {
         XCTAssertEqual(NotchGeometry.pick([String](), mode: .all), [])
         XCTAssertEqual(NotchGeometry.pick([String](), mode: .secondary), [])
     }
+
+    // MARK: - 镜像去重（dedupeMirrored）
+
+    /// 镜像显示时 NSScreen.screens 返回多块 frame 相同的屏，逐块建窗会让刘海在同一像素叠一层
+    ///（右侧关闭只留内存环时表现为「两个内存环叠在一起」）。同 frame 只留第一块
+    func test镜像同frame只留一块() {
+        let a = CGRect(x: 0, y: 0, width: 1512, height: 982)
+        let mirrored = [("内建", a), ("镜像副本", a)]
+        let kept = NotchGeometry.dedupeMirrored(mirrored, frame: { $0.1 })
+        XCTAssertEqual(kept.map(\.0), ["内建"], "镜像重复的第二块该被去掉，避免刘海叠一层")
+    }
+
+    /// 非镜像的多屏 frame 各不相同，一块都不能少
+    func test扩展屏frame不同全保留() {
+        let builtin = CGRect(x: 0, y: 0, width: 1512, height: 982)
+        let external = CGRect(x: 1512, y: 0, width: 2560, height: 1440)
+        let extended = [("内建", builtin), ("外接", external)]
+        let kept = NotchGeometry.dedupeMirrored(extended, frame: { $0.1 })
+        XCTAssertEqual(kept.map(\.0), ["内建", "外接"], "扩展屏各自独立，不该被误去重")
+    }
+
+    func test去重保序且首块优先() {
+        let a = CGRect(x: 0, y: 0, width: 100, height: 100)
+        let b = CGRect(x: 100, y: 0, width: 100, height: 100)
+        let items = [("1", a), ("2", b), ("3", a), ("4", b)]
+        let kept = NotchGeometry.dedupeMirrored(items, frame: { $0.1 })
+        XCTAssertEqual(kept.map(\.0), ["1", "2"], "重复项按首次出现保留、顺序不变")
+    }
 }
