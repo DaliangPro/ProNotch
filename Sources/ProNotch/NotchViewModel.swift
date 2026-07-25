@@ -16,7 +16,9 @@ final class NotchViewModel: ObservableObject {
             case .chat: return "闪问"
             case .usage: return "额度"
             case .agent: return "Agent"
-            case .widgets: return "组件"
+            // 与设置侧栏同名（大梁老师定）：同一处功能在两处叫法要一致。
+            // 只是悬停气泡的文案，标签本身是纯图标（见 `TabButton`），不影响布局
+            case .widgets: return "功能组件"
             }
         }
 
