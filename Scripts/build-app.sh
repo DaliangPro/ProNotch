@@ -43,6 +43,11 @@ cp "$BIN" "$APP_DIR/Contents/MacOS/ProNotch"
 cp Resources/Info.plist "$APP_DIR/Contents/Info.plist"
 cp Resources/AppIcon.icns "$APP_DIR/Contents/Resources/AppIcon.icns"
 cp Resources/TabIconLauncher.png "$APP_DIR/Contents/Resources/TabIconLauncher.png"
+cp Resources/TabIconThinking.png "$APP_DIR/Contents/Resources/TabIconThinking.png"
+# 四态 Agent 精灵（大梁老师重绘的 PNG）：收起态槽位按名字 NSImage(named:) 取用。
+# 纯 SwiftPM 不打包资源，得在这里手工塞进 bundle，运行时才找得到
+cp Resources/claude-code-idle.png Resources/claude-code-working.png \
+   Resources/codex-idle.png Resources/codex-working.png "$APP_DIR/Contents/Resources/"
 # 优先用与正式安装版相同的固定证书：TCC 权限（屏幕录制等）绑定 bundle id + 签名，
 # 若 debug 构建以 ad-hoc 签名运行过，同 bundle id 换了签名会作废已授的录屏权限
 #（2026-07 实测踩坑）；无固定证书（他人机器）才回退 ad-hoc

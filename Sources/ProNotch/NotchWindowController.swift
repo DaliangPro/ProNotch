@@ -37,8 +37,10 @@ final class NotchWindowController {
             // 每块屏只检测自己屏的全屏（外接屏假刘海会遮挡全屏内容）
             return FullscreenDetector.hasFullscreenWindow(on: screen)
         }
-        // 两侧功能区开关随设置联动：影响收起态黑条宽度与悬停热区
+        // 两侧功能区开关随设置联动：只切换「有没有槽位」影响的悬停热区与黑条对称展宽。
+        // 单侧宽度恒为 `fixedSideWidth`，不随选哪个槽位/哪家 Agent 变（大梁老师定：刘海宽度恒定）
         viewModel.sideSlotsActive = settingsStore.sideSlotsActive
+        viewModel.sideSlotWidth = NotchSlot.fixedSideWidth
         slotObserver = NotificationCenter.default.addObserver(
             forName: .proNotchSlotSettingsChanged,
             object: nil, queue: .main) { [weak viewModel, weak settingsStore] _ in

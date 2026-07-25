@@ -4,87 +4,67 @@ import SwiftUI
 
 /// Clawd 槽位的素材完整性与尺寸边界。
 ///
-/// 素材是从官方精灵表 `claude.ai/clawd-frames/all-sprite.png` 逐像素解出来的原件，不是手画的——
-/// 网格一旦被改歪（少一列、多一行、错一格），肉眼在 28×19.7pt 上根本看不出来，只能靠断言钉住。
-/// 尺寸更要钉：刘海右侧槽位可用宽度只有 50pt，超了就是被裁掉半只 Clawd。
+/// 四态形象改用大梁老师重绘的 PNG（`Resources/claude-code-idle|working.png`），手绘字符网格已退役。
+/// 这里钉两件事：① 素材在位、贴身横向、fit 进显示框后能顶到内存环量级的高度（不再是过小的方画布）；
+/// ② 槽位内容塞得进**固定黑条侧宽**（不随选谁变）、与 Codex 等宽、指示灯不被圆角裁。
+///
+/// 素材直接按源文件路径读——xctest 没有 App bundle，`NSImage(named:)` 解析不到，只能读盘校验。
 @MainActor
 final class ClawdSlotViewTests: XCTestCase {
 
-    /// 右侧槽位 56pt 宽，但有 6pt 内边距贴向刘海，实际可用 50pt
-    private let usableWidth: CGFloat = 50
+    /// 定位项目根 `Resources/`：#filePath = …/Tests/ProNotchTests/本文件，往上三级到项目根
+    private var resourcesDir: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // ProNotchTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // 项目根
+            .appendingPathComponent("Resources")
+    }
+
+    /// 右槽实际可用宽 = 固定侧宽 − 摄像头侧内边距（侧宽恒为 `fixedSideWidth`，不随选谁变）
+    private var usableWidth: CGFloat { NotchSlot.fixedSideWidth - NotchSlot.leadingPad }
     /// 收起态刘海高度（14 寸 MBP 典型值）
     private let slotHeight: CGFloat = 38
 
-    private var allFrames: [(String, [String])] {
-        [("standing", ClawdSprite.standing)]
-            + ClawdSprite.walking.enumerated().map { ("walk\($0.offset)", $0.element) }
-    }
+    // MARK: - 素材
 
-    /// 五帧共用同一坐标系（弹跳靠网格内的留白表现），尺寸必须完全一致，
-    /// 否则切帧时整只会缩放，旁边的指示灯跟着横向跳
-    func test五帧网格尺寸一致() {
-        for (name, grid) in allFrames {
-            XCTAssertEqual(grid.count, ClawdSprite.rows, "\(name) 行数不对")
-            for (i, row) in grid.enumerated() {
-                XCTAssertEqual(row.count, ClawdSprite.cols,
-                               "\(name) 第 \(i) 行是 \(row.count) 列，应为 \(ClawdSprite.cols)")
-            }
+    /// 空闲/工作两张 PNG 必须都在、贴身横向（宽>高），且 fit 进显示框后渲染高度与内存环同量级。
+    /// 大梁老师实测：图标要跟左侧内存环（21pt）一样大。裁成正方画布会把横向身形上下夹扁到约 14pt，
+    /// 故改贴身横向 + 21pt 高框，实际渲染高度须 ≥ 18pt 才算「一样大」
+    func test四态素材齐全且填满槽高() throws {
+        for name in ["claude-code-idle", "claude-code-working"] {
+            let url = resourcesDir.appendingPathComponent(name + ".png")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "缺素材 \(name).png")
+            let img = try XCTUnwrap(NSImage(contentsOf: url), "\(name).png 读不出，可能损坏")
+            let rep = try XCTUnwrap(img.representations.first, "\(name).png 没有位图表示")
+            let w = CGFloat(rep.pixelsWide), h = CGFloat(rep.pixelsHigh)
+            XCTAssertGreaterThan(w, h, "\(name) 该是贴身横向（\(rep.pixelsWide)×\(rep.pixelsHigh)）")
+            // aspectRatio(.fit) 进 spriteWidth×spriteHeight 框后的实际渲染高度
+            let scale = min(AgentSlotMetrics.spriteWidth / w, AgentSlotMetrics.spriteHeight / h)
+            XCTAssertGreaterThanOrEqual(h * scale, 18,
+                                        "\(name) fit 后仅 \(h * scale)pt 高，比内存环 21pt 明显小")
         }
     }
 
-    /// 网格只认 . # o：混进别的字符会被 `ClawdCanvas` 当成主体画出来，多一块糊在身上
-    func test网格只含约定的三种字符() {
-        for (name, grid) in allFrames {
-            for row in grid {
-                XCTAssertTrue(row.allSatisfy { $0 == "." || $0 == "#" || $0 == "o" },
-                              "\(name) 混入了非法字符：\(row)")
-            }
-        }
+    // MARK: - 尺寸
+
+    /// 大梁老师的核心诉求：**选 Claude 与选 Codex，收起态刘海必须一样宽**。
+    /// 两家内容宽取同一个 `AgentSlotMetrics.contentWidth`，从根上等宽——侧宽固定、内容等宽，
+    /// 刘海就绝不会「选了 Claude 宽一些」
+    func test与Codex内容等宽() {
+        XCTAssertEqual(ClawdSlotView.contentWidth, CodexPetSlotView.contentWidth,
+                       "两家 Agent 内容宽不相等，选谁刘海会不一样宽")
+        XCTAssertEqual(ClawdSlotView.contentWidth, AgentSlotMetrics.contentWidth)
     }
 
-    /// 每帧都得留着两只眼睛。眼睛是这只唯一的第二个颜色，掉了就成一块纯色饼
-    func test每帧都是两只眼睛() {
-        for (name, grid) in allFrames {
-            guard let eyeRow = grid.first(where: { $0.contains("o") }) else {
-                return XCTFail("\(name) 一只眼睛都没有")
-            }
-            // 数横向游程：连续的 o 算一只
-            var runs = 0
-            var prev: Character = "."
-            for ch in eyeRow {
-                if ch == "o" && prev != "o" { runs += 1 }
-                prev = ch
-            }
-            XCTAssertEqual(runs, 2, "\(name) 眼睛数量是 \(runs)，应为 2")
-        }
-    }
-
-    /// 走路四帧必须两两不同：官方 20 帧里 0…3 是重复的静止帧，
-    /// 抽帧时下标写错（比如抽成 0…3）就会得到一个不动的「走路」动画
-    func test走路四帧互不相同() {
-        let frames = ClawdSprite.walking
-        for i in frames.indices {
-            for j in frames.indices where j > i {
-                XCTAssertNotEqual(frames[i], frames[j], "walk\(i) 与 walk\(j) 完全一样")
-            }
-        }
-    }
-
-    /// 空闲用站立、工作用走路，两态姿态得真不一样，否则黄灯亮了人还杵着
-    func test站立与走路是不同姿态() {
-        for (i, frame) in ClawdSprite.walking.enumerated() {
-            XCTAssertNotEqual(frame, ClawdSprite.standing, "walk\(i) 和站立帧一模一样")
-        }
-    }
-
-    /// 高度得由原件比例算出，不能手填。
-    /// 比的是 `ceil` 后的值——`fittingSize` 会把 19.70 报成 20.0，向上取整到整点。
-    /// 精度因此只到 1pt，但「拉扁 / 抻长」这类错法差的是好几 pt，照样拦得住
-    func test槽位高度保持原件比例() throws {
-        let size = try fittingSize(working: false)
-        let expected = 28.0 / CGFloat(ClawdSprite.cols) * CGFloat(ClawdSprite.rows)
-        XCTAssertEqual(size.height, expected.rounded(.up),
-                       "高度偏离原件比例（应约 \(String(format: "%.2f", expected))pt），Clawd 被拉扁或抻长了")
+    /// 回归：固定侧宽必须给指示灯让开圆角直壁。黑 pill 的竖直壁在 `maxX - topRadius` 处、
+    /// 比名义边缘往里收 `cornerInset`，若外侧余量不够，靠左对齐的指示灯会顶出直壁被裁——
+    /// 就是大梁老师报的「小黄点出去了」。外侧余量 = 固定侧宽 − 摄像头侧内边距 − 内容宽，须 ≥ 圆角内收量
+    func testAgent固定侧宽给指示灯让开圆角() {
+        let outerSlack = NotchSlot.fixedSideWidth
+            - NotchSlot.leadingPad - ClawdSlotView.contentWidth
+        XCTAssertGreaterThanOrEqual(outerSlack, NotchSlot.cornerInset,
+                                    "外侧余量不足以让开圆角直壁，指示灯会被裁")
     }
 
     func test空闲态尺寸塞得进槽位() throws {
@@ -93,10 +73,17 @@ final class ClawdSlotViewTests: XCTestCase {
         XCTAssertLessThanOrEqual(size.height, slotHeight)
     }
 
-    /// 工作态多一个 TimelineView，但帧内容与空闲态占同一个 frame，尺寸不该变——
-    /// 变了就意味着黄灯亮起的瞬间指示灯会横向跳一下
+    /// 黄灯亮起的瞬间指示灯不该横向跳——两态整体尺寸必须一致（靠固定宽度容器保证；上下轻跳是 offset，不改尺寸）
     func test工作态与空闲态尺寸一致() throws {
         XCTAssertEqual(try fittingSize(working: true), try fittingSize(working: false))
+    }
+
+    /// 两个 Agent 槽位并排时高度必须相等（都取 `AgentSlotMetrics.spriteHeight`）
+    func test与Codex槽位同高() throws {
+        let clawd = try fittingSize(working: false)
+        let codex = NSHostingView(rootView: CodexPetSlotView(working: false))
+        codex.layoutSubtreeIfNeeded()
+        XCTAssertEqual(clawd.height, codex.fittingSize.height, "两只高度不相等，并排会一高一低")
     }
 
     private func fittingSize(working: Bool) throws -> CGSize {

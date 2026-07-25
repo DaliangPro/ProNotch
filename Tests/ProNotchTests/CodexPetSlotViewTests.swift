@@ -4,93 +4,64 @@ import SwiftUI
 
 /// Codex 槽位的素材完整性与尺寸边界。
 ///
-/// 素材照大梁老师提供的第二张官方「终端云」像素画比例还原（22 列三色，见 `CodexPetSprite` 的说明），
-/// 网格一旦被改歪，在 24pt 上肉眼看不出来，只能靠断言钉住。
-/// 尺寸同样要钉：右槽可用宽度只有 50pt。
+/// 四态形象改用大梁老师重绘的 PNG（`Resources/codex-idle|working.png`），手绘字符网格已退役。
+/// 这里钉两件事：① 素材在位、贴身横向、fit 进显示框后能顶到内存环量级的高度（不再是过小的方画布）；
+/// ② 槽位内容塞得进**固定黑条侧宽**（不随选谁变）、与 Clawd 等宽、指示灯不被圆角裁。
+///
+/// 素材直接按源文件路径读——xctest 没有 App bundle，`NSImage(named:)` 解析不到，只能读盘校验。
 @MainActor
 final class CodexPetSlotViewTests: XCTestCase {
 
-    /// 右侧槽位 56pt 宽，但有 6pt 内边距贴向刘海，实际可用 50pt
-    private let usableWidth: CGFloat = 50
+    /// 定位项目根 `Resources/`：#filePath = …/Tests/ProNotchTests/本文件，往上三级到项目根
+    private var resourcesDir: URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()   // ProNotchTests
+            .deletingLastPathComponent()   // Tests
+            .deletingLastPathComponent()   // 项目根
+            .appendingPathComponent("Resources")
+    }
+
+    /// 右槽实际可用宽 = 固定侧宽 − 摄像头侧内边距（侧宽恒为 `fixedSideWidth`，不随选谁变）
+    private var usableWidth: CGFloat { NotchSlot.fixedSideWidth - NotchSlot.leadingPad }
     /// 收起态刘海高度（14 寸 MBP 典型值）
     private let slotHeight: CGFloat = 38
 
-    private var allFrames: [(String, [String])] {
-        [("resting", CodexPetSprite.resting), ("hopping", CodexPetSprite.hopping)]
-    }
+    // MARK: - 素材
 
-    /// 落地/弹起两态共用同一坐标系（弹跳靠网格内的留白表现），尺寸必须完全一致，
-    /// 否则切帧时整只会缩放，旁边的指示灯跟着横向跳
-    func test两态网格尺寸一致() {
-        for (name, grid) in allFrames {
-            XCTAssertEqual(grid.count, CodexPetSprite.rows, "\(name) 行数不对")
-            for (i, row) in grid.enumerated() {
-                XCTAssertEqual(row.count, CodexPetSprite.cols,
-                               "\(name) 第 \(i) 行是 \(row.count) 列，应为 \(CodexPetSprite.cols)")
-            }
+    /// 空闲/工作两张 PNG 必须都在、贴身横向（宽>高），且 fit 进显示框后渲染高度与内存环同量级。
+    /// 大梁老师实测：图标要跟左侧内存环（21pt）一样大。裁成正方画布会把横向身形上下夹扁到约 14pt，
+    /// 故改贴身横向 + 21pt 高框，实际渲染高度须 ≥ 18pt 才算「一样大」
+    func test四态素材齐全且填满槽高() throws {
+        for name in ["codex-idle", "codex-working"] {
+            let url = resourcesDir.appendingPathComponent(name + ".png")
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path), "缺素材 \(name).png")
+            let img = try XCTUnwrap(NSImage(contentsOf: url), "\(name).png 读不出，可能损坏")
+            let rep = try XCTUnwrap(img.representations.first, "\(name).png 没有位图表示")
+            let w = CGFloat(rep.pixelsWide), h = CGFloat(rep.pixelsHigh)
+            XCTAssertGreaterThan(w, h, "\(name) 该是贴身横向（\(rep.pixelsWide)×\(rep.pixelsHigh)）")
+            // aspectRatio(.fit) 进 spriteWidth×spriteHeight 框后的实际渲染高度
+            let scale = min(AgentSlotMetrics.spriteWidth / w, AgentSlotMetrics.spriteHeight / h)
+            XCTAssertGreaterThanOrEqual(h * scale, 18,
+                                        "\(name) fit 后仅 \(h * scale)pt 高，比内存环 21pt 明显小")
         }
     }
 
-    /// 网格只认 . b k c：混进别的字符会被 `CodexPetCanvas` 的 default 分支当成身体画出来，多一块糊在身上
-    func test网格只含约定的四种字符() {
-        for (name, grid) in allFrames {
-            for row in grid {
-                XCTAssertTrue(row.allSatisfy { $0 == "." || $0 == "b" || $0 == "k" || $0 == "c" },
-                              "\(name) 混入了非法字符：\(row)")
-            }
-        }
+    // MARK: - 尺寸
+
+    /// 大梁老师的核心诉求：选 Claude 与选 Codex 刘海必须一样宽——两家内容宽取同一度量
+    func test与Clawd内容等宽() {
+        XCTAssertEqual(CodexPetSlotView.contentWidth, ClawdSlotView.contentWidth,
+                       "两家 Agent 内容宽不相等，选谁刘海会不一样宽")
+        XCTAssertEqual(CodexPetSlotView.contentWidth, AgentSlotMetrics.contentWidth)
     }
 
-    /// 得有一整块黑色终端屏——那是这只的辨识主体。掉了就只剩一朵纯蓝云，认不出是 Codex。
-    /// 阈值按 22 列网格定（本体黑格约 70 出头）
-    func test有成块的终端屏() {
-        let black = CodexPetSprite.character.reduce(0) { $0 + $1.filter { $0 == "k" }.count }
-        XCTAssertGreaterThan(black, 40, "黑屏只剩 \(black) 格，终端脸没了")
-    }
-
-    /// 屏上的 `>_` 提示符是独立浅蓝格（`c`），必须都嵌在黑屏包围盒内——
-    /// 落在屏外就是画歪了。数量太少说明 `>` 或 `_` 掉了，脸就残了
-    func test终端屏上留着提示符() {
-        let g = CodexPetSprite.character
-        func at(_ y: Int, _ x: Int) -> Character {
-            let row = g[y]
-            return row[row.index(row.startIndex, offsetBy: x)]
-        }
-        // 黑屏包围盒
-        var minX = Int.max, maxX = -1, minY = Int.max, maxY = -1
-        for y in g.indices {
-            for x in 0..<g[y].count where at(y, x) == "k" {
-                minX = min(minX, x); maxX = max(maxX, x)
-                minY = min(minY, y); maxY = max(maxY, y)
-            }
-        }
-        var prompt = 0
-        for y in g.indices {
-            for x in 0..<g[y].count where at(y, x) == "c" {
-                prompt += 1
-                XCTAssertTrue(x >= minX && x <= maxX && y >= minY && y <= maxY,
-                              "提示符像素 (\(x),\(y)) 跑到黑屏外了")
-            }
-        }
-        XCTAssertGreaterThanOrEqual(prompt, 6, "屏内的提示符像素只剩 \(prompt) 格，`>_` 残了")
-    }
-
-    /// 提示符浅蓝必须与身体蓝分色——同色就退回上一张「靠黑屏衬」的旧观感了
-    func test提示符与身体分色() {
-        XCTAssertNotEqual(CodexPetSprite.promptColor, CodexPetSprite.bodyColor,
-                          "提示符与身体同色，脸从黑屏里衬不出来")
-    }
-
-    /// 落地与弹起必须真的错开一格，否则「弹跳」是原地不动
-    func test两态确有位移() {
-        XCTAssertNotEqual(CodexPetSprite.resting, CodexPetSprite.hopping,
-                          "落地态与弹起态完全一样，弹跳看不出来")
-    }
-
-    /// 弹跳只是整体平移，不该增删像素——两态的非空格子数必须相等
-    func test弹跳前后像素守恒() {
-        func filled(_ g: [String]) -> Int { g.reduce(0) { $0 + $1.filter { $0 != "." }.count } }
-        XCTAssertEqual(filled(CodexPetSprite.resting), filled(CodexPetSprite.hopping))
+    /// 回归：固定侧宽必须给指示灯让开圆角直壁（详见 ClawdSlotViewTests 同名用例）。
+    /// 外侧余量 = 固定侧宽 − 摄像头侧内边距 − 内容宽，必须 ≥ 圆角内收量，灯才不被裁
+    func testAgent固定侧宽给指示灯让开圆角() {
+        let outerSlack = NotchSlot.fixedSideWidth
+            - NotchSlot.leadingPad - CodexPetSlotView.contentWidth
+        XCTAssertGreaterThanOrEqual(outerSlack, NotchSlot.cornerInset,
+                                    "外侧余量不足以让开圆角直壁，指示灯会被裁")
     }
 
     func test空闲态尺寸塞得进槽位() throws {
@@ -99,18 +70,17 @@ final class CodexPetSlotViewTests: XCTestCase {
         XCTAssertLessThanOrEqual(size.height, slotHeight)
     }
 
-    /// 黄灯亮起时指示灯不该横向跳一下
+    /// 黄灯亮起的瞬间指示灯不该横向跳——两态整体尺寸必须一致（靠固定宽度容器保证；上下轻跳是 offset，不改尺寸）
     func test工作态与空闲态尺寸一致() throws {
         XCTAssertEqual(try fittingSize(working: true), try fittingSize(working: false))
     }
 
-    /// 两个 Agent 槽位并排时高度不该打架
+    /// 两个 Agent 槽位并排时高度必须相等（都取 `AgentSlotMetrics.spriteHeight`）
     func test与Clawd槽位同高() throws {
         let codex = try fittingSize(working: false)
         let clawd = NSHostingView(rootView: ClawdSlotView(working: false))
         clawd.layoutSubtreeIfNeeded()
-        XCTAssertLessThanOrEqual(abs(codex.height - clawd.fittingSize.height), 8,
-                                 "两只高度差超过 8pt，并排会一高一低")
+        XCTAssertEqual(codex.height, clawd.fittingSize.height, "两只高度不相等，并排会一高一低")
     }
 
     private func fittingSize(working: Bool) throws -> CGSize {
