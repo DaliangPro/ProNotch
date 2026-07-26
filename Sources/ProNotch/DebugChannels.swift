@@ -140,6 +140,140 @@ extension AppDelegate {
         }
     }
 
+    // MARK: - 菜单栏额度栏宽度候选
+
+    /// 额度栏瘦身候选（`-snapshotMenuBar`）：按菜单栏真实字号把几种写法渲成一张对照图，
+    /// 逐行标出真实占宽，以及换上它之后整条菜单栏还溢不溢出。
+    ///
+    /// 宽度这次是硬指标而非观感偏好：内置刘海屏的菜单栏被刘海从中切开，右侧只剩 772pt
+    /// 能放状态项，而额度栏 162pt 是全场最宽的一项——一旦溢出，被系统整项丢掉的就是它
+    func snapshotMenuBar(settings: SettingsStore) {
+        // 2026-07-26 在大梁老师这台机实测：内置屏 1728pt，刘海横跨 771–956（185pt），
+        // 右侧可用 772pt；彼时全部状态项共 832pt，其中额度栏 162pt
+        let available: CGFloat = 772, liveTotal: CGFloat = 832, liveUsage: CGFloat = 162
+        let others = liveTotal - liveUsage
+        var kinds = UsageStatusItemController.menuBarKinds(settings)
+        if kinds.isEmpty { kinds = Array(AgentKind.allCases.filter(\.supportsQuota).prefix(3)) }
+        let pcts: [Double] = [5, 55, 0]   // 用他此刻菜单栏上的真实读数，基准行才与肉眼所见一致
+
+        /// 通用拼法：图标 + 数字。`lead` 是图标与数字之间、`sep` 是各家之间
+        func compose(icon: CGFloat, lead: String, suffix: String, sep: String,
+                     only: AgentKind? = nil) -> NSAttributedString {
+            let base: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)]
+            let out = NSMutableAttributedString()
+            for (i, kind) in kinds.enumerated() where only == nil || only == kind {
+                let pct = pcts[i % pcts.count]
+                if out.length > 0 { out.append(NSAttributedString(string: sep, attributes: base)) }
+                let att = NSTextAttachment()
+                att.image = UsageStatusItemController.brandImage(
+                    kind.polys, tint: UsageStatusItemController.brandTints[kind] ?? .systemGray, size: icon)
+                att.bounds = CGRect(x: 0, y: -icon * 0.26, width: icon, height: icon)
+                out.append(NSAttributedString(attachment: att))
+                var seg = base
+                seg[.foregroundColor] = UsageStatusItemController.pctColor(pct)
+                out.append(NSAttributedString(string: "\(lead)\(Int(pct.rounded()))\(suffix)", attributes: seg))
+            }
+            return out
+        }
+        /// 数字直接画进品牌色块，一家只占一个方块——最省，代价是认色不认 logo
+        func badges(size: CGFloat, sep: String) -> NSAttributedString {
+            let base: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 12)]
+            let out = NSMutableAttributedString()
+            for (i, kind) in kinds.enumerated() {
+                if out.length > 0 { out.append(NSAttributedString(string: sep, attributes: base)) }
+                let att = NSTextAttachment()
+                att.image = Self.badgeImage(pcts[i % pcts.count],
+                                            tint: UsageStatusItemController.brandTints[kind] ?? .systemGray, size: size)
+                att.bounds = CGRect(x: 0, y: -size * 0.26, width: size, height: size)
+                out.append(NSAttributedString(attachment: att))
+            }
+            return out
+        }
+
+        let busiest = kinds.enumerated().max { pcts[$0.offset % pcts.count] < pcts[$1.offset % pcts.count] }?.element
+        let variants: [(String, String, NSAttributedString)] = [
+            ("① 现状", "图标17 · NN% · 双空格", compose(icon: 17, lead: " ", suffix: "%", sep: "  ")),
+            ("② 去百分号", "% 号删掉，其余不动", compose(icon: 17, lead: " ", suffix: "", sep: "  ")),
+            ("③ 紧凑", "图标15 · 数字贴紧 · 单空格", compose(icon: 15, lead: "", suffix: "", sep: " ")),
+            ("④ 极简三家", "图标13 · 数字贴紧 · 无分隔", compose(icon: 13, lead: "", suffix: "", sep: "")),
+            ("⑤ 数字嵌色块", "数字画进色块 · 无 logo", badges(size: 19, sep: " ")),
+            ("⑥ 只显示最忙", "只留占用最高那家", compose(icon: 17, lead: " ", suffix: "%", sep: "  ", only: busiest)),
+        ]
+        // 系统在标题两侧另加固定内边距：拿「现状」的实测占宽反推，其余候选同口径换算
+        let pad = liveUsage - variants[0].2.size().width
+
+        let rowH: CGFloat = 46, headH: CGFloat = 64, titleX: CGFloat = 200
+        // 右列起点让过最宽那条色条，免得数字压在条上
+        let widths = variants.map { $0.2.size().width + pad }
+        let rightX = titleX + (widths.max() ?? 0) + 28
+        let W: CGFloat = rightX + 300
+        let H = headH + rowH * CGFloat(variants.count) + 16
+        guard let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil, pixelsWide: Int(W * 2), pixelsHigh: Int(H * 2),
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return }
+        rep.size = NSSize(width: W, height: H)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSColor(white: 0.11, alpha: 1).setFill()
+        NSRect(x: 0, y: 0, width: W, height: H).fill()
+
+        func text(_ s: String, _ x: CGFloat, _ y: CGFloat, size: CGFloat = 12, color: NSColor = .white) {
+            (s as NSString).draw(at: NSPoint(x: x, y: y), withAttributes: [
+                .font: NSFont.systemFont(ofSize: size), .foregroundColor: color])
+        }
+        text("菜单栏额度栏宽度候选（刘海屏内置显示器）", 16, H - 28, size: 14)
+        text("刘海右侧可用 \(Int(available))pt ｜ 其余状态项占 \(Int(others))pt ｜ 留给额度栏的预算 ≤ \(Int(available - others))pt",
+             16, H - 50, color: NSColor(white: 0.6, alpha: 1))
+
+        for (i, v) in variants.enumerated() {
+            let y = H - headH - rowH * CGFloat(i + 1) + 12
+            let w = v.2.size().width + pad
+            let fits = w <= available - others
+            text(v.0, 16, y + 12, size: 12)
+            text(v.1, 16, y - 2, size: 9, color: NSColor(white: 0.45, alpha: 1))
+            // 灰底条＝这一项在菜单栏上实际占掉的地盘
+            NSColor(white: 0.26, alpha: 1).setFill()
+            NSBezierPath(roundedRect: NSRect(x: titleX, y: y - 3, width: w, height: 26),
+                         xRadius: 5, yRadius: 5).fill()
+            v.2.draw(at: NSPoint(x: titleX + pad / 2, y: y + 2))
+            text("\(Int(w.rounded()))pt", rightX, y + 12, size: 12,
+                 color: fits ? .systemGreen : .systemRed)
+            text(fits ? "放得下（余 \(Int((available - others - w).rounded()))pt）"
+                      : "仍溢出 \(Int((w - (available - others)).rounded()))pt",
+                 rightX, y - 2, size: 9, color: NSColor(white: 0.5, alpha: 1))
+        }
+        // 预算线：灰底条越过这条竖线就是放不下
+        NSColor.systemRed.withAlphaComponent(0.55).setStroke()
+        let line = NSBezierPath()
+        line.move(to: NSPoint(x: titleX + (available - others), y: 8))
+        line.line(to: NSPoint(x: titleX + (available - others), y: H - headH + 4))
+        line.setLineDash([4, 3], count: 2, phase: 0)
+        line.stroke()
+        NSGraphicsContext.restoreGraphicsState()
+        if let data = rep.representation(using: .png, properties: [:]) {
+            try? data.write(to: URL(fileURLWithPath: "/tmp/pronotch-menubar-widths.png"))
+            AppLog.debugTools.debug("额度栏宽度候选已渲染")
+        }
+    }
+
+    /// 候选⑤用：把百分比数字直接画进品牌色块（不画 logo），一家一个方块
+    private static func badgeImage(_ pct: Double, tint: NSColor, size: CGFloat) -> NSImage {
+        let img = NSImage(size: NSSize(width: size, height: size))
+        img.lockFocus()
+        tint.setFill()
+        NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: size, height: size),
+                     xRadius: size * 0.3, yRadius: size * 0.3).fill()
+        let s = "\(Int(pct.rounded()))" as NSString
+        let at: [NSAttributedString.Key: Any] = [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: size * 0.58, weight: .semibold),
+            .foregroundColor: NSColor.white]
+        let sz = s.size(withAttributes: at)
+        s.draw(at: NSPoint(x: (size - sz.width) / 2, y: (size - sz.height) / 2), withAttributes: at)
+        img.unlockFocus()
+        return img
+    }
+
     // MARK: - 对齐核查图
 
     /// 对齐核查：离屏渲染展开面板四页到 /tmp/pronotch-panel-<页>.png，
