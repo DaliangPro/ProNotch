@@ -38,11 +38,11 @@ struct ExpandedContentView: View {
     var body: some View {
         VStack(spacing: 10) {
             // 刘海两侧的快捷操作区（中间给真实刘海让位）：
-            // 左侧 = 一次性动作（截图 / 锁屏）+ 防休眠开关（图标式）+ 设置入口
+            // 左侧 = 设置入口 + 三枚状态开关（防休眠 / 净屏 / 锁定），同款胶囊同款青色激活
             // 右侧 = 系统外观切换 + Agent 完成提醒总开关
             HStack(spacing: 0) {
-                HStack(spacing: 14) {   // 间距与标签行一致，三颗列位对齐下方前三个标签
-                    // 顺序：设置 → 防休眠 → 净屏
+                HStack(spacing: 14) {   // 间距与标签行一致，四颗列位对齐下方前四个标签
+                    // 顺序：设置 → 防休眠 → 净屏 → 锁定
                     // 设置入口：固定最左；实心齿轮（大梁老师从候选 A 选定）
                     StripButton(icon: "gearshape.fill",
                                 help: "打开 ProNotch 设置") {
@@ -69,6 +69,18 @@ struct ExpandedContentView: View {
                         quickActions.toggleDesktopIcons()
                     }
                     .notchTip(quickActions.desktopIconsHidden ? "净屏 · 已开启" : "净屏（隐藏桌面图标）")
+                    // 锁定面板（大梁老师 2026-07-26 定）：原先是浮在面板左边缘的一枚锁，
+                    // 悬停会展开「锁定」中文标签；现收进这一排，与净屏同款 StripToggle——
+                    // 无内嵌文字、点一下即切，中文说明只走悬停气泡。
+                    // 字形恒定不随开关变（不再 lock.open ↔ lock.fill 互换），
+                    // 只靠青色区分开关态，与左边防休眠 / 净屏两颗同一套语言
+                    StripToggle(icon: "lock",
+                                active: vm.isPinned,
+                                help: vm.isPinned ? "面板已锁定，不会自动收起（点击解锁）"
+                                                  : "锁定面板：锁上后移开鼠标也不收起") {
+                        vm.isPinned.toggle()
+                    }
+                    .notchTip(vm.isPinned ? "锁定 · 已锁定" : "锁定（移开鼠标也不收起）")
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
@@ -128,16 +140,6 @@ struct ExpandedContentView: View {
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 16)
-        // 左边缘正中浮一枚锁（大梁老师定）：不入 43 基准线、避开四角裁剪圆角，
-        // 鼠标移上去点一下即锁定，锁上后移开也不自动收起
-        .overlay(alignment: .leading) {
-            if vm.isExpanded {
-                // 面板可视左缘在 x=12（NotchShape 顶角外张，左竖边从 minX+topRadius 起），
-                // 16 = 12 + 4pt 气口，胶囊不会被裁剪形状切掉左边
-                PinToggle()
-                    .padding(.leading, 16)
-            }
-        }
         .onChange(of: vm.activeTab) { old, new in
             let oi = vm.visibleTabs.firstIndex(of: old) ?? 0
             let ni = vm.visibleTabs.firstIndex(of: new) ?? 0
@@ -634,42 +636,6 @@ private struct AgentReminderToggle: View {
             colors: [Color(hex: settings.glowClaudeColorHex),
                      Color(hex: settings.glowCodexColorHex)],
             startPoint: .leading, endPoint: .trailing))
-    }
-}
-
-/// 面板锁定开关：浮在弹出面板左边缘正中的锁。鼠标移上去点一下即锁定，
-/// 锁上后移开鼠标面板也不自动收起；再点解锁。青色激活与防休眠/净屏同语言。
-/// 默认只露一枚裸图标（无底）；锁定态持续亮青底；文字（锁定/已锁定）仅悬停时展开
-private struct PinToggle: View {
-    @EnvironmentObject var vm: NotchViewModel
-    @State private var hovering = false
-
-    private var expanded: Bool { hovering }
-
-    var body: some View {
-        Button {
-            vm.isPinned.toggle()
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: vm.isPinned ? "lock.fill" : "lock.open")
-                    .font(.system(size: 14, weight: .semibold))
-                if expanded {
-                    Text(vm.isPinned ? "已锁定" : "锁定")
-                        .font(.system(size: 11.5, weight: .medium))
-                }
-            }
-            .foregroundColor(vm.isPinned ? .cyan : .white.opacity(hovering ? 0.95 : 0.6))
-            .padding(.horizontal, expanded ? 13 : 10)
-            .padding(.vertical, 6)
-            .background(Capsule().fill(
-                vm.isPinned ? Color.cyan.opacity(0.2)
-                            : Color.white.opacity(hovering ? 0.2 : 0)))   // 默认无底，悬停才现
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .onHover { h in withAnimation(.easeOut(duration: 0.12)) { hovering = h } }
-        .help(vm.isPinned ? "面板已锁定，不会自动收起（点击解锁）"
-                          : "锁定面板：锁上后移开鼠标也不收起")
     }
 }
 
