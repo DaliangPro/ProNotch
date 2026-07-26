@@ -74,7 +74,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             chat: ChatStore(), usage: UsageStore(), agentSessions: AgentSessionsStore(),
             agentActivity: AgentActivityStore(), agentWait: AgentWaitStore(),
             quickActions: QuickActionsStore(), settings: SettingsStore(),
-            memory: MemoryStore(), weather: WeatherStore())
+            memory: MemoryStore(), weather: WeatherStore(),
+            systemHUD: SystemHUDStore())
         // 对齐核查：离屏渲染展开面板四页 PNG 后退出（-snapshotPanel）。同样须用正式签名实例跑
         if CommandLine.arguments.contains("-snapshotPanel") {
             env.weather.loadDemoWeather()   // 渲染实例不定位不联网，也不弹授权框
@@ -113,6 +114,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         // 光晕提醒：控制器常驻（很轻），覆盖整屏的光晕窗点亮才建、熄灭即拆
         glowController = GlowController(settings: env.settings)
+
+        // 音量 / 亮度 HUD：两个开关都关时 start() 内部不装事件 tap（真不接管），
+        // 开关一改立刻按新状态装卸。大卡在场时让位（理由见 SystemHUDStore.otherCardShowing）
+        let weatherStore = env.weather, agentWaitStore = env.agentWait
+        env.systemHUD.otherCardShowing = {
+            weatherStore.alert != nil || agentWaitStore.notice != nil
+        }
+        env.systemHUD.start()
 
         // 恶劣天气预警兜底定时器：预警是它唯一的存在理由——预警关闭即不跑（真停机），
         // 设置页改动预警开关/类型时实时起停

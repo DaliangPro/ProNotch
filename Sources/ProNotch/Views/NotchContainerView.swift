@@ -26,6 +26,7 @@ struct NotchContainerView: View {
             // 层级在黑形状之下，滑动过程天然是「刘海绽放成一块大卡」
             WeatherAlertCardView()
             AgentWaitCardView()
+            SystemHUDCardView()
             notchLayer
             // 两侧功能区（左内存右天气）压在最上层，而不是塞在 notchLayer 里面：
             // 那一层被 `clipShape(revealShape)` 裁到收起态黑条宽（312pt），

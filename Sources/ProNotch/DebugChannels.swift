@@ -325,6 +325,15 @@ extension AppDelegate {
                     self.env.agentWait.present(notice, frontmost: nil)
                 }
             }
+            // -notchHUD <音量|静音|亮度> [0…1]：摆一帧音量/亮度提示再渲染。
+            // 这张卡只由真实按键触发，而按键要先拿到辅助功能权限、还会真的改音量，
+            // 拍观感不该付这个代价——留个不碰硬件就能拍到的口子
+            var hudTag = ""
+            if let i = CommandLine.arguments.firstIndex(of: "-notchHUD") {
+                hudTag = CommandLine.arguments[safe: i + 1] ?? "音量"
+                let value = CommandLine.arguments[safe: i + 2].flatMap(Double.init) ?? 0.62
+                self.env.systemHUD.preview(Self.hudPreview(hudTag, value))
+            }
             let root = ZStack(alignment: .top) {
                 Color(white: 0.3)
                 NotchContainerView()
@@ -344,8 +353,10 @@ extension AppDelegate {
                 if let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
                     hosting.cacheDisplay(in: hosting.bounds, to: rep)
                     if let data = rep.representation(using: .png, properties: [:]) {
-                        try? data.write(to: URL(fileURLWithPath: "/tmp/pronotch-panel-collapsed.png"))
-                        AppLog.debugTools.debug("面板快照: collapsed")
+                        // 带 -notchHUD 时按档位分文件存，连着跑几档才不会互相覆盖
+                        let name = hudTag.isEmpty ? "collapsed" : "hud-\(hudTag)"
+                        try? data.write(to: URL(fileURLWithPath: "/tmp/pronotch-panel-\(name).png"))
+                        AppLog.debugTools.debug("面板快照: \(name, privacy: .public)")
                     }
                 }
                 self.probeGrownCardHits(window: win, vm: cvm, size: size)
@@ -409,6 +420,15 @@ extension AppDelegate {
     /// nonisolated：场景表是纯函数（不碰任何状态），默认参数取这两个值时不该被主线程隔离绊住
     private nonisolated static let probeRequestID = String(repeating: "a", count: 32)
     private nonisolated static let queuedRequestID = String(repeating: "b", count: 32)
+
+    /// `-notchHUD` 的档位表：档位名 → 要摆上去的那一帧
+    private nonisolated static func hudPreview(_ tag: String, _ value: Double) -> SystemHUDStore.Reading {
+        switch tag {
+        case "静音":   return .init(channel: .volume, value: 0, muted: true)
+        case "亮度":   return .init(channel: .brightness, value: value, muted: false)
+        default:      return .init(channel: .volume, value: value, muted: false)
+        }
+    }
 
     /// `-notchCardScene` 的场景表：一个场景 ＝ 上游真实会发来的一种载荷。
     ///

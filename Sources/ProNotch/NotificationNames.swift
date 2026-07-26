@@ -47,6 +47,11 @@ extension Notification.Name {
     /// 设置页「清空历史」按钮
     static let proNotchClipboardClearRequested = Notification.Name("ProNotchClipboardClearRequested")
 
+    // MARK: - 音量 / 亮度 HUD
+
+    /// 音量、亮度 HUD 开关变更 → 媒体键拦截随之装载/卸载（关掉即真卸，按键交回系统）
+    static let proNotchSystemHUDSettingsChanged = Notification.Name("ProNotchSystemHUDSettingsChanged")
+
     // MARK: - 天气
 
     /// 恶劣天气预警的总开关或类型多选变更 → 兜底定时器随之起停

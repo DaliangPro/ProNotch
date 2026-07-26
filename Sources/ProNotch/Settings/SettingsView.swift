@@ -223,6 +223,18 @@ struct SettingsView: View {
                 }
                 .padding(.horizontal, 14).padding(.vertical, 10)
             }
+
+            sectionLabel("音量与亮度")
+            SettingsCard {
+                // 两个通道各管各的键：只开一个，另一个的按键完全不经过 ProNotch
+                toggleRow("音量提示显示在刘海", isOn: $settings.volumeHUDEnabled)
+                CardDivider()
+                toggleRow("亮度提示显示在刘海", isOn: $settings.brightnessHUDEnabled)
+            }
+            Text("开启后按音量 / 亮度键，提示条从刘海长出来，屏幕中央那块系统方块不再出现。\n需要辅助功能权限（系统设置 → 隐私与安全性 → 辅助功能）。这台设备调不动的通道（如外接显示器的亮度、没有音量控制的 HDMI 音频）会原样交回系统处理。")
+                .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 2)
         }
     }
 

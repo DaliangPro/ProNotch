@@ -21,6 +21,10 @@ struct NotchGrownCard<Content: View>: View {
     var topGap: CGFloat = 12
     /// 内容与卡壳底边的间距。默认 16 同上
     var bottomGap: CGFloat = 16
+    /// 光晕要不要呼吸。提醒类的卡要（大梁老师：提醒必须让人见到），
+    /// 音量/亮度 HUD 不要——它 1.5 秒就走，一秒钟的呼吸只会看着像在抖，
+    /// 而且那是个 repeatForever 动画，为一张转瞬即逝的卡起一条无限动画不值当
+    var glowPulses: Bool = true
     /// 整卡点击。nil＝卡里自己有按钮——套一层 Button 会跟里面的按钮抢事件
     let action: (() -> Void)?
     @ViewBuilder let content: () -> Content
@@ -76,6 +80,7 @@ struct NotchGrownCard<Content: View>: View {
         }
         .onAppear {
             glowPulse = false
+            guard glowPulses else { return }
             withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
                 glowPulse = true
             }

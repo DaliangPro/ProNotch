@@ -112,6 +112,26 @@ final class SettingsStore: ObservableObject {
         return mem || wea
     }
 
+    // MARK: - 音量 / 亮度 HUD
+    /// 用刘海里的提示条顶替系统那块弹在屏幕正中的音量方块（默认关）。
+    /// 开 = 接管音量键（含静音键）；关 = 拦截真卸载，按键原样交回系统。
+    /// 默认关是有意的：接管键盘属于用户该自己点头的事，装完就替他做主不合适
+    @Published var volumeHUDEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(volumeHUDEnabled, forKey: PrefKey.volumeHUDEnabled)
+            NotificationCenter.default.post(
+                name: .proNotchSystemHUDSettingsChanged, object: nil)
+        }
+    }
+    /// 同上，管亮度键。两个通道各管各的键：只开音量时亮度键完全不经过我们
+    @Published var brightnessHUDEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(brightnessHUDEnabled, forKey: PrefKey.brightnessHUDEnabled)
+            NotificationCenter.default.post(
+                name: .proNotchSystemHUDSettingsChanged, object: nil)
+        }
+    }
+
     /// 剪贴板历史记录开关（默认开）。关 = 停 0.5 秒轮询（真停机），已有历史保留可看；
     /// 清历史是独立按钮的职责——误关开关不丢数据（大梁老师定）
     @Published var clipboardEnabled: Bool {
@@ -331,6 +351,9 @@ final class SettingsStore: ObservableObject {
             ?? Set(WeatherAlertType.allCases)
         memoryWidgetEnabled = UserDefaults.standard.bool(forKey: PrefKey.memoryWidgetEnabled)
         weatherWidgetEnabled = UserDefaults.standard.bool(forKey: PrefKey.weatherWidgetEnabled)
+        // HUD 两个开关默认关，因此不进 PrefDefault.register()：bool(forKey:) 的天然 false 就是默认值
+        volumeHUDEnabled = UserDefaults.standard.bool(forKey: PrefKey.volumeHUDEnabled)
+        brightnessHUDEnabled = UserDefaults.standard.bool(forKey: PrefKey.brightnessHUDEnabled)
         clipboardEnabled = UserDefaults.standard.bool(forKey: PrefKey.clipboardEnabled)
         clipboardLimit = UserDefaults.standard.integer(forKey: PrefKey.clipboardLimit)
         // 菜单栏额度：沿用旧键（老用户开关状态原样保留，默认关）；家勾选无存值默认全家

@@ -33,6 +33,7 @@ enum AppLog {
     static let launcher = Logger(subsystem: subsystem, category: "launcher")
     static let keychain = Logger(subsystem: subsystem, category: "keychain")
     static let settings = Logger(subsystem: subsystem, category: "settings")
+    static let systemHUD = Logger(subsystem: subsystem, category: "system-hud")
     static let debugTools = Logger(subsystem: subsystem, category: "debug-tools")
 }
 

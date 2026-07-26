@@ -22,6 +22,12 @@ enum PrefKey {
     static let memoryWidgetEnabled = "memoryWidgetEnabled"
     static let weatherWidgetEnabled = "weatherWidgetEnabled"
 
+    // MARK: - 音量 / 亮度 HUD
+    /// 两个通道各一个开关：开启即接管对应的键盘按键（系统 HUD 不再出现）。
+    /// **默认关**——接管键盘是件用户该自己点头的事，不能装完就替他做主
+    static let volumeHUDEnabled = "volumeHUDEnabled"
+    static let brightnessHUDEnabled = "brightnessHUDEnabled"
+
     // MARK: - 剪贴板
     static let clipboardEnabled = "clipboardEnabled"
     /// 历史保留条数：SettingsStore 写、ClipboardStore 读
