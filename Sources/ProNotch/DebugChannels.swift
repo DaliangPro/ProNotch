@@ -149,9 +149,12 @@ extension AppDelegate {
     /// 能放状态项，而额度栏 162pt 是全场最宽的一项——一旦溢出，被系统整项丢掉的就是它
     func snapshotMenuBar(settings: SettingsStore) {
         // 2026-07-26 在大梁老师这台机实测：内置屏 1728pt，刘海横跨 771–956（185pt），
-        // 右侧可用 772pt；彼时全部状态项共 832pt，其中额度栏 162pt
-        let available: CGFloat = 772, liveTotal: CGFloat = 832, liveUsage: CGFloat = 162
-        let others = liveTotal - liveUsage
+        // 右侧可用 772pt；当时全部状态项共 1081pt，其中额度栏 170pt。
+        // 后两个数随菜单栏上的 App 增减而变，复测后用 -menuBarOthers / -menuBarUsage 覆盖
+        let available: CGFloat = 772
+        let d = UserDefaults.standard
+        let others = CGFloat((d.object(forKey: "menuBarOthers") as? Double) ?? 911)
+        let liveUsage = CGFloat((d.object(forKey: "menuBarUsage") as? Double) ?? 170)
         var kinds = UsageStatusItemController.menuBarKinds(settings)
         if kinds.isEmpty { kinds = Array(AgentKind.allCases.filter(\.supportsQuota).prefix(3)) }
         let pcts: [Double] = [5, 55, 0]   // 用他此刻菜单栏上的真实读数，基准行才与肉眼所见一致
@@ -223,13 +226,16 @@ extension AppDelegate {
                 .font: NSFont.systemFont(ofSize: size), .foregroundColor: color])
         }
         text("菜单栏额度栏宽度候选（刘海屏内置显示器）", 16, H - 28, size: 14)
-        text("刘海右侧可用 \(Int(available))pt ｜ 其余状态项占 \(Int(others))pt ｜ 留给额度栏的预算 ≤ \(Int(available - others))pt",
-             16, H - 50, color: NSColor(white: 0.6, alpha: 1))
+        let budget = available - others
+        text(budget > 0
+             ? "刘海右侧可用 \(Int(available))pt ｜ 其余状态项占 \(Int(others))pt ｜ 留给额度栏的预算 ≤ \(Int(budget))pt"
+             : "刘海右侧可用 \(Int(available))pt ｜ 其余状态项已占 \(Int(others))pt ｜ 预算为负：额度栏归零仍溢出 \(Int(-budget))pt",
+             16, H - 50, color: budget > 0 ? NSColor(white: 0.6, alpha: 1) : .systemRed)
 
         for (i, v) in variants.enumerated() {
             let y = H - headH - rowH * CGFloat(i + 1) + 12
             let w = v.2.size().width + pad
-            let fits = w <= available - others
+            let fits = w <= budget
             text(v.0, 16, y + 12, size: 12)
             text(v.1, 16, y - 2, size: 9, color: NSColor(white: 0.45, alpha: 1))
             // 灰底条＝这一项在菜单栏上实际占掉的地盘
@@ -239,15 +245,15 @@ extension AppDelegate {
             v.2.draw(at: NSPoint(x: titleX + pad / 2, y: y + 2))
             text("\(Int(w.rounded()))pt", rightX, y + 12, size: 12,
                  color: fits ? .systemGreen : .systemRed)
-            text(fits ? "放得下（余 \(Int((available - others - w).rounded()))pt）"
-                      : "仍溢出 \(Int((w - (available - others)).rounded()))pt",
+            text(fits ? "放得下（余 \(Int((budget - w).rounded()))pt）"
+                      : "仍溢出 \(Int((w - budget).rounded()))pt",
                  rightX, y - 2, size: 9, color: NSColor(white: 0.5, alpha: 1))
         }
         // 预算线：灰底条越过这条竖线就是放不下
         NSColor.systemRed.withAlphaComponent(0.55).setStroke()
         let line = NSBezierPath()
-        line.move(to: NSPoint(x: titleX + (available - others), y: 8))
-        line.line(to: NSPoint(x: titleX + (available - others), y: H - headH + 4))
+        line.move(to: NSPoint(x: titleX + max(budget, 0), y: 8))
+        line.line(to: NSPoint(x: titleX + max(budget, 0), y: H - headH + 4))
         line.setLineDash([4, 3], count: 2, phase: 0)
         line.stroke()
         NSGraphicsContext.restoreGraphicsState()
