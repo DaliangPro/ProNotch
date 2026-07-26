@@ -447,7 +447,7 @@ private struct ConnectivityLight: View {
 }
 
 /// 顶行功能区图标按钮（大梁老师定：「刷新」不放中文放图标）：
-/// 42×31 胶囊与标签胶囊完全同框、图标 17pt 与标签图标同大，中文说明走悬停气泡
+/// 42×31 胶囊与标签胶囊完全同框，中文说明走悬停气泡
 private struct AccessoryButton: View {
     let icon: String
     let tip: String
@@ -455,10 +455,17 @@ private struct AccessoryButton: View {
 
     @State private var hovering = false
 
+    /// 15.5 而非标签图标的 17：同样字号下各 symbol 的墨迹大小并不相等。
+    /// 离屏实测（点）——arrow.clockwise@17 是 15.0×18.0，箭头尖冒出字框，
+    /// 比同排的 gauge.with.needle 17×17、apple.terminal 20×16、square.grid.2x2 16×16
+    /// 都高一截，一排图标里就它显眼。降到 15.5 后墨迹 13.5×16.25，落回三者均高 16.3，
+    /// 视觉齐平（2026-07-26 大梁老师报「刷新按钮比左侧图标大」）
+    private let iconSize: CGFloat = 15.5
+
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 17))
+                .font(.system(size: iconSize))
                 .foregroundColor(.white.opacity(hovering ? 0.9 : 0.55))
                 .frame(width: 42, height: 31)
                 .background(Capsule().fill(Color.white.opacity(hovering ? 0.12 : 0)))
