@@ -73,14 +73,14 @@ struct ExpandedContentView: View {
                     // 悬停会展开「锁定」中文标签；现收进这一排，与净屏同款 StripToggle——
                     // 无内嵌文字、点一下即切，中文说明只走悬停气泡。
                     // 字形恒定不随开关变（不再 lock.open ↔ lock.fill 互换），
-                    // 只靠青色区分开关态，与左边防休眠 / 净屏两颗同一套语言
+                    // 只靠青色区分开关态，与左边防休眠 / 净屏两颗同一套语言。
+                    // 说明文字恒为「锁定刘海」（大梁老师定），不随开关态改口径
                     StripToggle(icon: "lock",
                                 active: vm.isPinned,
-                                help: vm.isPinned ? "面板已锁定，不会自动收起（点击解锁）"
-                                                  : "锁定面板：锁上后移开鼠标也不收起") {
+                                help: "锁定刘海") {
                         vm.isPinned.toggle()
                     }
-                    .notchTip(vm.isPinned ? "锁定 · 已锁定" : "锁定（移开鼠标也不收起）")
+                    .notchTip("锁定刘海")
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)
