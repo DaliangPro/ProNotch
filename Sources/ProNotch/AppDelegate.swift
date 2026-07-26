@@ -46,6 +46,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
         #endif
+        // 额度栏瘦身候选对照图（-snapshotMenuBar）：只要一份设置读勾选了哪几家，渲完即退
+        if CommandLine.arguments.contains("-snapshotMenuBar") {
+            snapshotMenuBar(settings: SettingsStore())
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
+            return
+        }
         // 对齐核查：离屏渲染设置窗口 PNG 后退出（-snapshotSettings）。
         // 不放 #if DEBUG——须用 /Applications 正式签名实例跑：钥匙串 ACL 已授权，
         // ChatStore 的后台 Key 回填不会弹授权框（debug 裸二进制会弹）。
@@ -524,6 +530,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func setupStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        // 位置持久化，理由同额度栏（见 UsageStatusItemController.createStatusItem）：
+        // 无名字的状态项每次都排到最左端，刘海屏菜单栏溢出时最左那项会被整项丢掉
+        item.autosaveName = "ProNotchMain"
         item.button?.image = Self.makeStatusIcon()
         let menu = NSMenu()
         // macOS 26 会按标题词汇给菜单项自动配图标（设置→齿轮、退出→叉），

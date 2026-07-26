@@ -71,6 +71,11 @@ final class UsageStatusItemController {
     private func createStatusItem() {
         guard statusItem == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // 位置持久化：没有 autosaveName，系统就不给这项记位置，每次启动都把它排到最左端。
+        // 而内置刘海屏的菜单栏右侧只有 772pt 能放状态项（刘海本身吃掉 185pt），
+        // 项目一多就溢出，被整项丢掉的正是最左那个——2026-07-26 大梁老师拔掉外接屏后
+        // 额度栏消失、刘海右边空出一块，就是这么来的。有了名字，⌘ 拖到哪儿就记在哪儿
+        item.autosaveName = "ProNotchUsage"
         item.button?.toolTip = "AI 编码额度"
         item.button?.target = self
         item.button?.action = #selector(togglePopover)
@@ -134,28 +139,15 @@ final class UsageStatusItemController {
     /// 额度栏标题：勾选各家品牌 logo + 5h%；高占用百分比变色；无数据的服务省略。仅额度栏存在时更新
     private func updateTitle() {
         guard let button = statusItem?.button else { return }
-        // 双重过滤：接入勾选（设置 → Agent 每家总开关）∩ 菜单栏勾选（每家「菜单栏」小开关）——
-        // 刘海里看全量、菜单栏只挑常用的。取消接入时数据被置 nil，
-        // objectWillChange 会把这里再驱动一遍，标题即时增减
-        // 底色须是深色：logo 一律填白（见 brandImage），浅底会白 logo 糊在白底上。
-        // Kimi 原用「月之暗面白 #EDEDED」正是此坑——白 K 画在白底几乎看不见，改回其本色黑
-        let tints: [AgentKind: NSColor] = [
-            .claude: NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1),   // Claude 橙
-            .codex: .systemCyan,
-            .grok: .systemGray,
-            .kimi: NSColor(srgbRed: 0.102, green: 0.102, blue: 0.102, alpha: 1),     // 月之暗面黑 #1A1A1A
-        ]
-        let items = AgentKind.allCases.filter {
-            $0.supportsQuota && env.settings.enabledAgents.contains($0)
-                && env.settings.menuBarAgents.contains($0)
-        }
+        // 取消接入时数据被置 nil，objectWillChange 会把这里再驱动一遍，标题即时增减
+        let items = Self.menuBarKinds(env.settings)
         let title = NSMutableAttributedString()
         let base: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)]
         for kind in items {
             guard let pct = env.usage.quota(for: kind)?.primary?.usedPercent else { continue }
             if title.length > 0 { title.append(NSAttributedString(string: "  ", attributes: base)) }
             let att = NSTextAttachment()
-            att.image = Self.brandImage(kind.polys, tint: tints[kind] ?? .systemGray, size: 17)
+            att.image = Self.brandImage(kind.polys, tint: Self.brandTints[kind] ?? .systemGray, size: 17)
             att.bounds = CGRect(x: 0, y: -4.5, width: 17, height: 17)   // 图标与数字基线对齐
             title.append(NSAttributedString(attachment: att))
             var seg = base
@@ -167,8 +159,25 @@ final class UsageStatusItemController {
             : NSAttributedString(string: items.isEmpty ? "额度" : "额度…", attributes: base)
     }
 
+    /// 各家色块底色。底色须是深色：logo 一律填白（见 brandImage），浅底会白 logo 糊在白底上。
+    /// Kimi 原用「月之暗面白 #EDEDED」正是此坑——白 K 画在白底几乎看不见，改回其本色黑
+    static let brandTints: [AgentKind: NSColor] = [
+        .claude: NSColor(srgbRed: 0.851, green: 0.467, blue: 0.341, alpha: 1),   // Claude 橙
+        .codex: .systemCyan,
+        .grok: .systemGray,
+        .kimi: NSColor(srgbRed: 0.102, green: 0.102, blue: 0.102, alpha: 1),     // 月之暗面黑 #1A1A1A
+    ]
+
+    /// 额度栏该列哪几家：双重过滤——接入勾选（设置 → Agent 每家总开关）∩
+    /// 菜单栏勾选（每家「菜单栏」小开关）。刘海里看全量、菜单栏只挑常用的
+    static func menuBarKinds(_ settings: SettingsStore) -> [AgentKind] {
+        AgentKind.allCases.filter {
+            $0.supportsQuota && settings.enabledAgents.contains($0) && settings.menuBarAgents.contains($0)
+        }
+    }
+
     /// 品牌 logo 渲染成菜单栏用小 NSImage：归一化折线 → 染色 evenodd 填充；Y 轴翻转适配 AppKit 坐标系
-    private static func brandImage(_ polys: [[CGPoint]], tint: NSColor, size: CGFloat) -> NSImage {
+    static func brandImage(_ polys: [[CGPoint]], tint: NSColor, size: CGFloat) -> NSImage {
         let img = NSImage(size: NSSize(width: size, height: size))
         img.lockFocus()
         // 品牌色圆角底：实心色块保证在任意菜单栏背景上都醒目
@@ -197,7 +206,7 @@ final class UsageStatusItemController {
         return img
     }
 
-    private static func pctColor(_ pct: Double) -> NSColor {
+    static func pctColor(_ pct: Double) -> NSColor {
         if pct >= 85 { return NSColor.systemRed }
         if pct >= 60 { return NSColor.systemOrange }
         return NSColor.labelColor   // 正常用系统前景色，自动适配深浅色菜单栏
