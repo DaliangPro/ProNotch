@@ -193,14 +193,28 @@ final class UsageStore: ObservableObject {
         defer { finish(generation: gen) }
         guard gen == generation, !Task.isCancelled, enabled == AgentKind.enabledSet() else { return }
         // 再按勾选过一遍：loader 是外部实现，不能假定它一定尊重了 enabled
-        codex = enabled.contains(.codex) ? snapshot.codex : nil
-        claude = enabled.contains(.claude) ? snapshot.claude : nil
-        grok = enabled.contains(.grok) ? snapshot.grok : nil
-        kimi = enabled.contains(.kimi) ? snapshot.kimi : nil
+        codex = Self.merged(snapshot.codex, previous: codex, enabled: enabled.contains(.codex))
+        claude = Self.merged(snapshot.claude, previous: claude, enabled: enabled.contains(.claude))
+        grok = Self.merged(snapshot.grok, previous: grok, enabled: enabled.contains(.grok))
+        kimi = Self.merged(snapshot.kimi, previous: kimi, enabled: enabled.contains(.kimi))
         sessionTokens = snapshot.sessionTokens
         // 扫描是全 App 最大的瞬时分配源（transcript 全库 GB 级），
         // 收尾把 libmalloc 攒下的空闲大块还给系统，压常驻 footprint
         MemoryRelief.relieveSoon()
+    }
+
+    /// 一家额度的落地规则（纯函数，可测）：
+    /// - 没勾选 → 清空，界面上这家整个消失；
+    /// - 勾了且这轮有结果 → 换上新的；
+    /// - 勾了但这轮没结果 → **保持上一轮的数字不动**。
+    ///
+    /// 第三条是关键。`CodexQuotaLoader` 问不到官方端点时返回 nil（网络抖一下、休眠刚醒、
+    /// 切网络），这时候既不能清成 nil——界面会退回转圈，看着像坏了；
+    /// 更不能拿本地旧文件顶上——那正是「额度莫名跳回 72%」的来源。
+    /// 什么时候问到，什么时候更新
+    static func merged(_ fresh: ServiceQuota?, previous: ServiceQuota?, enabled: Bool) -> ServiceQuota? {
+        guard enabled else { return nil }
+        return fresh ?? previous
     }
 
     /// 收尾。旧代际的任务不许碰 `refreshing`——那是新任务的状态了
@@ -486,42 +500,88 @@ enum KimiQuotaLoader {
     }
 }
 
-// MARK: - Codex：读最新 session 的官方 rate_limits
+// MARK: - Codex：问官方端点，问不到就不动
 
 enum CodexQuotaLoader {
-    static func load() async -> ServiceQuota {
-        // 首选官方实时端点：当前登录账号的准确额度（多账号 cc-switch 切换也不串号）。
-        // 实测同机 session 历史混着多个账号的 rate_limits（7 天窗同日 2%→16%→1% 跳变），
-        // 只有官方端点能保证「数字属于当前账号且是此刻的」
-        if let q = await fetchOfficialUsage() { return q }
-        // 降级（离线/token 失效）：session 记录里只取本次登录之后的——auth.json 的修改时间
-        // 即上次登录/切号时间，之前的记录可能属于别的账号
-        return loadFromSessions()
+    /// 问 OpenAI 拿当前额度。返回 nil ＝ **这一轮没问到**，界面保持上一轮的数字不动。
+    ///
+    /// 这里曾经是「问不到就翻 ~/.codex/sessions 里最后一条 rate_limits」。那条记录是
+    /// **上次用 Codex 时**写的，隔夜就成了十几个小时前的数字，而额度期间早已重置——
+    /// 网络抖一下就把它推上界面，手动刷新能改对、过一会儿又变回去
+    /// （2026-07-28 大梁老师实测：官方端点 0%，本地文件里躺着 18 小时前的 72%）。
+    ///
+    /// 拿旧数据顶上这件事本身就是错的：一个过期的数字摆在界面上，看着就是当前值。
+    /// 现在只有两种结果——问到就更新，问不到就什么都不做
+    static func load() async -> ServiceQuota? {
+        switch await fetchOnce() {
+        case .ok(let q):
+            return q
+        case .broken(let message):
+            // 凭据坏了不是「问不到」，是用户得动手（重登 / 先装 Codex），必须让他看见
+            AppLog.usage.error("Codex 额度不可用：\(message, privacy: .public)")
+            return ServiceQuota(error: message)
+        case .unreachable(let why):
+            // 网络类失败重试一次：ProNotch 是常驻进程（实测能连跑两天），
+            // 休眠刚醒、切网络之后的第一次请求最容易空手而回
+            AppLog.usage.notice("Codex 额度端点没通（\(why, privacy: .public)），1 秒后重试")
+            try? await Task.sleep(for: .seconds(1))
+            if case .ok(let q) = await fetchOnce() { return q }
+            AppLog.usage.notice("Codex 额度端点重试后仍没通，本轮保持原数字")
+            return nil
+        }
     }
 
-    /// ChatGPT 官方用量端点（Codex Web 同源）：auth.json 的 access_token 直接查
-    private static func fetchOfficialUsage() async -> ServiceQuota? {
+    private enum Outcome {
+        case ok(ServiceQuota)
+        /// 网络的事：重试一次，还不行就这轮不更新
+        case unreachable(String)
+        /// 凭据或返回结构的事：重试也一样，得让用户看见
+        case broken(String)
+    }
+
+    /// ChatGPT 官方用量端点（Codex Web 同源）：auth.json 的 access_token 直接查。
+    /// 每条失败路径都要有话说——原先全是静默 `return nil`，
+    /// 于是「为什么数字不对」这种问题只能靠猜
+    private static func fetchOnce() async -> Outcome {
         let authURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/auth.json")
         guard let data = try? Data(contentsOf: authURL),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let tokens = obj["tokens"] as? [String: Any],
               let token = tokens["access_token"] as? String, !token.isEmpty,
-              let url = URL(string: "https://chatgpt.com/backend-api/wham/usage") else { return nil }
+              let url = URL(string: "https://chatgpt.com/backend-api/wham/usage") else {
+            return .broken("未登录 Codex，在终端运行 codex login")
+        }
         var req = URLRequest(url: url)
         req.timeoutInterval = 10
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        guard let (body, resp) = try? await URLSession.shared.data(for: req),
-              (resp as? HTTPURLResponse)?.statusCode == 200,
-              let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-              let rl = json["rate_limit"] as? [String: Any] else { return nil }
+        let body: Data
+        let code: Int
+        do {
+            let (d, resp) = try await URLSession.shared.data(for: req)
+            body = d
+            code = (resp as? HTTPURLResponse)?.statusCode ?? -1
+        } catch {
+            return .unreachable(LogRedaction.code(error))   // 超时 / 断网 / 连接被重置
+        }
+        guard code == 200 else {
+            return (code == 401 || code == 403)
+                ? .broken("Codex 登录已过期，在终端重新 codex login")
+                : .unreachable("HTTP \(code)")
+        }
+        guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let rl = json["rate_limit"] as? [String: Any] else {
+            return .broken("Codex 返回了无法识别的数据结构")
+        }
         var q = ServiceQuota()
         q.plan = json["plan_type"] as? String
         q.account = json["email"] as? String
         q.dataAt = Date()
         if let p = rl["primary_window"] as? [String: Any] { q.primary = officialWindow(p) }
         if let s = rl["secondary_window"] as? [String: Any] { q.secondary = officialWindow(s) }
-        guard q.primary != nil || q.secondary != nil else { return nil }
-        return q
+        guard q.primary != nil || q.secondary != nil else {
+            return .broken("Codex 没返回任何额度窗口")
+        }
+        return .ok(q)
     }
 
     private static func officialWindow(_ d: [String: Any]) -> QuotaWindow {
@@ -530,90 +590,6 @@ enum CodexQuotaLoader {
                     resetsAt: (d["reset_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) },
                     windowMinutes: ((d["limit_window_seconds"] as? NSNumber)?.intValue ?? 18000) / 60,
                     isEstimate: false)
-    }
-
-    private static func loadFromSessions() -> ServiceQuota {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let root = home.appendingPathComponent(".codex/sessions")
-        guard let latest = latestSessionFile(root) else {
-            return ServiceQuota(error: "未找到 Codex 会话数据（~/.codex/sessions）")
-        }
-        guard let hit = lastRateLimits(in: latest) else {
-            return ServiceQuota(error: "最近会话里没有额度记录")
-        }
-        // 记录早于上次登录/切号（auth.json 修改时间）→ 可能是别的账号的数字，宁缺毋滥
-        let authMtime = (try? home.appendingPathComponent(".codex/auth.json")
-            .resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-        if let ts = hit.timestamp, let am = authMtime, ts < am {
-            return ServiceQuota(error: "切换账号后暂无额度记录，用一次 Codex 即可")
-        }
-        var q = ServiceQuota()
-        q.plan = hit.limits["plan_type"] as? String
-        q.dataAt = hit.timestamp
-        if let p = hit.limits["primary"] as? [String: Any] { q.primary = window(p) }
-        if let s = hit.limits["secondary"] as? [String: Any] { q.secondary = window(s) }
-        return q
-    }
-
-    private static func window(_ d: [String: Any]) -> QuotaWindow {
-        QuotaWindow(usedPercent: (d["used_percent"] as? NSNumber)?.doubleValue,
-                    usedTokens: nil,
-                    resetsAt: (d["resets_at"] as? NSNumber).map { Date(timeIntervalSince1970: $0.doubleValue) },
-                    windowMinutes: (d["window_minutes"] as? NSNumber)?.intValue ?? 300,
-                    isEstimate: false)
-    }
-
-    /// sessions/YYYY/MM/DD/rollout-*.jsonl：目录名可排序，从最新日期目录往回找最近修改的文件
-    private static func latestSessionFile(_ root: URL) -> URL? {
-        let fm = FileManager.default
-        func sortedDesc(_ dir: URL) -> [URL] {
-            ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
-                .sorted { $0.lastPathComponent > $1.lastPathComponent }
-        }
-        for y in sortedDesc(root) where y.hasDirectoryPath {
-            for m in sortedDesc(y) where m.hasDirectoryPath {
-                for d in sortedDesc(m) where d.hasDirectoryPath {
-                    let files = ((try? fm.contentsOfDirectory(at: d, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [])
-                        .filter { $0.pathExtension == "jsonl" }
-                        .sorted { (mtime($0) ?? .distantPast) > (mtime($1) ?? .distantPast) }
-                    // 最新文件可能刚建还没写入 rate_limits，多备两个候选
-                    if !files.isEmpty { return files.first }
-                }
-            }
-        }
-        return nil
-    }
-
-    private static func mtime(_ u: URL) -> Date? {
-        (try? u.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-    }
-
-    /// 从文件尾部往前找最后一条 rate_limits 记录（只读末尾 256KB，会话文件可能很大）
-    private static func lastRateLimits(in url: URL) -> (limits: [String: Any], timestamp: Date?)? {
-        guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
-        defer { try? fh.close() }
-        let size = (try? fh.seekToEnd()) ?? 0
-        let readLen: UInt64 = min(size, 256 * 1024)
-        try? fh.seek(toOffset: size - readLen)
-        guard let data = try? fh.read(upToCount: Int(readLen)),
-              let text = String(data: data, encoding: .utf8) else { return nil }
-        for line in text.split(separator: "\n").reversed() where line.contains("\"rate_limits\"") {
-            guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
-                  let limits = findDict(key: "rate_limits", in: obj) else { continue }
-            let ts = (obj["timestamp"] as? String).flatMap { ISO8601Flex.parse($0) }
-            return (limits, ts ?? mtime(url))
-        }
-        return nil
-    }
-
-    /// 递归找嵌套字典里的某个键（rate_limits 的包裹层级随 Codex 版本变化，不写死路径）
-    private static func findDict(key: String, in obj: Any) -> [String: Any]? {
-        guard let dict = obj as? [String: Any] else { return nil }
-        if let hit = dict[key] as? [String: Any] { return hit }
-        for v in dict.values {
-            if let hit = findDict(key: key, in: v) { return hit }
-        }
-        return nil
     }
 }
 
