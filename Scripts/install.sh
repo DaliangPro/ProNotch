@@ -12,7 +12,14 @@ sleep 1
 if [ -d "/Applications/ProNotch.app" ]; then
     mv "/Applications/ProNotch.app" ~/.Trash/"ProNotch-旧版-$(date +%Y%m%d%H%M%S).app"
 fi
-ditto --rsrc "build/ProNotch.app" "/Applications/ProNotch.app"
+# 用 mv 而不是 ditto：这两处在同一个 APFS 卷（/Users 与 /Applications 都在
+# /System/Volumes/Data），mv 就是一次改名——无损、原子，还比复制快。
+#
+# 更要紧的是它**不留副本**。原先用 ditto 复制，build/ProNotch.app 就一直躺在项目里，
+# 于是每装一次新版，Spotlight 里就有两个一模一样的 ProNotch 可搜到、可打开
+# （2026-07-28 大梁老师反馈「每次装完总会出现两个」，根因即此）。
+# 那份构建产物本就是一次性中转品——build-app.sh 每次开头都 rm -rf 它重建
+mv "build/ProNotch.app" "/Applications/ProNotch.app"
 # 优先用本机固定的自签名证书签：签名身份稳定，TCC（屏幕录制）与钥匙串权限跨重装保留，
 # 不必每次重装都重新授权。没有该证书（如别人的机器）则回退 ad-hoc 临时签名。
 SIGN_ID="ProNotch Local Signing"
