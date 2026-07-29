@@ -80,6 +80,23 @@ final class ChatStore: ObservableObject {
     @Published var draftAPIKey: String
     @Published var draftModel: String
     @Published var draftMessage = ""
+
+    /// 闪问页此刻该不该挡住刘海的自动收起（纯函数，可测）。
+    ///
+    /// 原判据是「输入框有焦点」，而这个输入框发完消息还保持聚焦（方便追问），
+    /// 焦点一拿到就再没放开——锁便永久挂着，鼠标移开刘海也不收。
+    /// 焦点只说明「光标在这儿」，不说明「我在用」。
+    ///
+    /// 真正该挡住收起的只有两件事：
+    /// - AI 正在吐字：把正在生成的回答收走是明显的坏体验，此时连焦点都不必要求；
+    /// - 手里有没发出去的草稿：写了一半鼠标滑出去，不该把话弄丢（这时才要求焦点——
+    ///   已经失焦说明人去干别的了，草稿留在 store 里不会丢，收起无妨）。
+    ///
+    /// 全空白的草稿不算数：敲了个空格就把刘海钉死，跟原来的病没两样
+    static func shouldHoldNotch(inputFocused: Bool, draft: String, streaming: Bool) -> Bool {
+        if streaming { return true }
+        return inputFocused && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
     @Published private(set) var availableModels: [String] = []
     /// 手动添加的模型（大梁老师定）：服务端 /models 只回一个或不可用时，自己补
     @Published private(set) var customModels: [String] = []

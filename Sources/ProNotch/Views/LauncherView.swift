@@ -40,7 +40,10 @@ struct LauncherSearchField: View {
         // 布局占位缩回 25（与标签行同款负 padding）：行高、下方页面区不动
         .padding(.vertical, -3)
         .help("回车启动第一个结果，Esc 清空")
-        .onChange(of: focused) { _, v in vm.keyboardHold = v }
+        // 与闪问页同一个病：只看焦点，点一下搜索框什么都不输，刘海就再也收不回去了。
+        // 搜索框空着就该让它正常收起（详见 ChatStore.shouldHoldNotch）
+        .onChange(of: focused) { _, _ in syncKeyboardHold() }
+        .onChange(of: store.searchText) { _, _ in syncKeyboardHold() }
         .onDisappear {
             vm.keyboardHold = false
             // 悬停中被收起时 onHover(false) 不会再来，补一次 pop 防工字光标残留
@@ -49,6 +52,11 @@ struct LauncherSearchField: View {
                 hoveringField = false
             }
         }
+    }
+
+    /// 搜索框里真有字才挡住自动收起（口径同 ChatStore.shouldHoldNotch 的草稿分支）
+    private func syncKeyboardHold() {
+        vm.keyboardHold = focused && !store.searchText.trimmingCharacters(in: .whitespaces).isEmpty
     }
 
     private func launchFirstResult() {

@@ -158,6 +158,13 @@ struct ChatView: View {
                 })
     }
 
+    /// 把「手上有活没干完」的判定结果同步给刘海（判据与理由见 ChatStore.shouldHoldNotch）
+    private func syncKeyboardHold() {
+        vm.keyboardHold = ChatStore.shouldHoldNotch(inputFocused: inputFocused,
+                                                    draft: store.draftMessage,
+                                                    streaming: store.isStreaming)
+    }
+
     /// 左右箭头光标开关：push/pop 必须成对，走这一个口
     private func setDividerCursor(_ on: Bool) {
         guard on != dividerCursorOn else { return }
@@ -303,7 +310,10 @@ struct ChatView: View {
                     }
                     return .ignored
                 }
-                .onChange(of: inputFocused) { _, v in vm.keyboardHold = v }
+                // 三个信号任一变化都重算「该不该挡住自动收起」（判据见 syncKeyboardHold）
+                .onChange(of: inputFocused) { _, _ in syncKeyboardHold() }
+                .onChange(of: store.draftMessage) { _, _ in syncKeyboardHold() }
+                .onChange(of: store.isStreaming) { _, _ in syncKeyboardHold() }
                 .onChange(of: store.focusInputTick) { _, _ in inputFocused = true }
             if store.isStreaming {
                 Button {
