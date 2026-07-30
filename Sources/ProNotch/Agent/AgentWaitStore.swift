@@ -74,6 +74,30 @@ enum AgentWaitPolicy {
         type.isEmpty || notifyingTypes.contains(type)
     }
 
+    /// 一扇窗里装多个会话的宿主。
+    ///
+    /// 「前台不打扰」的前提是「宿主在前台 ＝ 你正看着这个会话」。这条在终端上成立
+    /// （一个窗口一个会话），在这些宿主上不成立：你可能正在**同一个 App 的另一个对话**里，
+    /// 而提醒被当成「你看见了」吞掉（2026-07-29 大梁老师反馈的正是这一幕——我弹出选项，
+    /// 刘海一声不响，因为他在另一个 Claude 对话窗口）。
+    ///
+    /// 而且这个粒度做不细：切对话是在**同一扇窗里**切的，窗里是哪个对话属于 App 内部状态，
+    /// 任何系统 API 都拿不到。既然无从分辨，就按 `AgentHostVisibility` 已经定下的方向走——
+    /// 判错只是多提醒一次（卡 8 秒自收、又在屏幕最顶端不遮内容），
+    /// 反过来是把该弹的卡悄悄吞掉
+    static let multiSessionHosts: Set<String> = [
+        "com.anthropic.claudefordesktop",   // Claude 桌面版：一扇窗，侧栏切会话
+    ]
+
+    /// 该不该把这条信号放回宿主自己弹，也就是「前台不打扰」生效（纯函数，可测）。
+    ///
+    /// 三个条件缺一不可：宿主已知、它正是最前台的 App、它的窗确实压在最上层。
+    /// 再加一道——它不能是多会话宿主（理由见 `multiSessionHosts`）
+    static func shouldReleaseToHost(host: String?, frontmost: String?, hostWindowVisible: Bool) -> Bool {
+        guard let host, !host.isEmpty, host == frontmost, hostWindowVisible else { return false }
+        return !multiSessionHosts.contains(host)
+    }
+
     /// 本身就是「找你确认」的工具。它们照样会触发 `PermissionRequest`（那个钩子不分工具），
     /// 但把它们摆到卡上是空转一轮：
     ///
@@ -135,14 +159,22 @@ final class AgentWaitStore: ObservableObject {
     /// 两件事都取参而不在内部读 NSWorkspace / CGWindowList，是为了让这条规则可测；
     /// `hostWindowVisible` 默认 true，让不关心窗口层级的调用方（离屏预览、用例）保持原判定
     func present(_ notice: AgentWaitNotice, frontmost: String?, hostWindowVisible: Bool = true) {
-        if let host = notice.host, !host.isEmpty, host == frontmost, hostWindowVisible {
+        if AgentWaitPolicy.shouldReleaseToHost(host: notice.host, frontmost: frontmost,
+                                               hostWindowVisible: hostWindowVisible) {
             // 要拍板的那种不能一声不响丢掉：不答复它，终端也不会弹框，整轮就那么干等着。
             // 得先把「照旧弹终端框」写回去，让用户在眼前那个终端里正常答
+            AppLog.glow.debug("等你拍板：宿主 \(notice.host ?? "-", privacy: .public) 就在眼前，放回它自己弹")
             release(notice)
             return
         }
         guard notice.id != self.notice?.id,
-              !queued.contains(where: { $0.id == notice.id }) else { return }
+              !queued.contains(where: { $0.id == notice.id }) else {
+            AppLog.glow.debug("等你拍板：同一条信号重复送达，忽略")
+            return
+        }
+        // 这条链路原先从头到尾一行日志都没有，于是「提醒到底响没响」根本无从追查
+        // ——2026-07-29 排这个问题只能靠读代码加扒 Claude 二进制。补上
+        AppLog.glow.debug("等你拍板：挂卡 \(notice.source.rawValue, privacy: .public) 宿主 \(notice.host ?? "-", privacy: .public) 可答复 \(notice.isAnswerable, privacy: .public)")
         guard let current = self.notice else { show(notice); return }
         // 只提醒一声的那种可以互相顶掉：最新那条才是此刻在等你的，攒着轮播没意义。
         // 但绝不许顶掉一张能拍板的卡——那是待办，终端那头正卡着等答复

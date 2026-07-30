@@ -121,6 +121,58 @@ final class AgentWaitNoticeTests: XCTestCase {
         XCTAssertNotNil(store.notice)
     }
 
+    // MARK: - 一扇窗装多个会话的宿主
+
+    /// 核心回归（2026-07-29 大梁老师反馈）：他在 Claude 桌面版的**另一个对话**里，
+    /// 我弹出选项，刘海一声不响。因为「前台不打扰」判的是 App，而不是「哪个会话在你眼前」。
+    /// 桌面版一扇窗装多个对话，App 在前台完全不代表你看见了这一个
+    func test桌面版宿主在前台仍然弹() {
+        let store = AgentWaitStore()
+        let host = "com.anthropic.claudefordesktop"
+        store.present(notice(host: host), frontmost: host, hostWindowVisible: true)
+        XCTAssertEqual(store.notice?.session, "s1", "多会话宿主不该再被前台规则吞掉")
+    }
+
+    /// 终端保持原样：一个窗口就是一个会话，「App 在前台」确实等于「你看着它」，
+    /// 这时候再弹一张纯属添乱
+    func test终端宿主在前台照旧不弹() {
+        let store = AgentWaitStore()
+        store.present(notice(host: "com.apple.Terminal"), frontmost: "com.apple.Terminal")
+        XCTAssertNil(store.notice)
+    }
+
+    /// 判定纯函数：四个条件各缺一次
+    func test放回宿主的四个条件() {
+        let term = "com.apple.Terminal"
+        // 四条齐 → 放回宿主自己弹
+        XCTAssertTrue(AgentWaitPolicy.shouldReleaseToHost(
+            host: term, frontmost: term, hostWindowVisible: true))
+        // 不在最前台 → 弹
+        XCTAssertFalse(AgentWaitPolicy.shouldReleaseToHost(
+            host: term, frontmost: "com.apple.Safari", hostWindowVisible: true))
+        // 窗口没压在最上层 → 弹
+        XCTAssertFalse(AgentWaitPolicy.shouldReleaseToHost(
+            host: term, frontmost: term, hostWindowVisible: false))
+        // 宿主未知 → 弹
+        XCTAssertFalse(AgentWaitPolicy.shouldReleaseToHost(
+            host: nil, frontmost: term, hostWindowVisible: true))
+        XCTAssertFalse(AgentWaitPolicy.shouldReleaseToHost(
+            host: "", frontmost: term, hostWindowVisible: true))
+        // 多会话宿主 → 即使四条齐也弹
+        for host in AgentWaitPolicy.multiSessionHosts {
+            XCTAssertFalse(AgentWaitPolicy.shouldReleaseToHost(
+                host: host, frontmost: host, hostWindowVisible: true), "\(host) 不该被前台规则吞掉")
+        }
+    }
+
+    /// 名单里得真有 Claude 桌面版——这是唯一实测确认过的多会话宿主，
+    /// 而它的 bundle id 与 AgentKind.claude.appBundleID 必须是同一个，
+    /// 写错一个字母这条规则就静默失效
+    func test名单含Claude桌面版且与宿主识别同源() {
+        XCTAssertTrue(AgentWaitPolicy.multiSessionHosts.contains("com.anthropic.claudefordesktop"))
+        XCTAssertEqual(AgentKind.claude.appBundleID, "com.anthropic.claudefordesktop")
+    }
+
     func test到时自动收回() async throws {
         let store = AgentWaitStore(autoDismissAfter: 0.05)
         store.present(notice(), frontmost: nil)
