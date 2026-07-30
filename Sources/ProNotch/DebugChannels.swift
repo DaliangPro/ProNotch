@@ -118,9 +118,11 @@ extension AppDelegate {
     /// 调试用：离屏渲染超级截图工具栏到 PNG（生成 README 配图）
     @objc func debugSnapshotToolbar() {
         let bar = ScreenshotToolbar(
+            ratioActive: false,
             boxActive: false, hlActive: false, textActive: false, penActive: false, arrowActive: false, mosaicActive: false,
             noteActive: false, flowActive: false, wmActive: false,
             translateTitle: "翻译", translateActive: false,
+            onRatio: {},
             onBox: {}, onHighlightTool: {}, onTextTool: {}, onPen: {}, onArrow: {}, onMosaic: {}, onNote: {}, onFlow: {}, onWatermark: {}, onUndo: {},
             onOCR: {}, onLongShot: {}, onPin: {}, onAskAI: {}, onTranslate: {}, onSave: {}, onCopy: {}, onCancel: {},
             onDragToolbar: { _, _ in })

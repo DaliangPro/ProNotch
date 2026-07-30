@@ -24,6 +24,34 @@ enum ToolbarChrome {
     static func panel(_ o: Double = 0.9) -> Color { dark ? Color.black.opacity(o) : Color.white }
 }
 
+/// 比例子选项面板：自由 / 1:1 / 4:3 / 3:2 / 16:9。作用对象是**截图选区本身**，
+/// 不是标注——所以它在工具栏里单独一组、排在所有标注工具之前（先定框，再画东西）
+struct RatioOptionsBar: View {
+    let current: AspectRatio
+    let onPick: (AspectRatio) -> Void
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(AspectRatio.allCases) { r in
+                Button { onPick(r) } label: {
+                    Text(r.label)
+                        // 数字比例用等宽：4:3 与 16:9 宽度不同会让整条按钮忽宽忽窄
+                        .font(.system(size: 11, weight: .medium).monospacedDigit())
+                        .foregroundColor(current == r ? ToolbarChrome.accent : ToolbarChrome.fg())
+                        .frame(width: 40, height: 28)
+                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(current == r ? Color.cyan.opacity(0.18) : .clear))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(r == .free ? "还原成最初拖出的框" : "把选区收成 \(r.label)（中心不动，只往里收）")
+            }
+        }
+        .padding(.horizontal, 13).padding(.vertical, 7)
+        .background(ToolbarChrome.panelBG, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).strokeBorder(ToolbarChrome.hairline, lineWidth: 0.5)).fixedSize()
+    }
+}
+
 /// 框选子选项面板：形状(矩形/椭圆) / 线型(实线/虚线) / [高亮] / 颜色 / 粗细。
 /// showHighlight：高亮已是工具栏一级工具，框选工具态不再显示灯泡；
 /// 选中已有框时仍显示，用于把该框在高亮/普通间切换
@@ -223,13 +251,46 @@ struct ColorOptionsBar: View {
 struct MosaicOptionsBar: View {
     let isBox: Bool
     let lineWidth: CGFloat
+    let blur: CGFloat
     let onMode: (Bool) -> Void
     let onWidth: (CGFloat) -> Void
+    let onBlur: (CGFloat) -> Void
     static let widths: [CGFloat] = [14, 22, 34]
+
+    /// 糊的程度＝高斯模糊半径。中档 22 即原先写死的值，老手感不变；
+    /// 轻档 10 留得住「大概是段文字」的形状，重档 44 连轮廓都不剩
+    struct BlurLevel: Identifiable {
+        let label: String
+        let radius: CGFloat
+        var id: String { label }
+    }
+
+    /// 用文字而不是「方块递增」表达档位（大梁老师拍板，2026-07-29 离屏比对）：
+    /// 方块大小得靠猜「大＝更糊还是更清」，而涂抹模式下它还会和圆点笔刷挨在一起看错。
+    /// 文字与比例条同一套语言，两条并排时也统一
+    static let blurLevels = [BlurLevel(label: "轻", radius: 10),
+                             BlurLevel(label: "中", radius: 22),
+                             BlurLevel(label: "重", radius: 44)]
     var body: some View {
         HStack(spacing: 5) {
             modeBtn("rectangle.dashed", active: isBox) { onMode(true) }       // 区域（默认、在前）
             modeBtn("paintbrush.pointed", active: !isBox) { onMode(false) }   // 涂抹
+            // 糊的程度：两种模式都吃，所以不藏在 isBox 分支里
+            // （区域模式此前一个参数都不可调）
+            Divider().frame(height: 19).overlay(ToolbarChrome.separator)
+            ForEach(Self.blurLevels) { lv in
+                Button { onBlur(lv.radius) } label: {
+                    Text(lv.label)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(blur == lv.radius ? ToolbarChrome.accent : ToolbarChrome.fg())
+                        .frame(width: 30, height: 28)
+                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(blur == lv.radius ? Color.cyan.opacity(0.18) : .clear))
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help("马赛克糊到「\(lv.label)」")
+            }
             if !isBox {
                 Divider().frame(height: 19).overlay(ToolbarChrome.separator)
                 ForEach(Self.widths, id: \.self) { w in
@@ -405,6 +466,7 @@ private struct ToolbarIconButton<Content: View>: View {
 /// 截图工具栏：标注（框选/备注/序号/画笔/箭头/马赛克/水印）/ 智能处理 / 输出（取消红、复制绿压轴）；
 /// 最左拖拽手柄按住可整条自由移动
 struct ScreenshotToolbar: View {
+    let ratioActive: Bool
     let boxActive: Bool
     let hlActive: Bool
     let textActive: Bool
@@ -416,6 +478,7 @@ struct ScreenshotToolbar: View {
     let wmActive: Bool
     let translateTitle: String
     let translateActive: Bool
+    let onRatio: () -> Void
     let onBox: () -> Void
     let onHighlightTool: () -> Void
     let onTextTool: () -> Void
@@ -443,6 +506,9 @@ struct ScreenshotToolbar: View {
         HStack(spacing: 3) {
             // 拖拽手柄：按住整条工具栏跟手移动（子选项条随行）
             dragHandle
+            Divider().frame(height: 20).overlay(ToolbarChrome.separator).padding(.horizontal, 1)
+            // 选区本身：按比例收齐。排在所有标注工具之前——先把画布定好，再往上画东西
+            button("按比例裁选区", "aspectratio", active: ratioActive, action: onRatio)
             Divider().frame(height: 20).overlay(ToolbarChrome.separator).padding(.horizontal, 1)
             // 标注编辑：高亮(第一) / 框选 / 备注 / 序号 / 文字 / 画笔 / 箭头 / 马赛克 / 水印 + 撤销收尾
             button("高亮标注（聚光灯）", "rays", active: hlActive, action: onHighlightTool)

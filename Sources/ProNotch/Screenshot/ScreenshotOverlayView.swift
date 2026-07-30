@@ -34,7 +34,9 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private enum Phase { case selecting, editing }
     /// 标注工具：none=可重新框选，box=框选，highlight=高亮（聚光灯），text=输入文字，pen=画笔，
     /// arrow=箭头，mosaic=马赛克，note=备注，flow=流程，watermark=水印
-    private enum Tool { case none, box, highlight, text, pen, arrow, mosaic, note, flow, watermark }
+    /// ratio 是个例外：它不画任何东西，只借工具栏的「选中态 + 子选项条」这套机制
+    /// 来承载比例面板。所有鼠标处理都按具体工具名判断，落到 ratio 上自然什么都不做
+    private enum Tool { case none, box, highlight, text, pen, arrow, mosaic, note, flow, watermark, ratio }
     /// 马赛克模式：brush=像笔一样涂抹，box=框选区域
     private enum MosaicMode { case brush, box }
     /// 画笔/马赛克自由笔画
@@ -119,6 +121,11 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         didSet { if selection != oldValue { window?.invalidateCursorRects(for: self) } }
     }
     private var dragOrigin: NSPoint?
+    /// 当前选中的比例档
+    private var ratio: AspectRatio = .free
+    /// 套比例前那个「最初拖出来的框」。每次都从它算，来回点几个比例不会越点越小；
+    /// 点「自由」即还原成它。用户自己动了选区（重新拖、拖边角）就作废，下次重新记
+    private var ratioBaseRect: NSRect?
     // 窗口吸附：框选阶段悬停自动高亮光标下的窗口，单击即整窗选中
     private var snapWindows: [(rect: NSRect, id: CGWindowID)]?   // 吸附候选：截图冻结时刻的普通窗口（边框 + 窗口 ID，视图坐标、Z 序前→后）；nil=未加载
     private var hoverWindowRect: NSRect?    // 光标当前所在窗口的吸附框
@@ -133,7 +140,10 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var boxes: [Box] = []
     private var boxShape: BoxShape = .rect   // 框选样式：矩形 / 椭圆
     private var boxDashed = false            // 框选样式：实线 / 虚线
-    private var boxColorHex = "#FFFFFF"      // 框选样式：颜色（默认白）
+    // 框选样式：颜色。默认红（大梁老师定，2026-07-28）——框选是用来「指出这里」的，
+    // 白色在浅色截图（文档、网页、白底 App）上几乎看不见，等于框了没框。
+    // 取值即调色板首位 #FF453A，不新增配色
+    private var boxColorHex = "#FF453A"
     private var boxLineWidth: CGFloat = 2.5  // 框选样式：粗细
     private var hlShape: BoxShape = .rect    // 高亮工具形状：矩形 / 椭圆（高亮是一级工具，画出即聚光灯框）
     private var optionsHost: NSHostingView<AnyView>?   // 工具子选项面板（框选/画笔/马赛克）
@@ -166,13 +176,25 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var mosaicRects: [NSRect] = []
     private var mosaicMode: MosaicMode = .box   // 默认区域框选
     private var mosaicLineWidth: CGFloat = 22
+    /// 糊的程度（高斯模糊半径）。原先写死 22，遮不遮得住全凭运气：
+    /// 大字标题 22 还看得出轮廓，小字正文 22 又糊得过头。三档由用户挑，
+    /// **两种模式都吃这个值**（区域模式没有笔刷粗细，此前它一个参数都不可调）
+    private var mosaicBlur: CGFloat = MosaicOptionsBar.blurLevels[1].radius
     private var currentStroke: [NSPoint]?    // 正在画的画笔/马赛克涂抹笔画
     private var hoverPoint: NSPoint?         // 马赛克涂抹时的笔刷光标位置
     // 画笔「停住不松手 → 吸附成直线/圆/折线」
     private var shapeSnapTimer: Timer?
     private var rawStrokeBeforeSnap: [NSPoint]?   // 吸附前的原始轨迹，继续拖动则恢复
     private let shapeSnapDelay: TimeInterval = 0.6
-    private lazy var mosaicImage: NSImage = makeMosaicImage()
+    /// 整屏模糊图：**只缓存当前档**，档位一改即失效重算。
+    /// 不预先算好三档——一份整屏模糊图在 6K 屏上不小，为了省几十毫秒常驻三份不值当
+    private var mosaicCache: (blur: CGFloat, image: NSImage)?
+    private var mosaicImage: NSImage {
+        if let c = mosaicCache, c.blur == mosaicBlur { return c.image }
+        let img = makeMosaicImage(radius: mosaicBlur)
+        mosaicCache = (mosaicBlur, img)
+        return img
+    }
     private var markers: [Marker] = []
     private var steps: [Step] = []
     private var currentBox: NSRect?
@@ -807,11 +829,11 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     }
 
     /// 生成整屏的毛玻璃模糊版（高斯模糊）；按需求路径裁剪显示，替代早期的像素块马赛克
-    private func makeMosaicImage() -> NSImage {
+    private func makeMosaicImage(radius: CGFloat) -> NSImage {
         guard let tiff = nsImage.tiffRepresentation, let ci = CIImage(data: tiff) else { return nsImage }
         // clampedToExtent：边缘像素外延，避免模糊后四周出现半透明黑边；模糊完裁回原尺寸
         let blurred = ci.clampedToExtent()
-            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: 22])
+            .applyingFilter("CIGaussianBlur", parameters: [kCIInputRadiusKey: radius])
             .cropped(to: ci.extent)
         let ctx = CIContext(options: nil)
         guard let cg = ctx.createCGImage(blurred, from: ci.extent) else { return nsImage }
@@ -1095,6 +1117,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         if phase == .editing, let mode = selectionGrabMode(at: pt) {
             commitEditing(); selected = nil
             clearTranslationOverride()   // 选区将变，按旧选区渲染的译图作废
+            invalidateRatioBase()        // 他要自己调，比例基准与档位一并作废
             selRectGrab = mode
             needsDisplay = true
             return
@@ -1343,6 +1366,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         }
         if phase == .selecting, let sel = selection {
             dragOrigin = nil
+            invalidateRatioBase()   // 新框出来的选区就是新基准，上一次的作废
             if sel.width >= 4, sel.height >= 4 {
                 hoverWindowRect = nil
                 phase = .editing; showToolbar(for: sel)
@@ -1947,11 +1971,17 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                 onDensity: { [weak self] in self?.wmDensity = $0; self?.refreshToolbars() },
                 onColor: { [weak self] in self?.wmColorHex = $0; self?.refreshToolbars() },
                 onOpacity: { [weak self] in self?.wmOpacity = $0; self?.refreshToolbars() }))
+        case .ratio:
+            return AnyView(RatioOptionsBar(current: ratio,
+                                           onPick: { [weak self] in self?.applyRatio($0) }))
         case .mosaic:
             return AnyView(MosaicOptionsBar(
-                isBox: mosaicMode == .box, lineWidth: mosaicLineWidth,
+                isBox: mosaicMode == .box, lineWidth: mosaicLineWidth, blur: mosaicBlur,
                 onMode: { [weak self] in self?.mosaicMode = $0 ? .box : .brush; self?.refreshToolbars() },
-                onWidth: { [weak self] in self?.mosaicLineWidth = $0; self?.refreshToolbars() }))
+                onWidth: { [weak self] in self?.mosaicLineWidth = $0; self?.refreshToolbars() },
+                // 改档即重绘：已经打好的马赛克会跟着一起变——它们共用同一张整屏模糊图，
+                // 这也正是想要的（挑到满意的浓度，全图统一，不会一块轻一块重）
+                onBlur: { [weak self] in self?.mosaicBlur = $0; self?.refreshToolbars(); self?.needsDisplay = true }))
         case .note:
             var cur = noteColorHex
             if case .marker(let i)? = selected, markers.indices.contains(i) { cur = markers[i].colorHex }
@@ -1986,12 +2016,14 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         // 翻译按钮「按下」高亮：正在翻译，或译图在手且当前显示译文（切回原文则熄灭）
         let translateActive = translating || (translatedOverride != nil && !showingOriginal)
         return ScreenshotToolbar(
+            ratioActive: tool == .ratio,
             boxActive: tool == .box, hlActive: tool == .highlight, textActive: tool == .text,
             penActive: tool == .pen,
             arrowActive: tool == .arrow,
             mosaicActive: tool == .mosaic, noteActive: tool == .note, flowActive: tool == .flow,
             wmActive: tool == .watermark,
             translateTitle: tTitle, translateActive: translateActive,
+            onRatio: { [weak self] in self?.toggleTool(.ratio) },
             onBox: { [weak self] in self?.toggleTool(.box) },
             onHighlightTool: { [weak self] in self?.toggleTool(.highlight) },
             onTextTool: { [weak self] in self?.toggleTool(.text) },
@@ -2036,6 +2068,30 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         tool = (tool == t) ? .none : t
         if let sel = selection { showToolbar(for: sel) }
         needsDisplay = true
+    }
+
+    /// 套用比例档。「自由」＝还原成套比例之前那个框。
+    ///
+    /// 每档都从 `ratioBaseRect` 算而不是从当前选区算：否则 1:1 收完再点 16:9
+    /// 是拿已经收窄过的框再收一次，来回点几下框就没了
+    private func applyRatio(_ r: AspectRatio) {
+        guard let sel = selection else { return }
+        let base = ratioBaseRect ?? sel
+        ratioBaseRect = base            // 首次套用时把当前框记成基准
+        ratio = r
+        let fitted = r.fit(base)
+        // 收出来还不到 4pt 就别改了——这种框本来也截不出东西，改了只会让人以为坏了
+        guard min(fitted.width, fitted.height) >= 4 else { return }
+        selection = fitted
+        showToolbar(for: fitted)        // 工具栏贴着选区，选区变了得跟着挪
+        needsDisplay = true
+    }
+
+    /// 用户自己动了选区（重新框、拖边角）→ 比例基准作废，档位回到自由。
+    /// 不作废的话，他手动调完再点 1:1，会从「上一个」框算，结果莫名其妙
+    private func invalidateRatioBase() {
+        ratioBaseRect = nil
+        ratio = .free
     }
 
     // MARK: - 合成 / 输出
