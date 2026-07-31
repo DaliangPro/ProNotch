@@ -130,7 +130,14 @@ struct ChatView: View {
                     // 正文两侧比输入框多留 16：正文缩在输入框以内，左右边界也只留输入框那一条
                     .padding(.horizontal, textInset)
                     windowComposer
-                        // 实测输入框高度喂给上面的内容内边距，行数一变就跟着变
+                        // 整条底栏必须是**不透明**的，而且要铺到窗底。
+                        //
+                        // 只给输入框本身上底色是不够的：它外面还有左右与底部的外边距，
+                        // 那圈边距是透明的，文字滚到那儿照样看得见——大梁老师看到的
+                        // 「文字直接穿过去」就是这个（2026-07-31）。
+                        // 背景加在**所有 padding 之后**，才连边距一起盖住
+                        .background(ChatWindowPalette.background)
+                        // 实测底栏高度喂给上面的内容内边距，行数一变就跟着变
                         .background(GeometryReader { g in
                             Color.clear
                                 .onAppear { composerHeight = g.size.height }
