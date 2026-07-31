@@ -618,13 +618,15 @@ struct ChatView: View {
                 ModelSwitcher(dropUp: true)
                 // 图标与刘海用同一套（大梁老师定）：地球 + 那张思考气泡原件，
                 // 同一个功能在两处不该长两个样
+                // 只留图标，中文交给悬停气泡（大梁老师 2026-07-31）：
+                // 两个带字的胶囊占掉大半行，模型名反而被挤没了
                 windowToolChip("联网", on: store.webSearchEnabled,
                                action: { store.webSearchEnabled.toggle() }) {
-                    Image(systemName: "globe").font(.system(size: 12))
+                    Image(systemName: "globe").font(.system(size: 13))
                 }
                 windowToolChip("深度思考", on: store.thinkingEnabled,
                                action: { store.thinkingEnabled.toggle() }) {
-                    ThinkingBubbleIcon(side: 14)
+                    ThinkingBubbleIcon(side: 15)
                 }
                 Spacer(minLength: 4)
                 if store.isStreaming {
@@ -653,16 +655,27 @@ struct ChatView: View {
                     .accessibilityLabel("发送")
                 }
             }
+            // 整行左右各外探 8：胶囊与发送键因此离输入框内壁 4pt，
+            // 左下角与右下角同时与外圆角同心。文字仍落在 12 的竖线上
+            //（胶囊自带 8 内边距，4 + 8 = 12）
+            .padding(.horizontal, -8)
         }
         // 内边距 12 与气泡的 12 一致：输入框占位符、模型名和气泡里的正文
-        // 因此落在同一条竖线上（大梁老师要「文字之间有对齐关系」）
-        .padding(.horizontal, 12).padding(.vertical, 9)
+        // 因此落在同一条竖线上（大梁老师要「文字之间有对齐关系」）。
+        // 下边只留 4：控件行整体下移、底部留白收窄（大梁老师 2026-07-31），
+        // 这个 4 不是随手定的，见下面圆角同心的算法
+        .padding(.horizontal, 12).padding(.top, 9).padding(.bottom, 4)
         // 比窗口材质更厚一层：层级靠材质厚薄编码，不靠描边（Apple 的做法）
         // 只靠材质分不出层：深色下 regularMaterial 和窗口底几乎同色（实测拍出来糊成一片）。
         // 叠一层浅填充 + 一道细描边，层级要看得出来才叫层级
         .background {
-            // 用确定色而不是材质：材质会跟着背后的东西走，换一档底色就翻车
-            let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+            // 用确定色而不是材质：材质会跟着背后的东西走，换一档底色就翻车。
+            //
+            // **半径 17 是算出来的，不是挑的**：模型胶囊高 26 ⇒ 圆角 13，
+            // 它离输入框内壁 4pt（外层 12 − 控件行外探 8），要让两条弧线看着平行，
+            // 两个圆心必须重合 ⇒ 外圆角 = 13 + 4 = 17。
+            // 底部留白同样取 4，左下角才真的同心（大梁老师：「曲度视觉平行」）
+            let shape = RoundedRectangle(cornerRadius: 17, style: .continuous)
             shape.fill(ChatWindowPalette.surface1)
                 .overlay(shape.strokeBorder(ChatWindowPalette.border, lineWidth: 0.5))
         }
@@ -677,15 +690,13 @@ struct ChatView: View {
                                             action: @escaping () -> Void,
                                             @ViewBuilder icon: () -> Icon) -> some View {
         Button(action: action) {
-            HStack(spacing: 5) {
-                icon()
-                Text(title).font(.system(size: 11.5))
-            }
+            // 纯图标：做成 26×26 的正圆，与旁边模型胶囊等高
+            icon()
+                .frame(width: 26, height: 26)
             // 开＝系统强调色（大梁老师定：跟他系统设置里那个颜色一致，他的机器是黄色）。
             // 用 NSColor.controlAccentColor 而不是 SwiftUI 的 Color.accentColor：
             // 后者在没有 App 环境时（比如离屏渲染）会退成另一个色，前者始终读系统真值
             .foregroundStyle(on ? AnyShapeStyle(Self.accent) : AnyShapeStyle(.secondary))
-            .padding(.horizontal, 9).frame(height: 26)
             .background {
                 if on {
                     Capsule().fill(Self.accent.opacity(0.18))
@@ -694,12 +705,14 @@ struct ChatView: View {
                     Capsule().fill(.quaternary)
                 }
             }
-            // 热区撑到 32 高（任务书 §10.2.5 / §16.5），视觉仍是 26——
-            // 胶囊本身再高就压过输入框了
-            .frame(height: 32)
+            // 热区撑到 32（任务书 §10.2.5 / §16.5），视觉仍是 26
+            .frame(width: 32, height: 32)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // 中文说明改由悬停气泡给出，并带上当前状态
+        .notchTip(on ? "\(title)已开启（点击关闭）" : "\(title)已关闭（点击开启）",
+                  edge: .aboveLeading)
         // 开关状态不能只靠颜色（§10.2.6）：读屏要能报出「已选中」
         .accessibilityLabel(title)
         .accessibilityValue(on ? "已开启" : "已关闭")

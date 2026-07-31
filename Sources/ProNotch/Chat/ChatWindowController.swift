@@ -257,59 +257,84 @@ private struct WindowDragHandle: NSViewRepresentable {
 /// 之前给他看的是我手画的仿制稿，图看着行、装上就崩，来回好几轮全耗在这个落差上
 struct ChatWindowChrome: View {
     @EnvironmentObject var store: ChatStore
-    @EnvironmentObject var notchVM: NotchViewModel
     @State private var hoverNew = false
-    @State private var hoverExpand = false
     @State private var hoverHistory = false
     @State private var showHistory = false
 
-    /// 历史会话列表。数据来自 ChatStore.conversations（真有），点一条即切过去
+    /// 历史会话开关。列表不再弹浮窗，而是从右侧推开一条侧边栏（大梁老师 2026-07-31）：
+    /// 浮窗会盖住正文、点一下就消失，侧栏能一直开着对照着看
     private var historyButton: some View {
-        iconButton("clock.arrow.circlepath", hovering: hoverHistory, tip: "历史对话") {
-            showHistory.toggle()
+        iconButton("clock.arrow.circlepath", hovering: hoverHistory,
+                   tip: showHistory ? "收起历史对话" : "历史对话") {
+            withAnimation(.easeOut(duration: 0.18)) { showHistory.toggle() }
         }
         .onHover { hoverHistory = $0 }
-        .popover(isPresented: $showHistory, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 0) {
-                if store.conversations.isEmpty {
-                    Text("还没有历史对话")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .padding(14)
-                } else {
-                    ForEach(store.conversations.prefix(12)) { conversation in
-                        Button {
-                            store.selectConversation(conversation.id)
-                            showHistory = false
-                        } label: {
-                            HStack(spacing: 8) {
-                                Text(conversation.title.isEmpty ? "未命名对话" : conversation.title)
-                                    .font(.system(size: 12.5))
-                                    .lineLimit(1)
-                                Spacer(minLength: 8)
-                                if conversation.id == store.currentID {
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: 9, weight: .semibold))
-                                }
-                            }
-                            .padding(.horizontal, 12).padding(.vertical, 7)
-                            .frame(width: 240, alignment: .leading)
-                            .contentShape(Rectangle())
+        .accessibilityValue(showHistory ? "已展开" : "已收起")
+    }
+
+    /// 右侧历史对话侧栏。数据来自 ChatStore.conversations（真有），点一条即切过去
+    private var historySidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("历史对话")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(MarkdownTypography.textTertiary)
+                .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 6)
+            if store.conversations.isEmpty {
+                Text("还没有历史对话")
+                    .font(.system(size: 12))
+                    .foregroundStyle(MarkdownTypography.textTertiary)
+                    .padding(.horizontal, 14)
+                Spacer(minLength: 0)
+            } else {
+                ScrollView(showsIndicators: false) {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(store.conversations) { conversation in
+                            historyRow(conversation)
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("切换到对话：\(conversation.title)")
                     }
+                    .padding(.horizontal, 6)
+                    .padding(.bottom, 10)
                 }
             }
-            .padding(.vertical, 4)
         }
+        .frame(width: 220)
+        .background(ChatWindowPalette.surface1)
+        // 只在左边描一道线：右边贴着窗沿，再描一条就成了双线
+        .overlay(alignment: .leading) {
+            Rectangle().fill(ChatWindowPalette.divider).frame(width: 1)
+        }
+    }
+
+    private func historyRow(_ conversation: ChatConversation) -> some View {
+        let current = conversation.id == store.currentID
+        return Button {
+            store.selectConversation(conversation.id)
+        } label: {
+            HStack(spacing: 6) {
+                Text(conversation.title.isEmpty ? "未命名对话" : conversation.title)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(current ? .white : .white.opacity(0.72))
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(current ? ChatWindowPalette.surface2 : .clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("切换到对话：\(conversation.title.isEmpty ? "未命名对话" : conversation.title)")
     }
 
     var body: some View {
         VStack(spacing: 0) {
             titleBar
-            ChatView(host: .window)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            HStack(spacing: 0) {
+                ChatView(host: .window)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if showHistory { historySidebar.transition(.move(edge: .trailing)) }
+            }
                 // 下方留白由输入块自己给（22，与左右一致）。这里再加就叠成 36，
                 // 底部会比两侧明显宽一圈——大梁老师要的是「左右和下方一致」
         }
@@ -346,12 +371,14 @@ struct ChatWindowChrome: View {
     /// 不画拖拽把手（他定的）：macOS 的标题栏本来也没有提示，光标形状就够了
     private var titleBar: some View {
         ZStack {
-            // 窗口名居中（任务书 §6.2）：13pt / 字重 500 / 次要色。
+            // 窗口标识改成一个闪电（大梁老师 2026-07-31）：这扇窗叫「闪问」，
+            // 一个图标比四个字更省地方也更认得出。
             // 摆在 ZStack 底层而不是 HStack 中段——左右两侧按钮宽度不等，
-            // 用 HStack 的话标题会被挤得偏心
-            Text("AI 快捷对话")
-                .font(.system(size: 13, weight: .medium))
+            // 用 HStack 的话它会被挤得偏心
+            Image(systemName: "bolt.fill")
+                .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(MarkdownTypography.textSecondary)
+                .accessibilityLabel("AI 闪问")
             HStack(spacing: 2) {
                 // 左上角空出来给系统红绿灯（它由窗口标题栏绘制，不在这棵视图树里）。
                 // 三颗灯占到 x≈69（实测按钮原点 9 / 32 / 55，各 14 宽），留 80 才不压边
@@ -360,14 +387,6 @@ struct ChatWindowChrome: View {
                 // 历史会话（任务书 §3.3.2，P2 条件项）：ChatStore 本来就存着会话列表，
                 // 数据是真的才做——任务书禁止摆没功能的按钮
                 historyButton
-                // 打开完整会话（§3.3.1）：刘海的闪问页是双栏形态，带会话侧栏，
-                // 就是这扇窗的「完整版」。没有另造一个主窗口
-                iconButton("macwindow", hovering: hoverExpand,
-                           tip: "在刘海中打开（带会话列表）") {
-                    ChatWindowController.shared.hide()
-                    notchVM.expandProgrammatically(switchingTo: .chat)
-                }
-                .onHover { hoverExpand = $0 }
                 iconButton("plus", hovering: hoverNew, tip: "新对话 ⌘N") {
                     store.newConversation()
                     store.focusInputTick += 1
