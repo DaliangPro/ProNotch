@@ -594,7 +594,7 @@ struct ClipboardSwitcherView: View {
                         // 全部历史（上限 200 条，图片卡同步读盘），条目多时首帧明显卡
                         LazyHStack(spacing: 12) {
                             ForEach(Array(store.items.enumerated()), id: \.element.id) { idx, item in
-                                cardCell(idx: idx) {
+                                cardCell(idx: idx, anchor: item.id) {
                                     ClipboardCard(item: item, selected: controller.selectedSet.contains(idx))
                                 } menu: {
                                     Button(role: .destructive) { controller.delete(at: idx) } label: {
@@ -629,14 +629,18 @@ struct ClipboardSwitcherView: View {
             .onChange(of: controller.keyboardScrollTick) { _, _ in
                 // 只有键盘 ← → 才滚动居中；鼠标点击不动卡片（点击后卡片位移会导致下一次点击落点错位）
                 withAnimation(.easeOut(duration: 0.18)) {
-                    // 话术卡锚点是 snippet.id（拖动重排必须保持 identity 稳定），历史卡仍用序号
+                    // 两侧锚点都是条目 ID：身份稳定，删除/重排后不会串格
                     if isSnippet {
                         let i = controller.selectedIndex
                         if snippets.snippets.indices.contains(i) {
                             proxy.scrollTo(snippets.snippets[i].id, anchor: .center)
                         }
                     } else {
-                        proxy.scrollTo(controller.selectedIndex, anchor: .center)
+                        // 锚点同步改成条目 ID：卡片的身份已经不是下标了
+                        let i = controller.selectedIndex
+                        if store.items.indices.contains(i) {
+                            proxy.scrollTo(store.items[i].id, anchor: .center)
+                        }
                     }
                 }
             }
@@ -646,6 +650,7 @@ struct ClipboardSwitcherView: View {
     /// 卡片 + 下方「复制」按钮：卡片体与右键菜单由参数注入，交互（单击选中/双击粘贴/复制）历史话术共用
     private func cardCell<Card: View, Menu: View>(
         idx: Int,
+        anchor: UUID,
         @ViewBuilder card: () -> Card,
         @ViewBuilder menu: () -> Menu
     ) -> some View {
@@ -674,7 +679,15 @@ struct ClipboardSwitcherView: View {
             }
             .buttonStyle(.plain)
         }
-        .id(idx)
+        // 身份必须锚在**条目 ID**上，不能用下标。
+        //
+        // 用下标的后果（大梁老师 2026-07-31 反馈「删完那条还在」）：ForEach 本来按
+        // element.id 认身份，这里再用 .id(idx) 把身份盖成下标，删掉第 0 条后原第 1 条
+        // 挪到下标 0，SwiftUI 看见「.id(0) 还在」就当同一个视图直接复用旧内容——
+        // 每一格都停在它原来那格的内容上，看着就是「被删的那条没消失、只是末尾少了一张」。
+        // 离屏比像素实测：活视图与同数据全新渲染完全对不上。
+        // 话术侧一直锚 snippet.id，本来就没这个毛病
+        .id(anchor)
     }
 
     // MARK: 话术编辑浮层
