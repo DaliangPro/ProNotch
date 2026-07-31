@@ -67,6 +67,10 @@ struct ChatView: View {
     /// 判据是**用户真的滚了**，不是「内容长出视口」——后者在流式输出时每一帧都成立，
     /// 拿它当判据等于永远不跟随
     @State private var followBottom = true
+    /// 视口是否已接近底部（任务书 §12.1：距底 ≤ 80）。驱动「回到底部」按钮的显隐
+    @State private var atBottom = true
+    /// 留一份滚动代理给「回到底部」按钮用——它在 ScrollViewReader 的闭包外面
+    @State private var scrollProxy: ScrollViewProxy?
     @State private var scrollMonitor: Any?
 
     /// 消息滚动区的坐标空间名；底部哨兵靠它算自己离视口顶部多远
@@ -337,9 +341,38 @@ struct ChatView: View {
                     .onChange(of: g.size.height) { _, h in viewportHeight = h }
             })
             .onPreferenceChange(BottomAnchorKey.self) { y in
-                // 底部哨兵回到视口内（留 24pt 容差）＝ 用户自己滚回了底部，恢复跟随
-                if viewportHeight > 0, y <= viewportHeight + 24 { followBottom = true }
+                // 底部哨兵离视口底还有多远。任务书 §12.1 的「接近底部」阈值是 80
+                guard viewportHeight > 0 else { return }
+                let distance = y - viewportHeight
+                atBottom = distance <= 80
+                // 回到底部即恢复跟随（留 24pt 容差，比「接近」更严，免得刚滚一点就又被拽下去）
+                if distance <= 24 { followBottom = true }
             }
+            // 「回到底部」：离底 80pt 以上才出现（任务书 §12.2）。
+            // 压在消息区右下角而不是居中——居中会正好盖住最后一行正文
+            .overlay(alignment: .bottom) {
+                if !host.inNotch, !atBottom {
+                    Button {
+                        followBottom = true
+                        withAnimation(.easeOut(duration: 0.16)) {
+                            scrollProxy?.scrollTo("bottom", anchor: .bottom)
+                        }
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.75))
+                            .frame(width: 32, height: 32)
+                            .background(Circle().fill(Color(red: 0.161, green: 0.161, blue: 0.176)))
+                            .overlay(Circle().strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
+                            .shadow(color: .black.opacity(0.35), radius: 8, y: 2)
+                    }
+                    .buttonStyle(.plain)
+                    .notchTip("回到底部", edge: .aboveLeading)
+                    .padding(.bottom, 8)
+                    .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.15), value: atBottom)
             .onChange(of: store.messages.last?.content) { _, _ in
                 guard followBottom else { return }
                 proxy.scrollTo("bottom", anchor: .bottom)
@@ -351,6 +384,7 @@ struct ChatView: View {
             }
             .onAppear {
                 followBottom = true
+                scrollProxy = proxy
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
         }
@@ -480,7 +514,10 @@ struct ChatView: View {
                 .focused($inputFocused)
                 .onSubmit { sendDraft() }
                 .onKeyPress(.return, phases: .down) { press in
-                    guard press.modifiers.contains(.command) else { return .ignored }
+                    // 换行：⌘回车与 ⇧回车都认（大梁老师 2026-07-31 定「两个都支持」）。
+                    // 系统自带的 ⌥回车也仍然有效
+                    guard press.modifiers.contains(.command)
+                            || press.modifiers.contains(.shift) else { return .ignored }
                     if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
                         editor.insertNewlineIgnoringFieldEditor(nil)
                         return .handled
@@ -702,6 +739,10 @@ private struct MessageBubble: View {
     /// 但大梁老师定下两边都要气泡（2026-07-30）——一眼能分清谁说的比松快更重要
     var windowStyle = false
 
+    /// 独立窗口里的 AI 回答：不套气泡，直接落在画布上（任务书 §8.1）。
+    /// 刘海仍保留淡框——那儿是窄带，没有背景就分不出一条条消息
+    private var flatOnCanvas: Bool { windowStyle && message.role == .assistant }
+
     /// 这条消息用哪套排版度量。刘海走紧凑档，独立窗口走舒适档
     private var type: MarkdownTypography {
         MarkdownTypography(body: windowStyle ? 14 : 12, compact: !windowStyle)
@@ -710,6 +751,7 @@ private struct MessageBubble: View {
     var body: some View {
         HStack {
             // 两侧都留空档：气泡才有「贴着一边」的形，不然就是一条通栏
+            // 用户气泡最大宽度 min(68%, 640)（任务书 §6.5）——靠左侧空档挤出来
             if message.role == .user { Spacer(minLength: windowStyle ? 64 : 80) }
             Group {
                 if message.content.isEmpty && streaming {
@@ -756,32 +798,26 @@ private struct MessageBubble: View {
                     }
                 }
             }
-            // 内边距也从正文字号推：正文越大，四周越要留得开
-            .padding(.horizontal, type.bubbleH)
-            .padding(.vertical, type.bubbleV)
+            // AI 回答**直接落在背景画布上**，没有内边距也没有底色（任务书 §8.1，
+            // 大梁老师 2026-07-31 拍板照办）：长回答套在一整块深灰里，正文层级被那块
+            // 背景压掉，卡片宽度还随内容变、阅读边界不稳。
+            // 只有代码块 / 表格 / 引用 / 来源这类才用局部卡片。
+            // 用户消息仍是右侧气泡——一眼认出哪句是自己问的（任务书 §3.1.4）
+            .padding(.horizontal, flatOnCanvas ? 0 : (windowStyle ? 14 : type.bubbleH))
+            .padding(.vertical, flatOnCanvas ? 0 : (windowStyle ? 10 : type.bubbleV))
             .background {
-                if windowStyle {
-                    // 两边都是气泡，靠**材质厚薄**分谁说的：
-                    // 我的提问用厚材质（跟输入块同一档，都是「我这边」），
-                    // AI 的回答用最薄的一档，长文压在上面才不闷。半径 14 与输入块一致
-                    let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    if message.role == .user {
-                        // 同理不用材质：regularMaterial 在半透明窗里渲得比窗底还暗，
-                        // 成了整屏唯一一块「比背景深」的东西。tertiary 比 quaternary
-                        // 明确亮一档，「我说的」因此更实、AI 那侧更轻
-                        shape.fill(.tertiary)
-                    } else {
-                        // 不用 ultraThinMaterial：材质在已经半透明的窗里会跟着背后桌面走，
-                        // 深桌面下渲成近黑、浅桌面下发白，同一块气泡颜色不可控
-                        //（离屏实测就是一块黑）。.quaternary 是确定的一档淡提亮
-                        shape.fill(.quaternary)
-                    }
+                if flatOnCanvas {
+                    Color.clear
+                } else if windowStyle {
+                    // 我的提问：圆角 14（任务书 §5.2），底色用 surface-2
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color(red: 0.118, green: 0.118, blue: 0.129))
                 } else {
                     RoundedRectangle(cornerRadius: 10)
                         .fill(Color.white.opacity(message.role == .user ? 0.16 : 0.06))
                 }
             }
-            if message.role == .assistant { Spacer(minLength: windowStyle ? 64 : 80) }
+            if message.role == .assistant, !flatOnCanvas { Spacer(minLength: 80) }
         }
         .frame(maxWidth: .infinity,
                alignment: message.role == .user ? .trailing : .leading)
