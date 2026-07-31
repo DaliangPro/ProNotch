@@ -11,25 +11,6 @@ private final class ChatPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// 真毛玻璃底衬。
-///
-/// 之前窗口底色是不透明的 `Color(white: 0.05)`——那是**刘海**的语言：刘海要跟屏幕顶端
-/// 的黑融为一体，所以只能用死黑加白色 alpha 叠层。独立悬浮窗没有这个约束，
-/// macOS 悬浮面板的标准语言是透出背后桌面的毛玻璃（Spotlight、控制中心都是）。
-/// 大梁老师连提数次「重新设计」，指的就是这件事——别再沿用刘海那套（2026-07-30）
-struct GlassBackdrop: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let v = NSVisualEffectView()
-        // popover 而非 hudWindow：后者在深色外观下几乎不透光，看着就是一块纯色
-        //（大梁老师实测「不是毛玻璃，就是纯色」）。popover 才是能看出玻璃感的那档
-        v.material = .popover
-        v.blendingMode = .behindWindow
-        v.state = .active
-        return v
-    }
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
-}
-
 /// AI 闪问的独立浮窗：快捷键唤出，不再展开刘海。
 ///
 /// 由来（大梁老师 2026-07-29）：闪问原先寄生在刘海展开态里，快捷键一按整条刘海张开。
@@ -116,6 +97,13 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
             // ⌘W：按 macOS 惯例关窗（＝红灯，收起不销毁）
             if event.keyCode == 13, event.modifierFlags.contains(.command) {
                 self.hide()
+                return nil
+            }
+            // ⌘M：最小化。系统那份 ⌘M 挂在菜单栏「窗口」菜单上，而 ProNotch 是
+            // LSUIElement 后台 App 根本没有菜单栏，于是这个键没人接（大梁老师 2026-07-31）。
+            // 面板本身是能最小化的（实测 miniaturize 后 isMiniaturized 为真），只差有人调它
+            if event.keyCode == 46, event.modifierFlags.contains(.command) {
+                self.panel?.miniaturize(nil)
                 return nil
             }
             // ESC：正在输出就打断；没在输出则放行，不再顺手关窗
@@ -272,7 +260,10 @@ struct ChatWindowChrome: View {
         // 顶部安全区内缩，于是这条顶栏整体被压到红绿灯下面——「新对话」比三颗灯低一截，
         // 上面还空出一条（离屏拍出来才发现，2026-07-30）
         .ignoresSafeArea(edges: .top)
-        .background(GlassBackdrop().ignoresSafeArea())
+        // 不透明黑底（大梁老师 2026-07-31 定）。此前是 NSVisualEffectView 毛玻璃，
+        // 透出背后桌面——看着好看，但窗内每一块的实际颜色都跟着桌面走，
+        // 气泡、下拉、输入块得一个个改成确定性填充才稳得住。改黑底之后这些都成了定值
+        .background(Color.black.ignoresSafeArea())
         // 这里原来有一道 1pt 亮边（想给玻璃做点厚度感）。大梁老师要去掉，
         // 而且它本身还错位：overlay 按安全区顶端摆，落在距窗顶 32pt 的标题栏下沿，
         // 看着就是横穿窗口的一条线（实测 2026-07-30）

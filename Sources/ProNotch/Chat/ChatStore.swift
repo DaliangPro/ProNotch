@@ -748,17 +748,19 @@ final class ChatStore: ObservableObject {
     private func run(question: String, history: [[String: Any]], config: ChatRequestConfig) async {
         var payload = history
         if webSearchEnabled {
-            isSearching = true
             do {
-                // 先规划：要不要联网、拆几条查询、限不限时间（规划失败则退回拿原话搜一次）
+                // 先规划：要不要联网、拆几条查询、限不限时间（规划失败则退回拿原话搜一次）。
+                // **这一段不显示「联网搜索中」**：此刻还没决定要不要搜，写成搜索中是假的。
+                // 原来一发消息就先亮「联网搜索中」，判定不用搜再退回普通思考态，
+                // 顺序反了（大梁老师 2026-07-31）。现在先普通思考，定了要搜才切过去
                 let plan = await planSearch(question: question, history: history, config: config)
                 // 开关打开只表示「允许它搜」，不是「每次都搜」。写代码、翻译、算数、
                 // 或加工对话里已有的内容，联网没用还白等一次搜索
                 guard plan.shouldSearch else {
-                    isSearching = false
                     await stream(payload: payload, config: config)
                     return
                 }
+                isSearching = true
                 let results = try await WebSearch.searchMany(
                     queries: plan.queries, engine: config.searchEngine, key: config.searchKey,
                     timeRange: plan.timeRange, news: plan.news)
