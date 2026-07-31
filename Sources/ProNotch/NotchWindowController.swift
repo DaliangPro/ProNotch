@@ -109,7 +109,11 @@ final class NotchWindowController {
             do {
                 let results = try await WebSearch.search(
                     query: "MacBook 刘海 notch 应用", engine: engine, key: key)
-                AppLog.window.info("搜索返回 \(results.count, privacy: .public) 条，正文合计 \(results.reduce(0) { $0 + $1.snippet.count }, privacy: .public) 字")
+                // 相关片段与正文分开报：片段为 0 说明该引擎没给相关块，
+                // 正文为 0 说明抓取全失败——两种毛病的处置完全不同
+                let excerpts = results.reduce(0) { $0 + $1.highlights.count }
+                let bodies = results.reduce(0) { $0 + $1.body.count }
+                AppLog.window.info("搜索返回 \(results.count, privacy: .public) 条，相关片段 \(excerpts, privacy: .public) 字，正文 \(bodies, privacy: .public) 字")
             } catch {
                 AppLog.window.error("搜索失败: \(LogRedaction.code(error), privacy: .public) \(error.localizedDescription, privacy: .private)")
             }
