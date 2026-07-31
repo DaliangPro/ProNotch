@@ -257,7 +257,53 @@ private struct WindowDragHandle: NSViewRepresentable {
 /// 之前给他看的是我手画的仿制稿，图看着行、装上就崩，来回好几轮全耗在这个落差上
 struct ChatWindowChrome: View {
     @EnvironmentObject var store: ChatStore
+    @EnvironmentObject var notchVM: NotchViewModel
     @State private var hoverNew = false
+    @State private var hoverExpand = false
+    @State private var hoverHistory = false
+    @State private var showHistory = false
+
+    /// 历史会话列表。数据来自 ChatStore.conversations（真有），点一条即切过去
+    private var historyButton: some View {
+        iconButton("clock.arrow.circlepath", hovering: hoverHistory, tip: "历史对话") {
+            showHistory.toggle()
+        }
+        .onHover { hoverHistory = $0 }
+        .popover(isPresented: $showHistory, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 0) {
+                if store.conversations.isEmpty {
+                    Text("还没有历史对话")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .padding(14)
+                } else {
+                    ForEach(store.conversations.prefix(12)) { conversation in
+                        Button {
+                            store.selectConversation(conversation.id)
+                            showHistory = false
+                        } label: {
+                            HStack(spacing: 8) {
+                                Text(conversation.title.isEmpty ? "未命名对话" : conversation.title)
+                                    .font(.system(size: 12.5))
+                                    .lineLimit(1)
+                                Spacer(minLength: 8)
+                                if conversation.id == store.currentID {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 9, weight: .semibold))
+                                }
+                            }
+                            .padding(.horizontal, 12).padding(.vertical, 7)
+                            .frame(width: 240, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("切换到对话：\(conversation.title)")
+                    }
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -305,11 +351,22 @@ struct ChatWindowChrome: View {
             Text("AI 快捷对话")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(MarkdownTypography.textSecondary)
-            HStack(spacing: 0) {
+            HStack(spacing: 2) {
                 // 左上角空出来给系统红绿灯（它由窗口标题栏绘制，不在这棵视图树里）。
                 // 三颗灯占到 x≈69（实测按钮原点 9 / 32 / 55，各 14 宽），留 80 才不压边
                 Spacer().frame(width: 80)
                 Spacer(minLength: 0)
+                // 历史会话（任务书 §3.3.2，P2 条件项）：ChatStore 本来就存着会话列表，
+                // 数据是真的才做——任务书禁止摆没功能的按钮
+                historyButton
+                // 打开完整会话（§3.3.1）：刘海的闪问页是双栏形态，带会话侧栏，
+                // 就是这扇窗的「完整版」。没有另造一个主窗口
+                iconButton("macwindow", hovering: hoverExpand,
+                           tip: "在刘海中打开（带会话列表）") {
+                    ChatWindowController.shared.hide()
+                    notchVM.expandProgrammatically(switchingTo: .chat)
+                }
+                .onHover { hoverExpand = $0 }
                 iconButton("plus", hovering: hoverNew, tip: "新对话 ⌘N") {
                     store.newConversation()
                     store.focusInputTick += 1

@@ -1,11 +1,15 @@
 import SwiftUI
 
 private extension View {
-    /// 闪问出场元素的通用动效：从下方 offset 处升起淡入，靠 delay 错峰（发牌节奏）
-    func chatRise(_ played: Bool, offset: CGFloat, delay: Double) -> some View {
-        self.offset(y: played ? 0 : offset)
+    /// 闪问出场元素的通用动效：从下方 offset 处升起淡入，靠 delay 错峰（发牌节奏）。
+    /// 系统开了「减弱动态效果」就只留淡入，位移取消（任务书 §16.8 / §17.3）
+    func chatRise(_ played: Bool, offset: CGFloat, delay: Double,
+                  reduceMotion: Bool = false) -> some View {
+        self.offset(y: (played || reduceMotion) ? 0 : offset)
             .opacity(played ? 1 : 0)
-            .animation(.spring(response: 0.38, dampingFraction: 0.66).delay(delay),
+            .animation(reduceMotion
+                       ? .easeOut(duration: 0.14).delay(delay)
+                       : .spring(response: 0.38, dampingFraction: 0.66).delay(delay),
                        value: played)
     }
 }
@@ -76,6 +80,9 @@ struct ChatView: View {
     /// 消息滚动区的坐标空间名；底部哨兵靠它算自己离视口顶部多远
     private static let scrollSpace = "chatMessageScroll"
 
+    /// 系统开的「减弱动态效果」。开着就只留透明度变化，位移一律取消（任务书 §16.8）
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     private let edgeInset: CGFloat = 14
 
     /// 每段对话固定的系统开场白（纯 UI 引导语，不进 store、不发给 API）
@@ -109,7 +116,7 @@ struct ChatView: View {
                         .frame(width: CGFloat(sidebarWidth))
                         .frame(maxHeight: .infinity)
                         .modifier(ChatPanelFrame(bordered: host.inNotch))
-                        .chatRise(entrancePlayed, offset: 16, delay: 0)
+                        .chatRise(entrancePlayed, offset: 16, delay: 0, reduceMotion: reduceMotion)
                     sidebarDivider
                     // 右框：对话窗（消息区 + 输入框）。气泡在 messageList 内逐条发牌，
                     // 输入框等最后一张牌落定后再弹（像键盘弹出收尾）
@@ -117,7 +124,8 @@ struct ChatView: View {
                         messageList
                         inputBar
                             .chatRise(entrancePlayed, offset: 24,
-                                      delay: dealDelay(store.messages.count) + 0.08)
+                                      delay: dealDelay(store.messages.count) + 0.08,
+                                      reduceMotion: reduceMotion)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.horizontal, host.inNotch ? 10 : 16)
@@ -184,7 +192,7 @@ struct ChatView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, edgeInset)
-        .chatRise(entrancePlayed, offset: 16, delay: 0)
+        .chatRise(entrancePlayed, offset: 16, delay: 0, reduceMotion: reduceMotion)
     }
 
     /// 可拖拽的侧栏分隔线：1pt 视觉线 + 7pt 热区，悬停变左右箭头光标，拖动调宽 150–300
@@ -305,7 +313,7 @@ struct ChatView: View {
                     if host.inNotch {
                         MessageBubble(message: Self.greeting, streaming: false, searching: false,
                                       windowStyle: false)
-                            .chatRise(entrancePlayed, offset: 14, delay: dealDelay(0))
+                            .chatRise(entrancePlayed, offset: 14, delay: dealDelay(0), reduceMotion: reduceMotion)
                     }
                     // enumerated 只为算发牌延迟；id 仍取 message.id，流式更新不重建气泡
                     ForEach(Array(store.messages.enumerated()), id: \.element.id) { i, message in
@@ -319,7 +327,7 @@ struct ChatView: View {
                                       onRegenerate: (!host.inNotch && !store.isStreaming
                                           && message.id == store.messages.last?.id)
                                           ? { store.regenerateLast() } : nil)
-                            .chatRise(entrancePlayed, offset: 14, delay: dealDelay(i + 1))
+                            .chatRise(entrancePlayed, offset: 14, delay: dealDelay(i + 1), reduceMotion: reduceMotion)
                     }
                     if let error = store.errorText {
                         // 失败必须在界面上可见、且能重试；用户原文保留在会话里不清空
@@ -381,8 +389,12 @@ struct ChatView: View {
                 if !host.inNotch, !atBottom {
                     Button {
                         followBottom = true
-                        withAnimation(.easeOut(duration: 0.16)) {
+                        if reduceMotion {
                             scrollProxy?.scrollTo("bottom", anchor: .bottom)
+                        } else {
+                            withAnimation(.easeOut(duration: 0.16)) {
+                                scrollProxy?.scrollTo("bottom", anchor: .bottom)
+                            }
                         }
                     } label: {
                         Image(systemName: "arrow.down")
@@ -395,6 +407,7 @@ struct ChatView: View {
                     }
                     .buttonStyle(.plain)
                     .notchTip("回到底部", edge: .aboveLeading)
+                    .accessibilityLabel("回到底部")
                     .padding(.bottom, 8)
                     .transition(.opacity)
                 }
@@ -574,7 +587,8 @@ struct ChatView: View {
                             .background(Circle().fill(.secondary))
                     }
                     .buttonStyle(.plain)
-                    .notchTip("停止", edge: .aboveLeading)
+                    .notchTip("停止生成 Esc", edge: .aboveLeading)
+                    .accessibilityLabel("停止生成")
                 } else {
                     Button { sendDraft() } label: {
                         Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold))
@@ -587,7 +601,8 @@ struct ChatView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(store.draftMessage.isEmpty)
-                    .notchTip("发送（回车）", edge: .aboveLeading)
+                    .notchTip("发送 Enter", edge: .aboveLeading)
+                    .accessibilityLabel("发送")
                 }
             }
         }
@@ -631,9 +646,16 @@ struct ChatView: View {
                     Capsule().fill(.quaternary)
                 }
             }
-            .contentShape(Capsule())
+            // 热区撑到 32 高（任务书 §10.2.5 / §16.5），视觉仍是 26——
+            // 胶囊本身再高就压过输入框了
+            .frame(height: 32)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // 开关状态不能只靠颜色（§10.2.6）：读屏要能报出「已选中」
+        .accessibilityLabel(title)
+        .accessibilityValue(on ? "已开启" : "已关闭")
+        .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
     }
 
     private func sendDraft() {
@@ -798,13 +820,14 @@ private struct MessageBubble: View {
                     HStack(spacing: 6) {
                         ProgressView()
                             .controlSize(.small)
-                        if searching {
-                            Text("正在联网搜索…")
-                                .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.5))
-                        }
+                        Text(searching ? "正在联网搜索…" : "正在生成…")
+                            .font(.system(size: windowStyle ? 12.5 : 11))
+                            .foregroundColor(.white.opacity(windowStyle ? 0.64 : 0.5))
                     }
                     .padding(4)
+                    // 读屏只播报这一句「开始」，不逐字跟读流式正文（任务书 §16.7）
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(searching ? "正在联网搜索" : "正在生成回答")
                 } else {
                     VStack(alignment: .leading, spacing: windowStyle ? 8 : 4) {
                         if windowStyle, message.role == .assistant {
@@ -895,9 +918,12 @@ private struct MessageBubble: View {
                                 .rotationEffect(.degrees(sourcesExpanded ? 90 : 0))
                         }
                         .font(.system(size: 12, weight: .medium))
+                        .frame(minHeight: 32)          // 热区 ≥32（§16.5）
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("联网来源，共 \(sources.count) 个")
+                    .accessibilityValue(sourcesExpanded ? "已展开" : "已收起")
                 }
             }
             .foregroundStyle(hovering ? MarkdownTypography.textSecondary
@@ -926,8 +952,12 @@ private struct MessageBubble: View {
                                 .foregroundStyle(.white.opacity(0.88))
                                 .lineLimit(2)
                                 .multilineTextAlignment(.leading)
-                            if !source.domain.isEmpty {
-                                Text(source.domain)
+                            // 域名 + 发布时间。发布时间只有搜索引擎真给了才有，
+                            // 没有就整段不显示（任务书 §9.2：不许编）
+                            let sub = [source.domain, source.published ?? ""]
+                                .filter { !$0.isEmpty }.joined(separator: " · ")
+                            if !sub.isEmpty {
+                                Text(sub)
                                     .font(.system(size: 11))
                                     .foregroundStyle(MarkdownTypography.textTertiary)
                             }
@@ -943,6 +973,7 @@ private struct MessageBubble: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("第 \(index + 1) 个来源：\(source.title)，来自 \(source.domain)")
                 if index < shown.count - 1 {
                     Rectangle().fill(Color.white.opacity(0.07)).frame(height: 1)
                 }

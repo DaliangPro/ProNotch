@@ -20,6 +20,9 @@ struct ChatSource: Identifiable, Equatable, Codable, Sendable {
     var title: String
     var url: String
     var domain: String
+    /// 发布时间。只有搜索引擎真给了才有（Tavily 的 published_date / Brave 的 age），
+    /// 没有就不显示——任务书 §9.2 明令不许编（P2 条件项，此处数据确实存在故接入）
+    var published: String? = nil
 }
 
 struct ChatMessage: Identifiable, Equatable, Codable, Sendable {
@@ -900,7 +903,8 @@ final class ChatStore: ObservableObject {
         let sources = results.map {
             ChatSource(title: $0.title.isEmpty ? $0.url : $0.title,
                        url: $0.url,
-                       domain: Self.domain(of: $0.url))
+                       domain: Self.domain(of: $0.url),
+                       published: $0.published?.isEmpty == false ? $0.published : nil)
         }
         withStreamingConv { msgs in
             if let index = msgs.indices.last, msgs[index].role == .assistant {
