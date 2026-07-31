@@ -22,6 +22,35 @@ import SwiftUI
 /// 想加回划词选中，得先拿到「SelectionOverlay 不再从布局里回写布局」的证据，
 /// 否则就是把这个卡死放回来
 enum MarkdownLite {
+    /// 解析缓存。消息一旦定稿内容不再变；流式中的那条每个 token 都是新键，
+    /// 命不中就走全解析、旧前缀由 countLimit 自然淘汰。NSCache 线程安全、内存紧张自动清
+    private final class BlocksBox {
+        let blocks: [Block]
+        init(_ blocks: [Block]) { self.blocks = blocks }
+    }
+    nonisolated(unsafe) private static let parseCache: NSCache<NSString, BlocksBox> = {
+        let c = NSCache<NSString, BlocksBox>()
+        c.countLimit = 256
+        return c
+    }()
+
+    static func parseCached(_ text: String) -> [Block] {
+        if let hit = parseCache.object(forKey: text as NSString) { return hit.blocks }
+        let blocks = parse(text)
+        parseCache.setObject(BlocksBox(blocks), forKey: text as NSString)
+        return blocks
+    }
+
+    private final class AttrBox {
+        let value: AttributedString
+        init(_ value: AttributedString) { self.value = value }
+    }
+    nonisolated(unsafe) private static let inlineCache: NSCache<NSString, AttrBox> = {
+        let c = NSCache<NSString, AttrBox>()
+        c.countLimit = 1024   // 一条消息约十来段内联，够存近百条消息的成品
+        return c
+    }()
+
     enum Block {
         case paragraph(String)
         case heading(level: Int, text: String)
@@ -292,6 +321,23 @@ enum MarkdownLite {
                        emphasisWeight: Font.Weight = .semibold,
                        base: Color = .white.opacity(0.82),
                        emphasis: Color = .white) -> AttributedString {
+        // AttributedString(markdown:) 一次就要几毫秒，一条消息七八个块、
+        // 刘海切一次页十几条消息全重来——缓存键带上全部样式参数，
+        // 同一段文字在刘海（12pt）与窗口（16pt）是两个键，互不串味
+        let key = "\(size)|\(weight)|\(emphasisWeight)|\(String(describing: base))|\(String(describing: emphasis))|\(text)" as NSString
+        if let hit = inlineCache.object(forKey: key) { return hit.value }
+        let result = inlineUncached(text, size: size, weight: weight,
+                                    emphasisWeight: emphasisWeight,
+                                    base: base, emphasis: emphasis)
+        inlineCache.setObject(AttrBox(result), forKey: key)
+        return result
+    }
+
+    private static func inlineUncached(_ text: String, size: CGFloat,
+                                       weight: Font.Weight,
+                                       emphasisWeight: Font.Weight,
+                                       base: Color,
+                                       emphasis: Color) -> AttributedString {
         var attributed = (try? AttributedString(
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
@@ -411,7 +457,10 @@ struct MarkdownMessageView: View {
     private var fontSize: CGFloat { type.body }
 
     var body: some View {
-        let blocks = MarkdownLite.parse(text)
+        // 切页会把本视图整棵销毁重建（ExpandedContentView 按 .id(shownTab) 换页），
+        // 不缓存的话每次进闪问页都把每条消息从零解析一遍——
+        // 大梁老师「切到这一页还是卡、快捷键呼出不跟手」（2026-07-31）的主账
+        let blocks = MarkdownLite.parseCached(text)
         VStack(alignment: .leading, spacing: type.blockSpacing) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 blockView(block)
