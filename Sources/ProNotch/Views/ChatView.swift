@@ -125,6 +125,11 @@ struct ChatView: View {
                         messageList
                             .onAppear { viewportHeight = geo.size.height }
                             .onChange(of: geo.size.height) { _, h in viewportHeight = h }
+                        // 上下两端一层薄渐隐（大梁老师 2026-07-31 要回来，但要小）。
+                        // 下沿不能按视口底算——消息区铺到窗底、下半截压在输入框底下，
+                        // 那儿的渐隐根本看不见。得让它落在输入框上沿
+                        .mask(Self.edgeFade(height: geo.size.height,
+                                            bottomInset: composerHeight))
                     }
                     .frame(maxHeight: .infinity)
                     // 正文两侧比输入框多留 16：正文缩在输入框以内，左右边界也只留输入框那一条
@@ -345,6 +350,25 @@ struct ChatView: View {
         let total = store.messages.count + 1   // 含开场白
         let windowStart = max(0, total - Self.dealWindow)
         return 0.05 + 0.06 * Double(max(0, chronoIndex - windowStart))
+    }
+
+    /// 消息区上下的薄渐隐。
+    ///
+    /// `bottomInset` 是输入框高度：消息区铺到窗底、下半截压在输入框底下，
+    /// 渐隐必须落在输入框**上沿**才看得见（按视口底算等于画在看不见的地方）
+    private static func edgeFade(height: CGFloat, bottomInset: CGFloat) -> LinearGradient {
+        let fade: CGFloat = 14                      // 薄薄一层，别像上一版那么厚
+        guard height > fade * 4 else {
+            return LinearGradient(colors: [.black], startPoint: .top, endPoint: .bottom)
+        }
+        let cut = max(height - bottomInset, fade * 2)   // 输入框上沿在视口里的位置
+        return LinearGradient(stops: [
+            .init(color: .clear, location: 0),
+            .init(color: .black, location: fade / height),
+            .init(color: .black, location: (cut - fade) / height),
+            .init(color: .clear, location: cut / height),
+            .init(color: .clear, location: 1),
+        ], startPoint: .top, endPoint: .bottom)
     }
 
     private var messageList: some View {
@@ -620,15 +644,15 @@ struct ChatView: View {
                 ModelSwitcher(dropUp: true)
                 // 图标与刘海用同一套（大梁老师定）：地球 + 那张思考气泡原件，
                 // 同一个功能在两处不该长两个样
-                // 只留图标，中文交给悬停气泡（大梁老师 2026-07-31）：
-                // 两个带字的胶囊占掉大半行，模型名反而被挤没了
-                windowToolChip("联网", on: store.webSearchEnabled,
-                               action: { store.webSearchEnabled.toggle() }) {
-                    Image(systemName: "globe").font(.system(size: 13))
-                }
+                // 中文加回来，并且深度思考在前、联网在后（大梁老师 2026-07-31 两次调整：
+                // 先去字只留图标，再改回带字并互换位置）
                 windowToolChip("深度思考", on: store.thinkingEnabled,
                                action: { store.thinkingEnabled.toggle() }) {
                     ThinkingBubbleIcon(side: 15)
+                }
+                windowToolChip("联网", on: store.webSearchEnabled,
+                               action: { store.webSearchEnabled.toggle() }) {
+                    Image(systemName: "globe").font(.system(size: 13))
                 }
                 Spacer(minLength: 4)
                 if store.isStreaming {
@@ -840,17 +864,23 @@ private struct WindowToolChip<Icon: View>: View {
 
     var body: some View {
         Button(action: action) {
-            icon()
-                .frame(width: 28, height: 28)
-                .foregroundStyle(on ? AnyShapeStyle(accent)
-                                    : AnyShapeStyle(MarkdownTypography.textSecondary))
-                .background {
-                    Capsule().fill(on ? accent.opacity(0.12)
-                                      : Color.white.opacity(hovering ? 0.07 : 0))
-                }
-                // 热区 32（任务书 §10.2.5 / §16.5），视觉仍是 28
-                .frame(width: 32, height: 32)
-                .contentShape(Rectangle())
+            // 图标 + 中文（大梁老师 2026-07-31 又要回来了）。
+            // 与模型胶囊同高 28、同圆角、静态无底色——三个控件仍是同一套容器语言
+            HStack(spacing: 5) {
+                icon()
+                Text(title).font(.system(size: 11.5))
+            }
+            .foregroundStyle(on ? AnyShapeStyle(accent)
+                                : AnyShapeStyle(MarkdownTypography.textSecondary))
+            .padding(.horizontal, 9)
+            .frame(height: 28)
+            .background {
+                Capsule().fill(on ? accent.opacity(0.12)
+                                  : Color.white.opacity(hovering ? 0.07 : 0))
+            }
+            // 热区 32 高（任务书 §10.2.5 / §16.5），视觉仍是 28
+            .frame(height: 32)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }

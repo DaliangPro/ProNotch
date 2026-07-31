@@ -187,6 +187,10 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
         panel.level = pinned ? .floating : .normal
         panel.isMovableByWindowBackground = false   // 拖动只认顶部那条把手，别抢内容里的拖拽
         panel.minSize = NSSize(width: 620, height: 380)
+        // 宽度封顶（大梁老师 2026-07-31）：正文列最宽 920、散文再限 760，
+        // 超过这个数继续拉宽只会多出两边留白，没有任何信息量。
+        // 920 内容列 + 220 侧栏 + 两边留白 ≈ 1180，取整 1180
+        panel.maxSize = NSSize(width: 1180, height: CGFloat.greatestFiniteMagnitude)
         panel.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
         panel.delegate = self
         // 位置与大小自动记住，不用自己存
@@ -366,6 +370,15 @@ struct ChatWindowChrome: View {
         // 必须顶掉安全区：.fullSizeContentView 下 SwiftUI 会按标题栏高度给内容加一段
         // 顶部安全区内缩，于是这条顶栏整体被压到红绿灯下面——「新对话」比三颗灯低一截，
         // 上面还空出一条（离屏拍出来才发现，2026-07-30）
+        // 产品名压在最上层、相对**整扇窗**居中。
+        // 原来它长在顶栏里，而顶栏只覆盖左栏——侧栏一开就偏心（大梁老师 2026-07-31）
+        .overlay(alignment: .top) {
+            Text("ProNotch")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(MarkdownTypography.textSecondary)
+                .frame(height: 44)
+                .allowsHitTesting(false)      // 别挡住底下那条拖拽区
+        }
         .ignoresSafeArea(edges: .top)
         // 不透明底（大梁老师 2026-07-31 定）。此前是 NSVisualEffectView 毛玻璃，
         // 透出背后桌面——看着好看，但窗内每一块的实际颜色都跟着桌面走，
@@ -396,15 +409,10 @@ struct ChatWindowChrome: View {
     /// 不画拖拽把手（他定的）：macOS 的标题栏本来也没有提示，光标形状就够了
     private var titleBar: some View {
         ZStack {
-            // 窗口标识：产品名（大梁老师 2026-07-31 从闪电图标改回文字）。
-            // 摆在 ZStack 底层而不是 HStack 中段——左右两侧按钮宽度不等，
-            // 用 HStack 的话它会被挤得偏心
-            Text("ProNotch")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(MarkdownTypography.textSecondary)
             HStack(spacing: 4) {
                 // 左上角原来空 80 给系统红绿灯，现在换成「钉在桌面」开关
-                iconButton(controller.pinned ? "pin.fill" : "pin.slash",
+                // 图形固定，只有颜色变（大梁老师 2026-07-31：不要那道斜杠）
+                iconButton("pin.fill",
                            hovering: hoverPin,
                            tip: controller.pinned ? "已钉在桌面（点击取消）" : "钉在桌面",
                            active: controller.pinned) {
