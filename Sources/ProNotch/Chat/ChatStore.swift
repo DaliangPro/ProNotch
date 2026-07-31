@@ -127,6 +127,9 @@ final class ChatStore: ObservableObject {
     @Published var draftAttachment: Data?
     /// 输入框聚焦信号（截图问 AI 唤入时 +1，视图侧聚焦）
     @Published var focusInputTick = 0
+    /// ⌘K 呼出模型选择：下拉的开关是 ModelSwitcher 内部的 @State，外面设不了，
+    /// 只能靠这个计数触发（与 focusInputTick 同一手法）
+    @Published var openModelPickerTick = 0
 
     /// API 连通状态（顶行状态灯）
     enum ConnectivityState {

@@ -242,6 +242,13 @@ struct ChatView: View {
     ///
     /// 只认「用户真的滚了」这一个信号。若改用「内容超出视口」之类的几何判据，
     /// 流式输出时每帧都成立，等于永远不跟随
+    /// 输入法是否正在组合（有未上屏的候选词）。
+    /// 取当前 key 窗口的字段编辑器问 `hasMarkedText`——这是 macOS 唯一可靠的判据
+    static func isComposing() -> Bool {
+        guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView else { return false }
+        return editor.hasMarkedText()
+    }
+
     private func installScrollMonitor() {
         guard scrollMonitor == nil else { return }
         let vm = self.vm
@@ -610,6 +617,12 @@ struct ChatView: View {
     }
 
     private func sendDraft() {
+        // **输入法正在选词时不许发送**（任务书 §10.1.6）。
+        //
+        // 中文输入时按回车是「确认候选词」，不是「发消息」。SwiftUI 的 onSubmit
+        // 分不清这两者，于是打一半的拼音一按回车就被当成问题发出去了。
+        // macOS 上的判据是字段编辑器有没有 marked text（未上屏的组合中文字）
+        guard !Self.isComposing() else { return }
         // 自己发了新消息＝注意力回到最新一条，恢复自动跟随
         followBottom = true
         let text = store.draftMessage

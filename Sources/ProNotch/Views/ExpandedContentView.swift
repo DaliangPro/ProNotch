@@ -224,7 +224,8 @@ struct ModelSwitcher: View {
             if chatStore.isConfigured, chatStore.availableModels.isEmpty { chatStore.fetchModels() }
         } label: {
             HStack(spacing: 4) {
-                Text(chatStore.model.isEmpty ? "选择模型" : chatStore.model)
+                // 展示人类可读名（任务书 §10.2.1）；slug 仍是数据层的唯一标识
+                Text(chatStore.model.isEmpty ? "选择模型" : ModelDisplayName.of(chatStore.model))
                     .font(.system(size: dropUp ? 11.5 : 12.5, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -271,7 +272,7 @@ struct ModelSwitcher: View {
         // 上方的占位符右 10pt——两行字差一点点最难看（大梁老师要「文字有对齐关系」）。
         // 悬停时的胶囊底往左多探 10pt，仍在输入块内，不碰边
         .padding(.leading, dropUp ? -8 : 0)
-        .help("切换配置 / 模型")
+        .help(chatStore.model.isEmpty ? "切换配置 / 模型" : "切换配置 / 模型（当前 \(chatStore.model)）")
         // 下拉悬浮在按钮右下方，盖住内容页不参与布局（标签行 zIndex 已抬高）；
         // 34 = 布局高 25 + 胶囊下凸 3 + 气口 6
         // 往下弹时按右缘对齐（刘海里这个胶囊在顶栏右侧，往左展开正好）；
@@ -287,6 +288,13 @@ struct ModelSwitcher: View {
             // 往上弹：抬过按钮自身高度(26)，底边正好压在按钮上沿，接成一整块。
             // x 偏 -8 是补上面那句 .padding(.leading, -8) 缩掉的布局宽度
             if showList { dropdown.offset(x: dropUp ? -8 : 0, y: dropUp ? -26 : 34) }
+        }
+        // ⌘K 呼出（任务书 §11）。只有独立窗口那份响应——刘海里的那份也监听的话，
+        // 一次 ⌘K 会同时弹两个下拉
+        .onChange(of: chatStore.openModelPickerTick) { _, _ in
+            guard dropUp else { return }
+            withAnimation(.easeOut(duration: 0.12)) { showList = true }
+            if chatStore.isConfigured, chatStore.availableModels.isEmpty { chatStore.fetchModels() }
         }
         // 内容常驻不销毁：面板收起时手动合上，避免下次展开还挂着下拉
         .onChange(of: vm.isExpanded) { _, expanded in
@@ -316,7 +324,8 @@ struct ModelSwitcher: View {
                             .frame(height: rowHeight)
                     }
                     ForEach(items, id: \.self) { name in
-                        SwitcherRow(name: name, isSelected: name == chatStore.model,
+                        SwitcherRow(name: ModelDisplayName.of(name),
+                                    isSelected: name == chatStore.model,
                                     compact: dropUp) {
                             chatStore.selectModel(name)
                             withAnimation(.easeIn(duration: 0.1)) { showList = false }
