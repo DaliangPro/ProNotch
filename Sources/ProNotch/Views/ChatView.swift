@@ -58,8 +58,19 @@ struct ChatView: View {
     @State private var dividerHover = false
     @State private var dragBaseWidth: Double?
     @State private var dividerCursorOn = false
-    /// 独立窗口消息视口的高度：拿来把内容压到底部（见 body 窗口分支的 GeometryReader）
+    /// 消息视口的高度：窗口里拿来把内容压到底部，两处都拿来判断「是不是已经到底了」
     @State private var viewportHeight: CGFloat = 0
+    /// 是否跟着新内容自动滚到底。
+    ///
+    /// 大梁老师 2026-07-31：AI 一边吐字页面一边往下滚，想翻上去看前面的内容根本按不住。
+    /// 规则改成「粘底」：你一动滚轮就停止跟随，自己滚回底部（或发新消息）再自动恢复。
+    /// 判据是**用户真的滚了**，不是「内容长出视口」——后者在流式输出时每一帧都成立，
+    /// 拿它当判据等于永远不跟随
+    @State private var followBottom = true
+    @State private var scrollMonitor: Any?
+
+    /// 消息滚动区的坐标空间名；底部哨兵靠它算自己离视口顶部多远
+    private static let scrollSpace = "chatMessageScroll"
 
     private let edgeInset: CGFloat = 14
 
@@ -125,11 +136,13 @@ struct ChatView: View {
         .onAppear {
             store.checkConnectivity()
             installPasteMonitor()
+            installScrollMonitor()
         }
         .onDisappear {
             if host.inNotch { vm.keyboardHold = false }
             setDividerCursor(false)
             if let monitor = pasteMonitor { NSEvent.removeMonitor(monitor); pasteMonitor = nil }
+            if let monitor = scrollMonitor { NSEvent.removeMonitor(monitor); scrollMonitor = nil }
         }
         // 悬停分隔线时被收起：onHover(false) 不会再来，补一次收光标防残留
         .onChange(of: vm.isExpanded) { _, expanded in
@@ -224,6 +237,24 @@ struct ChatView: View {
     /// ⌘V 粘贴图片为附件：菜单 Paste 的 key equivalent 会先于 SwiftUI onKeyPress 吃掉 ⌘V，
     /// 用本地事件监听在分发前拦截。剪贴板是图片（截图/网页图/图片文件通用）→ 挂为附件；
     /// 是文字 → 放行走系统粘贴。仅在面板展开且停留在闪问页时生效
+    /// 滚轮监听：用户手动滚一下就停止自动跟随。
+    ///
+    /// 只认「用户真的滚了」这一个信号。若改用「内容超出视口」之类的几何判据，
+    /// 流式输出时每帧都成立，等于永远不跟随
+    private func installScrollMonitor() {
+        guard scrollMonitor == nil else { return }
+        let vm = self.vm
+        let follow = $followBottom
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            MainActor.assumeIsolated {
+                let active = host.inNotch ? (vm.isExpanded && vm.activeTab == .chat)
+                                          : ChatWindowController.shared.isKeyWindow
+                if active, event.scrollingDeltaY != 0 { follow.wrappedValue = false }
+            }
+            return event
+        }
+    }
+
     private func installPasteMonitor() {
         guard pasteMonitor == nil else { return }
         let vm = self.vm
@@ -300,19 +331,38 @@ struct ChatView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     Color.clear.frame(height: 1).id("bottom")
+                        .background(GeometryReader { g in
+                            Color.clear.preference(
+                                key: BottomAnchorKey.self,
+                                value: g.frame(in: .named(Self.scrollSpace)).maxY)
+                        })
                 }
                 .padding(.trailing, host.inNotch ? 2 : 0)
                 // 不足一屏时压到底部；刘海不用，那儿本来就是满的
                 .frame(minHeight: host.inNotch ? nil : viewportHeight, alignment: .bottom)
             }
+            .coordinateSpace(name: Self.scrollSpace)
+            // 用 background 量高度：不参与布局，不会改变原有的伸缩行为
+            .background(GeometryReader { g in
+                Color.clear
+                    .onAppear { viewportHeight = g.size.height }
+                    .onChange(of: g.size.height) { _, h in viewportHeight = h }
+            })
+            .onPreferenceChange(BottomAnchorKey.self) { y in
+                // 底部哨兵回到视口内（留 24pt 容差）＝ 用户自己滚回了底部，恢复跟随
+                if viewportHeight > 0, y <= viewportHeight + 24 { followBottom = true }
+            }
             .onChange(of: store.messages.last?.content) { _, _ in
+                guard followBottom else { return }
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
             .onChange(of: store.currentID) { _, _ in
                 // 切会话后等新列表上屏再落底
+                followBottom = true
                 DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
             }
             .onAppear {
+                followBottom = true
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
         }
@@ -535,6 +585,8 @@ struct ChatView: View {
     }
 
     private func sendDraft() {
+        // 自己发了新消息＝注意力回到最新一条，恢复自动跟随
+        followBottom = true
         let text = store.draftMessage
         store.draftMessage = ""
         store.send(text)
@@ -643,6 +695,13 @@ private struct ConversationRow: View {
         f.dateFormat = "M月d日"
         return f.string(from: d)
     }
+}
+
+/// 底部哨兵在滚动视口坐标系里的下沿位置。
+/// 它 ≤ 视口高度 ＝ 已经滚到底，可以恢复自动跟随
+private struct BottomAnchorKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 private struct MessageBubble: View {
