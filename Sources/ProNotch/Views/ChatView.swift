@@ -45,8 +45,8 @@ enum ChatHost {
 
 /// AI 闪问：未配置时引导去设置；配置后左栏会话导航、右栏消息列表 + 输入框，流式输出
 struct ChatView: View {
-    /// 默认 .notch：刘海那边的调用点一处不用改
-    var host: ChatHost = .notch
+    /// 默认 .notch：刘海那边的调用点一处不用改（init 见 shownLimit 一节）
+    var host: ChatHost
 
     @EnvironmentObject var vm: NotchViewModel
     @EnvironmentObject var store: ChatStore
@@ -73,10 +73,20 @@ struct ChatView: View {
     @State private var followBottom = true
     /// 视口是否已接近底部（任务书 §12.1：距底 ≤ 80）。驱动「回到底部」按钮的显隐
     @State private var atBottom = true
-    /// 一次最多渲染的消息数与「显示更早」每次追加的量（窗口与刘海都限——两处共享同一份对话）
-    private static let defaultShownLimit = 40
-    private static let earlierChunk = 100
-    @State private var shownLimit = ChatView.defaultShownLimit
+    /// 一次最多渲染的消息数与「显示更早」每次追加的量（窗口与刘海都限——两处共享同一份对话）。
+    ///
+    /// 刘海只给 12（大梁老师 2026-07-31「还是卡」后从 40 砍下来的）：
+    /// 哨兵实测切页 160~209ms、页面挂着的期间每一轮 60~128ms——
+    /// 刘海视口本来只显得下三五条，挂 40 条等于让刘海里任何风吹草动
+    /// （悬停、动画、周期刷新）都拖着整列重排。窗口维持 40
+    static func defaultShownLimit(inNotch: Bool) -> Int { inNotch ? 12 : 40 }
+    static func earlierChunk(inNotch: Bool) -> Int { inNotch ? 30 : 100 }
+    @State private var shownLimit: Int
+
+    init(host: ChatHost = .notch) {
+        self.host = host
+        _shownLimit = State(initialValue: Self.defaultShownLimit(inNotch: host.inNotch))
+    }
 
     /// 留一份滚动代理给「回到底部」按钮用——它在 ScrollViewReader 的闭包外面
     @State private var scrollProxy: ScrollViewProxy?
@@ -450,9 +460,9 @@ struct ChatView: View {
                     let hiddenCount = max(0, store.messages.count - shownLimit)
                     if hiddenCount > 0 {
                         Button {
-                            shownLimit += Self.earlierChunk
+                            shownLimit += Self.earlierChunk(inNotch: host.inNotch)
                         } label: {
-                            Text("显示更早的 \(min(hiddenCount, Self.earlierChunk)) 条")
+                            Text("显示更早的 \(min(hiddenCount, Self.earlierChunk(inNotch: host.inNotch))) 条")
                                 .font(.system(size: host.inNotch ? 10 : 11, weight: .medium))
                                 .foregroundStyle(MarkdownTypography.textSecondary)
                                 .padding(.horizontal, host.inNotch ? 9 : 12)
@@ -601,7 +611,7 @@ struct ChatView: View {
             }
             .onChange(of: store.currentID) { _, _ in
                 // 切会话后等新列表上屏再落底；渲染限额同时复位（别把上个会话的扩容带过来）
-                shownLimit = Self.defaultShownLimit
+                shownLimit = Self.defaultShownLimit(inNotch: host.inNotch)
                 followBottom = true
                 DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
             }
