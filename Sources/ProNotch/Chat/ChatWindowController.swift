@@ -389,6 +389,22 @@ struct ChatWindowChrome: View {
                 // 下方留白由输入块自己给（22，与左右一致）。这里再加就叠成 36，
                 // 底部会比两侧明显宽一圈——大梁老师要的是「左右和下方一致」
         }
+        // 「新对话 / 历史」钉在**整扇窗**的右上角，不随侧栏左移（大梁老师 2026-07-31）。
+        // 它们跟标题不是一回事：标题标的是「你在读哪一栏」，所以跟内容区走；
+        // 这两个是窗口级的开关，尤其历史——按下去长出来的东西就在它正下方，
+        // 跟着内容左移反而离自己管的那条侧栏越来越远
+        .overlay(alignment: .topTrailing) {
+            HStack(spacing: 4) {
+                iconButton("plus", hovering: hoverNew, tip: "新对话 ⌘N") {
+                    store.newConversation()
+                    store.focusInputTick += 1
+                }
+                .onHover { hoverNew = $0 }
+                historyButton
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 44)
+        }
         // 必须顶掉安全区：.fullSizeContentView 下 SwiftUI 会按标题栏高度给内容加一段
         // 顶部安全区内缩，于是这条顶栏整体被压到红绿灯下面——「新对话」比三颗灯低一截，
         // 上面还空出一条（离屏拍出来才发现，2026-07-30）
@@ -443,16 +459,6 @@ struct ChatWindowChrome: View {
                 }
                 .onHover { hoverPin = $0 }
                 Spacer(minLength: 0)
-                // 历史会话（任务书 §3.3.2，P2 条件项）：ChatStore 本来就存着会话列表，
-                // 数据是真的才做——任务书禁止摆没功能的按钮
-                // 新对话在左、历史在最右（大梁老师 2026-07-31）：
-                // 历史挨着它要推开的那条侧栏，按下去和长出来的东西在同一侧
-                iconButton("plus", hovering: hoverNew, tip: "新对话 ⌘N") {
-                    store.newConversation()
-                    store.focusInputTick += 1
-                }
-                .onHover { hoverNew = $0 }
-                historyButton
             }
             .padding(.horizontal, 10)
         }
