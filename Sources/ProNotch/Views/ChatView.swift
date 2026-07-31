@@ -96,6 +96,23 @@ struct ChatView: View {
     /// 我第一版理解反了做成了「正文更宽」，正文反而戳出输入框之外，边界成了两条
     private var textInset: CGFloat { sideInset + 16 }
 
+    /// 量出来的布局值（视口高、输入块高、窗宽）统一从这里落盘：
+    /// **取整、变了才写、下一圈 runloop 再写**。
+    ///
+    /// 为什么必须异步（2026-07-31，两次卡死的教训）：这些 GeometryReader 回调
+    /// 都是在布局事务**里**被调的。同步写状态＝给当前这轮布局又添一笔新账，
+    /// SwiftUI 会在同一次 flushTransactions 里接着算——账追着账，主线程就出不来了。
+    /// 挪到下一圈之后，最坏情况也只是下一帧再修正一次，事件循环永远有喘息的空。
+    /// 取整则是把亚像素抖动（108.4 ↔ 108.6 这种）直接压平，多数写入根本不发生
+    private func deferAssign(_ target: Binding<CGFloat>, _ measured: CGFloat) {
+        let rounded = measured.rounded()
+        guard abs(rounded - target.wrappedValue) >= 1 else { return }
+        DispatchQueue.main.async {
+            // 排队期间可能又量到了新值：落盘前再核对一次，别拿旧值盖新值
+            if abs(rounded - target.wrappedValue) >= 1 { target.wrappedValue = rounded }
+        }
+    }
+
     /// 每段对话固定的系统开场白（纯 UI 引导语，不进 store、不发给 API）
     private static let greeting = ChatMessage(role: .assistant, content: "想和我聊点什么？")
 
@@ -146,10 +163,11 @@ struct ChatView: View {
                         .background(ChatWindowPalette.background)
                         // 实测底栏高度喂给上面的内容内边距，行数一变就跟着变
                         .background(GeometryReader { g in
+                            // 量出来的值一律：取整（压掉亚像素抖动）＋异步写（不给当前布局添账）
                             Color.clear
-                                .onAppear { composerHeight = g.size.height }
+                                .onAppear { deferAssign($composerHeight, g.size.height) }
                                 .onChange(of: g.size.height) { _, h in
-                                    if abs(h - composerHeight) > 0.5 { composerHeight = h }
+                                    deferAssign($composerHeight, h)
                                 }
                         })
                 }
@@ -159,8 +177,8 @@ struct ChatView: View {
                 // 量整窗宽度决定留白档位。用 background 量，不参与布局
                 .background(GeometryReader { g in
                     Color.clear
-                        .onAppear { windowWidth = g.size.width }
-                        .onChange(of: g.size.width) { _, w in windowWidth = w }
+                        .onAppear { deferAssign($windowWidth, g.size.width) }
+                        .onChange(of: g.size.width) { _, w in deferAssign($windowWidth, w) }
                 })
             } else if store.isConfigured {
                 // 左栏会话导航 + 右栏对话窗（大梁老师定的双栏结构）
@@ -429,25 +447,39 @@ struct ChatView: View {
             // 用 background 量高度：不参与布局，不会改变原有的伸缩行为
             .background(GeometryReader { g in
                 Color.clear
-                    .onAppear { viewportHeight = g.size.height }
-                    // 差不到半个点就不写：亚像素来回抖同样会触发一轮布局，
-                    // 拖动窗口时每帧都抖，积累起来就是「拖着拖着越来越卡」
+                    .onAppear { deferAssign($viewportHeight, g.size.height) }
                     .onChange(of: g.size.height) { _, h in
-                        if abs(h - viewportHeight) > 0.5 { viewportHeight = h }
+                        deferAssign($viewportHeight, h)
                     }
             })
             .onPreferenceChange(BottomAnchorKey.self) { y in
                 // 底部哨兵离视口底还有多远。任务书 §12.1 的「接近底部」阈值是 80
                 guard viewportHeight > 0 else { return }
                 let distance = y - viewportHeight
-                atBottom = distance <= 80
+                let nearBottom = distance <= 80
                 // 回到底部即恢复跟随（留 24pt 容差，比「接近」更严，免得刚滚一点就又被拽下去）
-                if distance <= 24 { followBottom = true }
+                let shouldFollow = distance <= 24
+                // **挪到下一圈 runloop 再写**。这个回调是在布局事务里被调的，
+                // 此刻同步写状态＝给当前这轮布局又添一笔新账，账追着账，
+                // flushTransactions 就出不来了——两次卡死采样都是这个形状（2026-07-31）。
+                // 异步之后最坏也就是下一帧再修正，主线程永远能回到事件循环
+                DispatchQueue.main.async {
+                    if atBottom != nearBottom { atBottom = nearBottom }
+                    if shouldFollow, !followBottom { followBottom = true }
+                }
             }
             // 「回到底部」：离底 80pt 以上才出现（任务书 §12.2）。
-            // 压在消息区右下角而不是居中——居中会正好盖住最后一行正文
+            // 压在消息区右下角而不是居中——居中会正好盖住最后一行正文。
+            //
+            // **常驻 + 只变透明度**，绝不用 if 插拔，动画也只挂在按钮自己身上。
+            // 原来是 `if !atBottom { ... }` 外加整棵滚动子树上一个
+            // `.animation(value: atBottom)`——这是 2026-07-31 第二次卡死的振荡器：
+            // atBottom 由布局量出来（离底距离），一翻转就让整个消息区起动画，
+            // 动画中间帧又让距离在 80 阈值上来回穿越，atBottom 再翻转、动画重启……
+            // 采样里 ViewListTransition/LazyTransition/InterpolatedDisplayList
+            // 反复更新就是它。透明度是纯绘制属性，动不了布局，环从根上断掉
             .overlay(alignment: .bottom) {
-                if !host.inNotch, !atBottom {
+                if !host.inNotch {
                     Button {
                         followBottom = true
                         if reduceMotion {
@@ -469,14 +501,18 @@ struct ChatView: View {
                     .buttonStyle(.plain)
                     .notchTip("回到底部", edge: .aboveLeading)
                     .accessibilityLabel("回到底部")
+                    .accessibilityHidden(atBottom)
                     .padding(.bottom, 8)
-                    .transition(.opacity)
+                    .opacity(atBottom ? 0 : 1)
+                    .allowsHitTesting(!atBottom)
+                    .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: atBottom)
                 }
             }
-            .animation(.easeOut(duration: 0.15), value: atBottom)
             .onChange(of: store.messages.last?.content) { _, _ in
                 guard followBottom else { return }
-                proxy.scrollTo("bottom", anchor: .bottom)
+                // 异步：这个 onChange 在数据事务里被调，同步 scrollTo 会当场触发整列重排；
+                // 挪到下一圈还能把连续到达的 token 合并成一次滚动
+                DispatchQueue.main.async { scrollProxy?.scrollTo("bottom", anchor: .bottom) }
             }
             .onChange(of: store.currentID) { _, _ in
                 // 切会话后等新列表上屏再落底
