@@ -31,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private let settingsWindow = SettingsWindowController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 主线程卡顿哨兵：往后「还是卡」的反馈直接看 perf 日志拿数字，不再靠体感描述
+        MainThreadJankWatch.install()
         Self.migrateFromNotchHubIfNeeded()
         let launcher = LauncherStore()
         let clipboard = ClipboardStore()

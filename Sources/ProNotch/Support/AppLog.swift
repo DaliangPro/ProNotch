@@ -35,6 +35,7 @@ enum AppLog {
     static let settings = Logger(subsystem: subsystem, category: "settings")
     static let systemHUD = Logger(subsystem: subsystem, category: "system-hud")
     static let debugTools = Logger(subsystem: subsystem, category: "debug-tools")
+    static let perf = Logger(subsystem: subsystem, category: "perf")
 }
 
 /// 「还想留点线索，但原值不能进日志」时的收窄工具。
