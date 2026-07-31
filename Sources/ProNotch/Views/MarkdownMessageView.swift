@@ -11,6 +11,18 @@ enum MarkdownLite {
         case ordered([String])
         case code(String)
         case quote(String)
+        /// 表格。AI 拿表格答题很常见，不解析的话竖线会连同分隔行一起原样吐出来，
+        /// 那正是大梁老师说「根本没法看」的东西（2026-07-31）
+        case table(header: [String], rows: [[String]], aligns: [Align])
+        /// 水平分隔线（--- / *** / ___）
+        case rule
+        /// 任务列表（- [ ] / - [x]）
+        case tasks([(text: String, done: Bool)])
+    }
+
+    /// 表格列对齐：由分隔行的冒号决定（:--- 左 / :---: 居中 / ---: 右）
+    enum Align {
+        case leading, center, trailing
     }
 
     static func parse(_ text: String) -> [Block] {
@@ -24,7 +36,7 @@ enum MarkdownLite {
 
         func flushParagraph() {
             if !paragraph.isEmpty {
-                blocks.append(.paragraph(paragraph.joined(separator: "\n")))
+                blocks.append(.paragraph(joinSoftBreaks(paragraph)))
                 paragraph = []
             }
         }
@@ -48,9 +60,23 @@ enum MarkdownLite {
             flushParagraph()
             flushLists()
             flushQuote()
+            flushTasksHook?()
         }
+        /// flushTasks 定义在下面（要用到 lines 循环里的状态），这里留个钩子给它接上
+        var flushTasksHook: (() -> Void)?
 
-        for rawLine in text.components(separatedBy: "\n") {
+        let lines = text.components(separatedBy: "\n")
+        var index = 0
+        var tasks: [(text: String, done: Bool)] = []
+
+        func flushTasks() {
+            if !tasks.isEmpty { blocks.append(.tasks(tasks)); tasks = [] }
+        }
+        flushTasksHook = flushTasks
+
+        while index < lines.count {
+            let rawLine = lines[index]
+            index += 1
             if rawLine.hasPrefix("```") {
                 if inCode {
                     blocks.append(.code(codeLines.joined(separator: "\n")))
@@ -70,6 +96,35 @@ enum MarkdownLite {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.isEmpty {
                 flushAll()
+                continue
+            }
+            // 表格要往下看一行才认得出来（首行是表头，紧跟的必须是 |---|---| 分隔行），
+            // 所以整个解析改成带下标的循环。只有一行竖线不算表格，那多半是普通句子
+            if let cells = parseTableRow(line), index < lines.count,
+               let sep = parseTableRow(lines[index].trimmingCharacters(in: .whitespaces)),
+               isTableSeparator(sep) {
+                flushAll()
+                index += 1
+                var rows: [[String]] = []
+                while index < lines.count {
+                    let next = lines[index].trimmingCharacters(in: .whitespaces)
+                    guard let row = parseTableRow(next) else { break }
+                    rows.append(row)
+                    index += 1
+                }
+                blocks.append(.table(header: cells, rows: rows, aligns: sep.map(alignment(of:))))
+                continue
+            }
+            if isRule(line) {
+                flushAll()
+                blocks.append(.rule)
+                continue
+            }
+            if let task = parseTask(line) {
+                flushParagraph()
+                flushLists()
+                flushQuote()
+                tasks.append(task)
                 continue
             }
             if let heading = parseHeading(line) {
@@ -101,6 +156,38 @@ enum MarkdownLite {
         return blocks
     }
 
+    /// 段落内的换行是**软换行**：按 Markdown 的规矩等同一个空格，不该硬切一行。
+    ///
+    /// 原来直接用 "\n" 拼，AI 每写一个换行就在屏幕上硬断一次；再叠上行宽上限，
+    /// 就会出现「上一行没排满、下一行只剩一个破折号」这种参差（2026-07-31 拍图看出来的）。
+    ///
+    /// 中英混排要分别对待：两边都是中日韩字符时直接接上（中文之间不该冒出空格），
+    /// 否则补一个空格（英文单词粘在一起会连成错词）
+    static func joinSoftBreaks(_ lines: [String]) -> String {
+        guard var result = lines.first else { return "" }
+        for line in lines.dropFirst() {
+            let left = result.last
+            let right = line.first
+            let bothCJK = left.map(isCJK) == true && right.map(isCJK) == true
+            result += (bothCJK ? "" : " ") + line
+        }
+        return result
+    }
+
+    /// 中日韩字符（含常用标点），用来决定拼接时要不要补空格
+    private static func isCJK(_ c: Character) -> Bool {
+        guard let scalar = c.unicodeScalars.first else { return false }
+        switch scalar.value {
+        case 0x3000...0x303F,   // 中文标点
+             0x3040...0x30FF,   // 日文假名
+             0x4E00...0x9FFF,   // 汉字
+             0xFF00...0xFFEF:   // 全角字符
+            return true
+        default:
+            return false
+        }
+    }
+
     private static func parseHeading(_ line: String) -> (Int, String)? {
         guard line.hasPrefix("#") else { return nil }
         let hashes = line.prefix(while: { $0 == "#" })
@@ -108,6 +195,49 @@ enum MarkdownLite {
         let rest = line.dropFirst(hashes.count)
         guard rest.hasPrefix(" ") else { return nil }
         return (hashes.count, rest.trimmingCharacters(in: .whitespaces))
+    }
+
+    /// 一行表格：`| a | b |` → ["a", "b"]。两侧竖线可有可无（AI 有时不写）
+    static func parseTableRow(_ line: String) -> [String]? {
+        guard line.contains("|") else { return nil }
+        var body = line
+        if body.hasPrefix("|") { body.removeFirst() }
+        if body.hasSuffix("|") { body.removeLast() }
+        let cells = body.components(separatedBy: "|").map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }
+        return cells.count >= 2 ? cells : nil
+    }
+
+    /// 分隔行：每格只由 - 和 : 组成且至少有一个 -
+    static func isTableSeparator(_ cells: [String]) -> Bool {
+        !cells.isEmpty && cells.allSatisfy { cell in
+            let t = cell.replacingOccurrences(of: " ", with: "")
+            return t.contains("-") && t.allSatisfy { $0 == "-" || $0 == ":" }
+        }
+    }
+
+    static func alignment(of separatorCell: String) -> Align {
+        let t = separatorCell.replacingOccurrences(of: " ", with: "")
+        if t.hasPrefix(":"), t.hasSuffix(":") { return .center }
+        if t.hasSuffix(":") { return .trailing }
+        return .leading
+    }
+
+    /// 水平分隔线：整行只有 3 个以上的 - / * / _
+    static func isRule(_ line: String) -> Bool {
+        let t = line.replacingOccurrences(of: " ", with: "")
+        guard t.count >= 3 else { return false }
+        return t.allSatisfy { $0 == "-" } || t.allSatisfy { $0 == "*" } || t.allSatisfy { $0 == "_" }
+    }
+
+    /// 任务项：`- [ ] 待办` / `- [x] 已办`
+    static func parseTask(_ line: String) -> (text: String, done: Bool)? {
+        guard let item = parseBullet(line) else { return nil }
+        let lower = item.lowercased()
+        if lower.hasPrefix("[ ] ") { return (String(item.dropFirst(4)), false) }
+        if lower.hasPrefix("[x] ") { return (String(item.dropFirst(4)), true) }
+        return nil
     }
 
     private static func parseBullet(_ line: String) -> String? {
@@ -126,32 +256,140 @@ enum MarkdownLite {
             .trimmingCharacters(in: .whitespaces)
     }
 
-    /// 行内 Markdown（加粗/斜体/行内代码/链接）解析，失败退回纯文本
-    static func inline(_ text: String) -> AttributedString {
-        (try? AttributedString(
+    /// 行内 Markdown（加粗/斜体/行内代码/链接）解析，失败退回纯文本。
+    ///
+    /// **加粗要同时变亮**（大梁老师 2026-07-31：「字重没有分级，都太一致了」）。
+    /// 原来只把 `**重点**` 渲成粗体、颜色与正文一模一样——中文粗体本就比西文含蓄，
+    /// 同一个白下几乎看不出差别，AI 标出来的重点等于白标。
+    /// 层级得靠**字号 + 字重 + 明度**三样一起分：这里管后两样，
+    /// 正文压到 0.76 的白，加粗提到纯白 + bold，一眼就能扫到
+    static func inline(_ text: String, size: CGFloat,
+                       weight: Font.Weight = .regular,
+                       emphasisWeight: Font.Weight = .semibold,
+                       base: Color = .white.opacity(0.82),
+                       emphasis: Color = .white) -> AttributedString {
+        var attributed = (try? AttributedString(
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(text)
+        attributed.font = .system(size: size, weight: weight)
+        attributed.foregroundColor = base
+
+        // 先收集区间再改：边遍历 runs 边改属性会让迭代器失效
+        var strong: [Range<AttributedString.Index>] = []
+        var codes: [Range<AttributedString.Index>] = []
+        for run in attributed.runs {
+            guard let intent = run.inlinePresentationIntent else { continue }
+            if intent.contains(.stronglyEmphasized) { strong.append(run.range) }
+            if intent.contains(.code) { codes.append(run.range) }
+        }
+        for range in strong {
+            attributed[range].font = .system(size: size, weight: emphasisWeight)
+            attributed[range].foregroundColor = emphasis
+        }
+        for range in codes {
+            attributed[range].font = .system(size: size - 0.5, design: .monospaced)
+            attributed[range].foregroundColor = emphasis
+        }
+        return attributed
     }
+}
+
+/// AI 回复的排版度量。**所有值都从正文字号推**，不再一处一个魔法数字。
+///
+/// 由来（大梁老师 2026-07-31：「字重、字号、间距整体再想一遍，读着吃力」）：
+/// 之前是逐条打补丁——字号写死过、行距写死过、标题比正文还小过。
+/// 每修一处只解决一处，整体仍然不成体系。这里把它们收成一份可推导的表。
+///
+/// 两档形态：刘海是一条窄带，塞得下才是第一位；独立窗口是拿来读长文的，按阅读舒适度定
+struct MarkdownTypography {
+    /// 正文字号（刘海 12 / 窗口 14）
+    var body: CGFloat = 12
+    /// 紧凑档（刘海）。窗口用舒适档
+    var compact: Bool = true
+
+    /// 行距。中文方块字密度高，行高不到 1.6 倍就发闷；
+    /// SwiftUI 的 lineSpacing 是**在默认行高之上再加**，所以取 0.5 倍字号
+    var lineSpacing: CGFloat { compact ? 1 : body * 0.5 }
+
+    /// 段落之间。要明显大于行距，段落才分得开——取行距的两倍出头
+    var blockSpacing: CGFloat { compact ? body * 0.5 : body * 1.1 }
+
+    /// 标题**上疏下密**：上面留够才看得出它领起新一段，
+    /// 下面收紧才与自己统辖的正文成组。上下一样多的话，标题会浮在两段中间谁也不挨
+    var headingTop: CGFloat { compact ? body * 0.3 : body * 1.0 }
+    var headingBottom: CGFloat { compact ? 0 : body * 0.2 }
+
+    /// 标题字号。差 1pt 等于没差——一级级拉开才认得出层级
+    func heading(_ level: Int) -> CGFloat {
+        body + (level <= 1 ? 5 : (level == 2 ? 3 : 1.5))
+    }
+
+    var listItemSpacing: CGFloat { compact ? 3 : body * 0.45 }
+    var markerGap: CGFloat { compact ? 6 : body * 0.55 }
+
+    /// 正文一行最多多宽。**这是读着吃不吃力的头号变量**：
+    /// 中文一行超过 40 字，回行时极易串行。按 36 字折算，窗口再宽正文也不跟着摊开。
+    /// 只管散文（段落/列表/引用），表格和代码不受限——它们本来就该横着铺
+    var proseWidth: CGFloat? { compact ? nil : body * 36 }
+
+    /// 气泡内边距：正文越大，四周越要留得开
+    var bubbleH: CGFloat { compact ? 10 : body * 1.15 }
+    var bubbleV: CGFloat { compact ? 6 : body * 0.8 }
+
+    /// 两条消息之间
+    var messageSpacing: CGFloat { compact ? 6 : body * 1.7 }
+
+    // MARK: - 字重
+    //
+    // 之前只有 regular / semibold / bold 三档，最细的一档缺席，
+    // 满屏都是「粗和中等」（大梁老师 2026-07-31）。
+    // 深色底上文字有光晕，看起来本就比浅色底显粗——Apple 的深色模式建议正是
+    // 「考虑用更细的字重」。所以窗口正文走 light，靠加粗和标题去顶上面那几档。
+    //
+    // 刘海不跟：那儿字号只有 12，再细就发虚了
+
+    /// 正文
+    var bodyWeight: Font.Weight { compact ? .regular : .light }
+    /// 行内加粗。用 semibold 而不是 bold——bold 留给标题，两者才分得开
+    var emphasisWeight: Font.Weight { compact ? .semibold : .semibold }
+    /// 次级信息（引用、项目符号、任务项）：比正文还退一步
+    var secondaryWeight: Font.Weight { compact ? .regular : .light }
+    /// 表头。表格里不必喊，medium 足够把它和数据行分开
+    var tableHeaderWeight: Font.Weight { compact ? .semibold : .medium }
+
+    func headingWeight(_ level: Int) -> Font.Weight { level <= 2 ? .bold : .semibold }
+
+    /// 正文颜色。字重轻了要把明度补回来一点，不然又轻又暗就发虚了
+    var bodyColor: Color { .white.opacity(compact ? 0.9 : 0.82) }
 }
 
 struct MarkdownMessageView: View {
     let text: String
 
-    /// 正文字号。写死过 12——那是**刘海**的字号，于是独立窗口把用户消息调到 14 之后，
-    /// AI 的回答（正文主体）仍是 12，又挤又不搭（2026-07-30 拍真视图才看出来）
-    var fontSize: CGFloat = 12
-    /// 块间距。段落之间 6pt 在 14 号字下几乎贴着，长答案会挤成一团
-    var blockSpacing: CGFloat = 6
-    /// 段内行距
-    var lineSpacing: CGFloat = 0
+    /// 整套排版度量。字号、行距、段距、标题层级、行宽全从它推——
+    /// 调一个地方，整篇跟着走（见 `MarkdownTypography`）
+    var type = MarkdownTypography()
+
+    private var fontSize: CGFloat { type.body }
 
     var body: some View {
         let blocks = MarkdownLite.parse(text)
-        VStack(alignment: .leading, spacing: blockSpacing) {
+        VStack(alignment: .leading, spacing: type.blockSpacing) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 blockView(block)
             }
+        }
+    }
+
+    /// 散文（段落/标题/列表/引用）限最大行宽，表格与代码不限——
+    /// 前者是拿来读的，后者本来就该横着铺
+    @ViewBuilder
+    private func prose<V: View>(_ view: V) -> some View {
+        if let width = type.proseWidth {
+            view.frame(maxWidth: width, alignment: .leading)
+        } else {
+            view
         }
     }
 
@@ -159,26 +397,33 @@ struct MarkdownMessageView: View {
     private func blockView(_ block: MarkdownLite.Block) -> some View {
         switch block {
         case .paragraph(let text):
-            Text(MarkdownLite.inline(text))
-                .font(.system(size: fontSize))
-                .foregroundColor(.white.opacity(0.9))
-                .lineSpacing(lineSpacing)
+            prose(Text(MarkdownLite.inline(text, size: fontSize,
+                                           weight: type.bodyWeight,
+                                           emphasisWeight: type.emphasisWeight,
+                                           base: type.bodyColor))
+                .lineSpacing(type.lineSpacing)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true))
+        case .heading(let level, let text):
+            // 字号必须**从正文推**，不能写死。原来是 15/14/13：窗口正文 14 的时候
+            // H2 跟正文一样大、H3 比正文还小，等于没有标题——大梁老师说「一大坨字没重点」
+            // 有一半是这么来的（2026-07-31）
+            prose(Text(MarkdownLite.inline(text, size: type.heading(level),
+                                           weight: type.headingWeight(level),
+                                           emphasisWeight: type.headingWeight(level),
+                                           base: .white, emphasis: .white))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
-        case .heading(let level, let text):
-            Text(MarkdownLite.inline(text))
-                .font(.system(size: level <= 1 ? 15 : (level == 2 ? 14 : 13),
-                              weight: .semibold))
-                .foregroundColor(.white)
-                .textSelection(.enabled)
-                .padding(.top, 2)
+                // 上疏下密：标题与它统辖的正文成一组
+                .padding(.top, type.headingTop)
+                .padding(.bottom, type.headingBottom))
         case .bullets(let items):
-            listView(items) { _ in "•" }
+            prose(listView(items) { _ in "•" })
         case .ordered(let items):
-            listView(items) { "\($0 + 1)." }
+            prose(listView(items) { "\($0 + 1)." })
         case .code(let code):
             Text(code)
-                .font(.system(size: 11, design: .monospaced))
+                .font(.system(size: fontSize - 1, design: .monospaced))
                 .foregroundColor(.white.opacity(0.88))
                 .textSelection(.enabled)
                 // 滚动容器测量时可能压缩 Text 高度导致截断，固定纵向自适应
@@ -188,29 +433,121 @@ struct MarkdownMessageView: View {
                 .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
                     .fill(Color.black.opacity(0.4)))
         case .quote(let text):
-            HStack(spacing: 8) {
+            prose(HStack(spacing: 8) {
                 Rectangle()
                     .fill(Color.white.opacity(0.25))
                     .frame(width: 2)
-                Text(MarkdownLite.inline(text))
-                    .font(.system(size: 12))
-                    .foregroundColor(.white.opacity(0.6))
+                Text(MarkdownLite.inline(text, size: fontSize,
+                                         weight: type.secondaryWeight,
+                                         base: .white.opacity(0.55),
+                                         emphasis: .white.opacity(0.85)))
+                    .lineSpacing(type.lineSpacing)
                     .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            })
+        case .table(let header, let rows, let aligns):
+            tableView(header: header, rows: rows, aligns: aligns)
+        case .rule:
+            Rectangle()
+                .fill(Color.white.opacity(0.14))
+                .frame(height: 1)
+                .padding(.vertical, 2)
+        case .tasks(let items):
+            prose(VStack(alignment: .leading, spacing: type.listItemSpacing) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Image(systemName: item.done ? "checkmark.square.fill" : "square")
+                            .font(.system(size: fontSize - 1))
+                            .foregroundColor(.white.opacity(item.done ? 0.75 : 0.4))
+                        Text(MarkdownLite.inline(item.text, size: fontSize,
+                                                 weight: type.secondaryWeight,
+                                                 emphasisWeight: type.emphasisWeight,
+                                                 base: .white.opacity(item.done ? 0.45 : 0.82)))
+                            .strikethrough(item.done, color: .white.opacity(0.35))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            })
+        }
+    }
+
+    /// 表格里的一格。单独抽出来是因为写在 Grid 里内联，编译器推类型会超时
+    private func tableCell(_ text: String, align: Alignment, isHeader: Bool) -> some View {
+        let size = fontSize - 0.5
+        let attributed = isHeader
+            ? MarkdownLite.inline(text, size: size, weight: type.tableHeaderWeight,
+                                  emphasisWeight: type.tableHeaderWeight,
+                                  base: .white, emphasis: .white)
+            : MarkdownLite.inline(text, size: size, weight: type.bodyWeight,
+                                  emphasisWeight: type.emphasisWeight,
+                                  base: type.bodyColor)
+        return Text(attributed)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: align)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// 表格：表头一行 + 细横线 + 数据行。
+    ///
+    /// 用 Grid 而不是 HStack 拼：各列宽度要由整张表最宽的那格决定，
+    /// 一行一行摆出来的「表格」列根本对不齐。
+    /// 单元格里的文字照常换行（fixedSize 只锁纵向），窄窗口下不会被裁掉
+    private func tableView(header: [String], rows: [[String]],
+                           aligns: [MarkdownLite.Align]) -> some View {
+        let columns = max(header.count, rows.map(\.count).max() ?? 0)
+        func align(_ i: Int) -> Alignment {
+            switch aligns.indices.contains(i) ? aligns[i] : .leading {
+            case .leading: return .leading
+            case .center: return .center
+            case .trailing: return .trailing
             }
         }
+        func cell(_ list: [String], _ i: Int) -> String {
+            list.indices.contains(i) ? list[i] : ""
+        }
+        return VStack(alignment: .leading, spacing: 0) {
+            Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+                GridRow {
+                    ForEach(0..<columns, id: \.self) { i in
+                        tableCell(cell(header, i), align: align(i), isHeader: true)
+                    }
+                }
+                Divider().gridCellUnsizedAxes(.horizontal).overlay(Color.white.opacity(0.22))
+                ForEach(Array(rows.enumerated()), id: \.offset) { index, row in
+                    GridRow {
+                        ForEach(0..<columns, id: \.self) { i in
+                            tableCell(cell(row, i), align: align(i), isHeader: false)
+                        }
+                    }
+                    // 行间细线，最后一行不画（下面已经是表格外框）
+                    if index < rows.count - 1 {
+                        Divider().gridCellUnsizedAxes(.horizontal)
+                            .overlay(Color.white.opacity(0.10))
+                    }
+                }
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(Color.white.opacity(0.05)))
+        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
+        .textSelection(.enabled)
     }
 
     private func listView(_ items: [String],
                           marker: @escaping (Int) -> String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: type.listItemSpacing) {
             ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                HStack(alignment: .top, spacing: 6) {
+                HStack(alignment: .top, spacing: type.markerGap) {
+                    // 项目符号压到 0.35：它是路标不是内容，跟正文一样亮会抢注意力
                     Text(marker(index))
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.5))
-                    Text(MarkdownLite.inline(item))
-                        .font(.system(size: 12))
-                        .foregroundColor(.white.opacity(0.9))
+                        .font(.system(size: fontSize, weight: type.secondaryWeight))
+                        .foregroundColor(.white.opacity(0.35))
+                    Text(MarkdownLite.inline(item, size: fontSize,
+                                             weight: type.bodyWeight,
+                                             emphasisWeight: type.emphasisWeight,
+                                             base: type.bodyColor))
                         .textSelection(.enabled)
                 }
             }

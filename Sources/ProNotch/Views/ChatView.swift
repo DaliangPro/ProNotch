@@ -91,9 +91,6 @@ struct ChatView: View {
                     messageList
                         .onAppear { viewportHeight = geo.size.height }
                         .onChange(of: geo.size.height) { _, h in viewportHeight = h }
-                        // 上下两端渐隐（大梁老师定）：滚动的文字不该被一条硬边切断，
-                        // 淡出去才像「还有内容在外面」。26pt 折算成比例，视口多高都一样厚
-                        .mask(Self.edgeFade(height: geo.size.height))
                 }
                 .frame(maxHeight: .infinity)
                 // 左右留白外壳不给，得自己给。这个 16 是全窗的基准竖线：
@@ -286,21 +283,12 @@ struct ChatView: View {
         return 0.05 + 0.06 * Double(max(0, chronoIndex - windowStart))
     }
 
-    /// 消息区上下两端的渐隐遮罩。26pt 固定厚度，按视口高度折成比例
-    private static func edgeFade(height: CGFloat) -> LinearGradient {
-        let fade = height > 120 ? 26 / height : 0
-        return LinearGradient(stops: [
-            .init(color: .clear, location: 0),
-            .init(color: .black, location: fade),
-            .init(color: .black, location: 1 - fade),
-            .init(color: .clear, location: 1),
-        ], startPoint: .top, endPoint: .bottom)
-    }
-
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
-                LazyVStack(spacing: host.inNotch ? 6 : 18) {
+                // 消息之间的间距也从正文推（窗口 14×1.7≈24）：一问一答之间要能一眼分开
+                LazyVStack(spacing: MarkdownTypography(body: host.inNotch ? 12 : 14,
+                                                       compact: host.inNotch).messageSpacing) {
                     // 开场白只在刘海里出现。独立窗口是「问一句就走」的地方，
                     // 一句硬编码的装饰语占着最显眼的位置，却不进对话也不发 API，纯占位
                     if host.inNotch {
@@ -714,6 +702,11 @@ private struct MessageBubble: View {
     /// 但大梁老师定下两边都要气泡（2026-07-30）——一眼能分清谁说的比松快更重要
     var windowStyle = false
 
+    /// 这条消息用哪套排版度量。刘海走紧凑档，独立窗口走舒适档
+    private var type: MarkdownTypography {
+        MarkdownTypography(body: windowStyle ? 14 : 12, compact: !windowStyle)
+    }
+
     var body: some View {
         HStack {
             // 两侧都留空档：气泡才有「贴着一边」的形，不然就是一条通栏
@@ -751,14 +744,11 @@ private struct MessageBubble: View {
                         if message.role == .assistant {
                             // AI 回复按 Markdown 排版；用户消息保持纯文本
                             // 窗口里正文 14 / 段距 12 / 行距 6；刘海保持原来的紧凑
-                            MarkdownMessageView(text: message.content,
-                                                fontSize: windowStyle ? 14 : 12,
-                                                blockSpacing: windowStyle ? 12 : 6,
-                                                lineSpacing: windowStyle ? 6 : 0)
+                            MarkdownMessageView(text: message.content, type: type)
                         } else {
                             Text(message.content)
                                 // 窗口比刘海宽敞得多，12pt 挤着没道理；语义色在毛玻璃上才有 vibrancy
-                                .font(.system(size: windowStyle ? 14 : 12))
+                                .font(.system(size: type.body, weight: type.bodyWeight))
                                 .foregroundStyle(windowStyle ? AnyShapeStyle(.primary)
                                                              : AnyShapeStyle(Color.white.opacity(0.9)))
                                 .textSelection(.enabled)
@@ -766,9 +756,9 @@ private struct MessageBubble: View {
                     }
                 }
             }
-            // 12 与输入块的内边距一样：气泡里的字和输入框里的字落在同一条竖线上
-            .padding(.horizontal, windowStyle ? 12 : 10)
-            .padding(.vertical, windowStyle ? 9 : 6)
+            // 内边距也从正文字号推：正文越大，四周越要留得开
+            .padding(.horizontal, type.bubbleH)
+            .padding(.vertical, type.bubbleV)
             .background {
                 if windowStyle {
                     // 两边都是气泡，靠**材质厚薄**分谁说的：
