@@ -317,10 +317,11 @@ struct ChatWindowChrome: View {
         // 顶部安全区内缩，于是这条顶栏整体被压到红绿灯下面——「新对话」比三颗灯低一截，
         // 上面还空出一条（离屏拍出来才发现，2026-07-30）
         .ignoresSafeArea(edges: .top)
-        // 不透明黑底（大梁老师 2026-07-31 定）。此前是 NSVisualEffectView 毛玻璃，
+        // 不透明底（大梁老师 2026-07-31 定）。此前是 NSVisualEffectView 毛玻璃，
         // 透出背后桌面——看着好看，但窗内每一块的实际颜色都跟着桌面走，
-        // 气泡、下拉、输入块得一个个改成确定性填充才稳得住。改黑底之后这些都成了定值
-        .background(Color.black.ignoresSafeArea())
+        // 气泡、下拉、输入块得一个个改成确定性填充才稳得住。改成不透明之后这些都成了定值。
+        // 纯黑又太硬，最终定在偏灰的一档（见 ChatWindowPalette）
+        .background(ChatWindowPalette.background.ignoresSafeArea())
         // 这里原来有一道 1pt 亮边（想给玻璃做点厚度感）。大梁老师要去掉，
         // 而且它本身还错位：overlay 按安全区顶端摆，落在距窗顶 32pt 的标题栏下沿，
         // 看着就是横穿窗口的一条线（实测 2026-07-30）

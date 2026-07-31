@@ -87,7 +87,12 @@ struct ChatView: View {
 
     /// 整窗宽度，用来决定内容列的左右留白档位（任务书 §6.3：>900 用 24，否则 16）
     @State private var windowWidth: CGFloat = 0
+    /// 输入块的左右留白。**视觉边界以它为准**
     private var sideInset: CGFloat { windowWidth > 900 ? 24 : 16 }
+    /// 正文的左右留白，**比输入块大一档**（大梁老师 2026-07-31）：
+    /// 正文区因此比输入框窄，缩在它里面——一眼看到的那条边界线就只有输入框那一条。
+    /// 我第一版理解反了做成了「正文更宽」，正文反而戳出输入框之外，边界成了两条
+    private var textInset: CGFloat { sideInset + 16 }
 
     /// 每段对话固定的系统开场白（纯 UI 引导语，不进 store、不发给 API）
     private static let greeting = ChatMessage(role: .assistant, content: "想和我聊点什么？")
@@ -111,9 +116,8 @@ struct ChatView: View {
                             .onChange(of: geo.size.height) { _, h in viewportHeight = h }
                     }
                     .frame(maxHeight: .infinity)
-                    // 左右留白：窄窗 16，宽于 900 时 24（§6.3）。
-                    // 消息与输入块用同一个值，两者外缘才在一条竖线上
-                    .padding(.horizontal, sideInset)
+                    // 正文两侧比输入块多留 16：正文缩在输入框以内，边界只留输入框那一条
+                    .padding(.horizontal, textInset)
                     windowComposer
                 }
                 .frame(maxWidth: 920)
@@ -418,8 +422,8 @@ struct ChatView: View {
                             .font(.system(size: 11, weight: .semibold))
                             .foregroundStyle(.white.opacity(0.75))
                             .frame(width: 32, height: 32)
-                            .background(Circle().fill(Color(red: 0.161, green: 0.161, blue: 0.176)))
-                            .overlay(Circle().strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
+                            .background(Circle().fill(ChatWindowPalette.surface1))
+                            .overlay(Circle().strokeBorder(ChatWindowPalette.border, lineWidth: 0.5))
                             .shadow(color: .black.opacity(0.35), radius: 8, y: 2)
                     }
                     .buttonStyle(.plain)
@@ -630,10 +634,10 @@ struct ChatView: View {
         // 只靠材质分不出层：深色下 regularMaterial 和窗口底几乎同色（实测拍出来糊成一片）。
         // 叠一层浅填充 + 一道细描边，层级要看得出来才叫层级
         .background {
-            let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
-            shape.fill(.regularMaterial)
-                .overlay(shape.fill(.white.opacity(0.06)))
-                .overlay(shape.strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
+            // 用确定色而不是材质：材质会跟着背后的东西走，换一档底色就翻车
+            let shape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+            shape.fill(ChatWindowPalette.surface1)
+                .overlay(shape.strokeBorder(ChatWindowPalette.border, lineWidth: 0.5))
         }
         // 外缘与消息栏同一档（§6.3），左右下三边一条线
         .padding(.horizontal, sideInset).padding(.bottom, 16)
@@ -899,7 +903,7 @@ private struct MessageBubble: View {
                 } else if windowStyle {
                     // 我的提问：圆角 14（任务书 §5.2），底色用 surface-2
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .fill(Color(red: 0.118, green: 0.118, blue: 0.129))
+                        .fill(ChatWindowPalette.surface2)
                 } else {
                     RoundedRectangle(cornerRadius: 10)
                         .fill(Color.white.opacity(message.role == .user ? 0.16 : 0.06))
@@ -1008,9 +1012,9 @@ private struct MessageBubble: View {
             }
         }
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .fill(Color(red: 0.082, green: 0.082, blue: 0.09)))
+            .fill(ChatWindowPalette.surfaceInset))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-            .strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
+            .strokeBorder(ChatWindowPalette.border, lineWidth: 1))
         .frame(maxWidth: 760, alignment: .leading)
     }
 
