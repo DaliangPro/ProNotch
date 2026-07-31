@@ -276,13 +276,38 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
         NSSize(width: min(frameSize.width, Self.maxWindowWidth), height: frameSize.height)
     }
 
+    /// 宽度限制的兜底闸（大梁老师 2026-07-31 反馈「最窄和最宽限制好像没了」）。
+    ///
+    /// `windowWillResize` 只管**拖拽**这一条路。双击窗口边缘的智能放大、
+    /// 辅助功能改尺寸、程序 setFrame 都绕开它——落地超界就在这里当场夹回。
+    /// 正常路径下它永远是空操作（宽度合法直接返回），不会跟拖拽打架
+    /// 单拎出来是为了可测：windowDidResize 依赖真实 panel，纯夹取逻辑不该跟着不可测
+    static func clampedWidth(_ width: CGFloat, minWidth: CGFloat) -> CGFloat {
+        min(max(width, minWidth), maxWindowWidth)
+    }
+
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         hide()
         return false
     }
 
     func windowDidMove(_ notification: Notification) { saveFrame() }
-    func windowDidResize(_ notification: Notification) { saveFrame() }
+    func windowDidResize(_ notification: Notification) {
+        // 兜底闸：`windowWillResize` 只管拖拽这一条路，双击边缘的智能放大、
+        // 辅助功能改尺寸、程序 setFrame 都绕开它——落地超界就在这里当场夹回，
+        // 然后才落盘。正常路径下夹取是空操作，不会跟拖拽打架
+        if let panel, (notification.object as? NSWindow) === panel {
+            let width = panel.frame.width
+            let clamped = Self.clampedWidth(width, minWidth: panel.minSize.width)
+            if abs(clamped - width) > 0.5 {
+                AppLog.window.info("闪问窗宽度越界收回: \(Int(width)) → \(Int(clamped))（来路非常规拖拽）")
+                var frame = panel.frame
+                frame.size.width = clamped
+                panel.setFrame(frame, display: true)
+            }
+        }
+        saveFrame()
+    }
 
     private func saveFrame() {
         panel?.saveFrame(usingName: Self.autosaveName)

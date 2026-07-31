@@ -39,6 +39,14 @@ final class ChatWindowWidthCapTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(ChatWindowController.maxWindowWidth, 920 + 220)
     }
 
+    /// 兜底闸的纯逻辑（大梁老师 2026-07-31「限制好像没了」后加）：
+    /// 双击边缘智能放大等路径绕开 windowWillResize，落地由 windowDidResize 夹回
+    func test兜底夹取覆盖双向越界() {
+        XCTAssertEqual(ChatWindowController.clampedWidth(2560, minWidth: 620), 1180, "智能放大到全屏宽要收回")
+        XCTAssertEqual(ChatWindowController.clampedWidth(300, minWidth: 620), 620, "窄于下限要抬回")
+        XCTAssertEqual(ChatWindowController.clampedWidth(800, minWidth: 620), 800, "合法宽度原样放行")
+    }
+
     /// 这条是反向锁：哪天有人以为 `maxSize` 够用而把 windowWillResize 删了，
     /// 这里会立刻红——它证明的是「光设 maxSize 不管用」这个事实本身
     func test光设maxSize夹不住尺寸() {
