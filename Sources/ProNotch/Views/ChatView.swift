@@ -377,9 +377,18 @@ struct ChatView: View {
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
-                // 消息之间的间距也从正文推（窗口 14×1.7≈24）：一问一答之间要能一眼分开
-                LazyVStack(spacing: MarkdownTypography(body: host.inNotch ? 12 : 14,
-                                                       compact: host.inNotch).messageSpacing) {
+                // 消息之间的间距也从正文推（窗口 14×1.7≈24）：一问一答之间要能一眼分开。
+                //
+                // **VStack，不是 LazyVStack**（2026-07-31 第三次卡死后定）。
+                // 三次卡死采样的共同常量都是 LazySubviewPlacements 反复重算：
+                // 往上滚要现建上面的行，真实高度与估计值不同→内容总高变→
+                // 贴底对齐让全体位置平移→可见区映射到另一批行→再建/拆→高度再变……
+                // 懒加载摆位在「变高内容 + 贴底对齐」下没有不动点，主线程整段锁死。
+                // 全量渲染几十条消息是毫秒级的事（scrollTo 落底本来就会把整列建全），
+                // 换来的是这台机器从窗口里彻底消失——想改回 Lazy，先拿出
+                // 「贴底 + 上滚」不再触发 LazySubviewPlacements 循环的实测证据
+                VStack(spacing: MarkdownTypography(body: host.inNotch ? 12 : 14,
+                                                   compact: host.inNotch).messageSpacing) {
                     // 开场白只在刘海里出现。独立窗口是「问一句就走」的地方，
                     // 一句硬编码的装饰语占着最显眼的位置，却不进对话也不发 API，纯占位
                     if host.inNotch {
