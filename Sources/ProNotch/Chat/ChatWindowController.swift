@@ -57,7 +57,6 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
     /// 所以：**变宽过程中把内容列钉在原宽**（纯位移+裁切，帧帧都便宜），
     /// 结束后放开，一次断行到位。ChatView 读它来决定钉不钉
     @Published var contentFrozen = false
-    private var unfreezeWork: DispatchWorkItem?
 
     @Published var pinned = true {
         didSet { panel?.level = pinned ? .floating : .normal }
@@ -263,29 +262,14 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
     ///
     /// 拖拽过程中每一帧都会问一次，返回什么就是什么——比 `maxSize` 可靠
     /// （后者实测只给光标反馈，不夹尺寸）。高度不限，长答案要能拉满屏
-    /// 实时拖缩：AppKit 有明确的起止回调，冻结直接映射到这一段
+    /// 实时拖缩：AppKit 有明确的起止回调，冻结直接映射到这一段。
+    /// （曾有个「侧栏开合冻一小段」的定时器变体，侧栏改悬浮层后没了用武之地，已删）
     func windowWillStartLiveResize(_ notification: Notification) {
-        unfreezeWork?.cancel(); unfreezeWork = nil
         contentFrozen = true
     }
 
     func windowDidEndLiveResize(_ notification: Notification) {
-        unfreezeWork?.cancel(); unfreezeWork = nil
         contentFrozen = false
-    }
-
-    /// 侧栏开合没有系统起止回调：冻一小段（盖住 0.16s 滑动 + 余量），到点自动放开。
-    /// 效果是侧栏滑动期间正文只平移不断行，滑完再一次断行——
-    /// 卡顿从「动画中间」挪到「动画结束后的一帧」，眼睛里就是顺的
-    func freezeContentBriefly(_ duration: TimeInterval = 0.24) {
-        unfreezeWork?.cancel()
-        contentFrozen = true
-        let work = DispatchWorkItem { [weak self] in
-            self?.contentFrozen = false
-            self?.unfreezeWork = nil
-        }
-        unfreezeWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
     }
 
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
@@ -353,14 +337,9 @@ struct ChatWindowChrome: View {
     private var historyButton: some View {
         iconButton("clock.arrow.circlepath", hovering: hoverHistory,
                    tip: showHistory ? "收起历史对话" : "历史对话") {
-            // **刻意不包 withAnimation**（大梁老师反馈「挤压动画非常卡顿」）。
-            //
-            // 给这个布局变化上动画，等于让整棵消息树按帧重排：正文限宽 760、
-            // Markdown 要重新断行、GeometryReader 每帧重算——一帧的活干几十帧，
-            // 卡的就是这个。宽度一步到位反而顺，侧栏自己滑进来就够有动感了。
-            // 切换前先把内容列宽冻住：滑动期间正文只平移，滑完再一次断行
-            controller.freezeContentBriefly()
-            showHistory.toggle()
+            // 侧栏是悬浮层（见 body），开合完全不碰正文布局，
+            // withAnimation 只驱动它自己的滑入滑出
+            withAnimation(.easeOut(duration: 0.16)) { showHistory.toggle() }
         }
         .onHover { hoverHistory = $0 }
         .accessibilityValue(showHistory ? "已展开" : "已收起")
@@ -393,14 +372,18 @@ struct ChatWindowChrome: View {
             }
         }
         .frame(width: 220)
+        .frame(maxHeight: .infinity)
         .background(ChatWindowPalette.surface1)
         // 只在左边描一道线：右边贴着窗沿，再描一条就成了双线
         .overlay(alignment: .leading) {
             Rectangle().fill(ChatWindowPalette.divider).frame(width: 1)
         }
-        // 只让侧栏自己滑进来；左侧内容的宽度变化不参与动画（见 historyButton 的注释）
+        // 悬浮在正文之上，左缘一道投影交代层级
+        .shadow(color: .black.opacity(0.30), radius: 14, x: -5)
+        // 动画由 historyButton 的 withAnimation 驱动（只动这次插拔，不碰别的）；
+        // 这里刻意不挂 .animation(value:)——挂在大子树上的隐式动画吃过大亏
+        //（atBottom 振荡卡死，2026-07-31），教训是动画永远只圈住要动的那一小片
         .transition(.move(edge: .trailing))
-        .animation(.easeOut(duration: 0.16), value: showHistory)
     }
 
     private func historyRow(_ conversation: ChatConversation) -> some View {
@@ -426,18 +409,19 @@ struct ChatWindowChrome: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            VStack(spacing: 0) {
-                titleBar
-                ChatView(host: .window)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .environment(\.chatContentFrozen, controller.contentFrozen)
-            }
-            // 侧栏与「顶栏 + 内容」并排，因此从窗顶一直铺到窗底，
-            // 不再被顶栏压掉一截（大梁老师 2026-07-31）
+        VStack(spacing: 0) {
+            titleBar
+            ChatView(host: .window)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .environment(\.chatContentFrozen, controller.contentFrozen)
+        }
+        // 侧栏改**悬浮层**，不再推挤内容（大梁老师 2026-07-31「还是卡顿」后定）。
+        // 推挤式的账躲不掉：正文列宽一变就得整列重新断行，冻结手段只能把这笔账
+        // 从「动画中间」挪到「动画结束」，那一下的顿挫还在。悬浮层盖在内容上，
+        // 正文宽度全程不变——零断行，开合帧帧都便宜，也没有收尾的跳变。
+        // 从窗顶铺到窗底（他此前定的「侧栏应到顶」不变）
+        .overlay(alignment: .trailing) {
             if showHistory { historySidebar }
-                // 下方留白由输入块自己给（22，与左右一致）。这里再加就叠成 36，
-                // 底部会比两侧明显宽一圈——大梁老师要的是「左右和下方一致」
         }
         // 「新对话 / 历史」钉在**整扇窗**的右上角，不随侧栏左移（大梁老师 2026-07-31）。
         // 它们跟标题不是一回事：标题标的是「你在读哪一栏」，所以跟内容区走；
