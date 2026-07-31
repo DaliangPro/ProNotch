@@ -235,16 +235,37 @@ final class NotchViewModel: ObservableObject {
                       height: height)
     }
 
-    /// 收起状态的悬停触发区：刘海矩形向屏幕顶边外延伸，
-    /// 避免鼠标贴死顶边时坐标恰好落在边界外。
+    /// 触发区比刘海本身往里收的边距。
+    ///
+    /// 由来（大梁老师 2026-07-31）：刘海贴着菜单栏，下面常有窗口紧挨着。
+    /// 拖窗口、或者去点旁边的菜单栏图标时，鼠标从边上蹭过去就把它带出来了。
+    /// 往里收一圈之后，得真的走进去才算数，擦边不再触发。
+    ///
+    /// 只收左右和下沿，**上沿不收**：上沿就是屏幕顶边，收了的话鼠标顶到头反而落在区外，
+    /// 想召唤都召唤不出来。
+    ///
+    /// 本机实测刘海 185×32pt，收完触发区 161×27pt，仍然好瞄。
+    /// 注意这挡的是「擦边」；从一侧横穿到另一侧必然经过中心，收多少都拦不住
+    private static let edgeGuardX: CGFloat = 12
+    private static let edgeGuardBottom: CGFloat = 5
+
+    /// 收起状态的悬停触发区：刘海矩形四周（除上沿）往里收一圈。
     /// 左右扩到两侧功能区——收起态黑形状加宽后，悬停侧区同样展开
     private var enterRect: CGRect {
         var rect = notchRect
-        rect.size.height += 20
         if sideSlotsActive {
             rect.origin.x -= sideSlotWidth
             rect.size.width += sideSlotWidth * 2
         }
+        // 收边必须放在**最后**：侧区是在物理刘海之外再各加 56pt，
+        // 先收后扩等于白收（热区实际有 185+112=297pt 宽，误触多半来自这儿）
+        rect = rect.insetBy(dx: Self.edgeGuardX, dy: 0)
+        rect.origin.y += Self.edgeGuardBottom
+        rect.size.height -= Self.edgeGuardBottom
+        // 上边界必须往屏幕外多留一截：CGRect.contains 的上界是开区间（y < maxY 才算在内），
+        // 而鼠标滑到屏幕最顶时 y 恰好等于 maxY，落在区外——「滑到刘海最顶反而不弹」就是这个。
+        // 这 20pt 全在屏幕外，鼠标够不着，不会扩大实际热区
+        rect.size.height += 20
         return rect
     }
 
