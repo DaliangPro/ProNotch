@@ -266,7 +266,12 @@ struct ChatWindowChrome: View {
     private var historyButton: some View {
         iconButton("clock.arrow.circlepath", hovering: hoverHistory,
                    tip: showHistory ? "收起历史对话" : "历史对话") {
-            withAnimation(.easeOut(duration: 0.18)) { showHistory.toggle() }
+            // **刻意不包 withAnimation**（大梁老师反馈「挤压动画非常卡顿」）。
+            //
+            // 给这个布局变化上动画，等于让整棵消息树按帧重排：正文限宽 760、
+            // Markdown 要重新断行、GeometryReader 每帧重算——一帧的活干几十帧，
+            // 卡的就是这个。宽度一步到位反而顺，侧栏自己滑进来就够有动感了
+            showHistory.toggle()
         }
         .onHover { hoverHistory = $0 }
         .accessibilityValue(showHistory ? "已展开" : "已收起")
@@ -275,10 +280,11 @@ struct ChatWindowChrome: View {
     /// 右侧历史对话侧栏。数据来自 ChatStore.conversations（真有），点一条即切过去
     private var historySidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // 顶部让开 34：底色铺到窗顶，但标题与左边顶栏那一行对齐
             Text("历史对话")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(MarkdownTypography.textTertiary)
-                .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 6)
+                .padding(.horizontal, 14).padding(.top, 42).padding(.bottom, 6)
             if store.conversations.isEmpty {
                 Text("还没有历史对话")
                     .font(.system(size: 12))
@@ -303,6 +309,9 @@ struct ChatWindowChrome: View {
         .overlay(alignment: .leading) {
             Rectangle().fill(ChatWindowPalette.divider).frame(width: 1)
         }
+        // 只让侧栏自己滑进来；左侧内容的宽度变化不参与动画（见 historyButton 的注释）
+        .transition(.move(edge: .trailing))
+        .animation(.easeOut(duration: 0.16), value: showHistory)
     }
 
     private func historyRow(_ conversation: ChatConversation) -> some View {
@@ -328,13 +337,15 @@ struct ChatWindowChrome: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            titleBar
-            HStack(spacing: 0) {
+        HStack(spacing: 0) {
+            VStack(spacing: 0) {
+                titleBar
                 ChatView(host: .window)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if showHistory { historySidebar.transition(.move(edge: .trailing)) }
             }
+            // 侧栏与「顶栏 + 内容」并排，因此从窗顶一直铺到窗底，
+            // 不再被顶栏压掉一截（大梁老师 2026-07-31）
+            if showHistory { historySidebar }
                 // 下方留白由输入块自己给（22，与左右一致）。这里再加就叠成 36，
                 // 底部会比两侧明显宽一圈——大梁老师要的是「左右和下方一致」
         }
@@ -386,12 +397,14 @@ struct ChatWindowChrome: View {
                 Spacer(minLength: 0)
                 // 历史会话（任务书 §3.3.2，P2 条件项）：ChatStore 本来就存着会话列表，
                 // 数据是真的才做——任务书禁止摆没功能的按钮
-                historyButton
+                // 新对话在左、历史在最右（大梁老师 2026-07-31）：
+                // 历史挨着它要推开的那条侧栏，按下去和长出来的东西在同一侧
                 iconButton("plus", hovering: hoverNew, tip: "新对话 ⌘N") {
                     store.newConversation()
                     store.focusInputTick += 1
                 }
                 .onHover { hoverNew = $0 }
+                historyButton
             }
         }
         .padding(.horizontal, 12)

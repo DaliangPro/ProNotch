@@ -597,6 +597,8 @@ struct ChatView: View {
                       axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...8)
+                // 单行时也留出 26 的高度：输入区太扁，光标像贴在边上（大梁老师 2026-07-31）
+                .frame(minHeight: 26, alignment: .topLeading)
                 .font(.system(size: 14))
                 .foregroundStyle(.primary)
                 .focused($inputFocused)
@@ -664,7 +666,7 @@ struct ChatView: View {
         // 因此落在同一条竖线上（大梁老师要「文字之间有对齐关系」）。
         // 下边只留 4：控件行整体下移、底部留白收窄（大梁老师 2026-07-31），
         // 这个 4 不是随手定的，见下面圆角同心的算法
-        .padding(.horizontal, 12).padding(.top, 9).padding(.bottom, 4)
+        .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4)
         // 比窗口材质更厚一层：层级靠材质厚薄编码，不靠描边（Apple 的做法）
         // 只靠材质分不出层：深色下 regularMaterial 和窗口底几乎同色（实测拍出来糊成一片）。
         // 叠一层浅填充 + 一道细描边，层级要看得出来才叫层级
@@ -688,35 +690,8 @@ struct ChatView: View {
 
     private func windowToolChip<Icon: View>(_ title: String, on: Bool,
                                             action: @escaping () -> Void,
-                                            @ViewBuilder icon: () -> Icon) -> some View {
-        Button(action: action) {
-            // 纯图标：做成 26×26 的正圆，与旁边模型胶囊等高
-            icon()
-                .frame(width: 26, height: 26)
-            // 开＝系统强调色（大梁老师定：跟他系统设置里那个颜色一致，他的机器是黄色）。
-            // 用 NSColor.controlAccentColor 而不是 SwiftUI 的 Color.accentColor：
-            // 后者在没有 App 环境时（比如离屏渲染）会退成另一个色，前者始终读系统真值
-            .foregroundStyle(on ? AnyShapeStyle(Self.accent) : AnyShapeStyle(.secondary))
-            .background {
-                if on {
-                    Capsule().fill(Self.accent.opacity(0.18))
-                        .overlay(Capsule().strokeBorder(Self.accent.opacity(0.45), lineWidth: 0.5))
-                } else {
-                    Capsule().fill(.quaternary)
-                }
-            }
-            // 热区撑到 32（任务书 §10.2.5 / §16.5），视觉仍是 26
-            .frame(width: 32, height: 32)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        // 中文说明改由悬停气泡给出，并带上当前状态
-        .notchTip(on ? "\(title)已开启（点击关闭）" : "\(title)已关闭（点击开启）",
-                  edge: .aboveLeading)
-        // 开关状态不能只靠颜色（§10.2.6）：读屏要能报出「已选中」
-        .accessibilityLabel(title)
-        .accessibilityValue(on ? "已开启" : "已关闭")
-        .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
+                                            @ViewBuilder icon: @escaping () -> Icon) -> some View {
+        WindowToolChip(title: title, on: on, accent: Self.accent, action: action, icon: icon)
     }
 
     private func sendDraft() {
@@ -835,6 +810,45 @@ private struct ConversationRow: View {
         f.locale = Locale(identifier: "zh_CN")
         f.dateFormat = "M月d日"
         return f.string(from: d)
+    }
+}
+
+/// 输入框底行的一个控件（联网 / 深度思考）。
+///
+/// 与模型胶囊共用同一套容器语言：同高 28、同圆角、**静态一律无底色**，
+/// 状态只用前景色表达，开启时才补一层极淡的同色底。
+///
+/// 独立成 struct 是因为要自己记悬停态——原来写成方法拿不到 @State，
+/// 只能靠彩底加描边来表达开启，那圈描边正是大梁老师说的「光感效果不好」
+private struct WindowToolChip<Icon: View>: View {
+    let title: String
+    let on: Bool
+    let accent: Color
+    let action: () -> Void
+    @ViewBuilder let icon: () -> Icon
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            icon()
+                .frame(width: 28, height: 28)
+                .foregroundStyle(on ? AnyShapeStyle(accent)
+                                    : AnyShapeStyle(MarkdownTypography.textSecondary))
+                .background {
+                    Capsule().fill(on ? accent.opacity(0.12)
+                                      : Color.white.opacity(hovering ? 0.07 : 0))
+                }
+                // 热区 32（任务书 §10.2.5 / §16.5），视觉仍是 28
+                .frame(width: 32, height: 32)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .notchTip(on ? "\(title)已开启（点击关闭）" : "\(title)已关闭（点击开启）",
+                  edge: .aboveLeading)
+        .accessibilityLabel(title)
+        .accessibilityValue(on ? "已开启" : "已关闭")
+        .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
     }
 }
 

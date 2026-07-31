@@ -237,24 +237,28 @@ struct ModelSwitcher: View {
                     .font(.system(size: 8.5, weight: .semibold))
                     .rotationEffect(.degrees(showList ? 180 : 0))
             }
-            .foregroundColor(.white.opacity(hovering || showList ? 0.9 : 0.55))
+            // 与联网 / 深度思考同一套：静态次级色，悬停或展开才提亮
+            .foregroundColor(dropUp
+                             ? (hovering || showList ? .white.opacity(0.95) : .white.opacity(0.64))
+                             : .white.opacity(hovering || showList ? 0.9 : 0.55))
             // 独立窗口里它和「联网」「深度思考」并排，得跟那两个胶囊等身：
             // 26 高 / 11.5 字 / 8 内边距。原来照搬刘海的 31 高 12.5 字，
             // 站在它们旁边就是大一圈（大梁老师：「胶囊太大太宽」，2026-07-30）
             .padding(.horizontal, dropUp ? 8 : 10)
             // 刘海里定高 31：与同排标签胶囊(42×31)上下沿齐平（大梁老师定的统一度量）
-            .frame(height: dropUp ? 26 : 31)
+            .frame(height: dropUp ? 28 : 31)
             // 展开时按钮**就是面板的底**：同色、只圆下面两角，上沿平着接住面板。
             // 这样模型名从头到尾只有一份，不会因为「面板里再画一份」而交叉淡化出抖动
             //（大梁老师 2026-07-30 实机反馈）
             .background {
                 if dropUp, showList {
-                    UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 13,
-                                           bottomTrailingRadius: 13, topTrailingRadius: 0,
+                    UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 14,
+                                           bottomTrailingRadius: 14, topTrailingRadius: 0,
                                            style: .continuous)
                         .fill(Self.panelFill)
                 } else {
-                    Capsule().fill(Color.white.opacity(hovering || showList ? 0.12 : 0))
+                    // 静态无底色，悬停才有一层极淡的白——与另两个控件完全一致
+                    Capsule().fill(Color.white.opacity(hovering ? 0.07 : 0))
                 }
             }
             .background(GeometryReader { g in
