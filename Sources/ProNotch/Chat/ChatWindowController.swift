@@ -23,7 +23,7 @@ private final class ChatPanel: NSPanel {
 /// 刘海里的闪问页保留，两处共用同一个 `ChatStore`——同一份对话开两个窗口，
 /// `@Published` 让两边实时同步。同时开着也不会坏，只是重复。
 @MainActor
-final class ChatWindowController: NSObject, NSWindowDelegate {
+final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
     static let shared = ChatWindowController()
 
     /// 供 `ChatView` 的粘贴监听判断「该不该由我处理这次 ⌘V」：
@@ -42,6 +42,12 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
 
     /// 首次打开的尺寸。此后由 `setFrameAutosaveName` 记住用户自己调的
     private let defaultSize = NSSize(width: 860, height: 560)
+
+    /// 钉在桌面（窗口置顶）。开＝浮在所有 App 之上，关＝像普通窗口一样被压到后面。
+    /// 默认开：这扇窗本来就是「切去浏览器核对一眼还看得见」才有用
+    @Published var pinned = true {
+        didSet { panel?.level = pinned ? .floating : .normal }
+    }
 
     /// AppDelegate 启动时注入
     func configure(env: AppEnvironment, notchViewModel: NotchViewModel?) {
@@ -157,6 +163,12 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
                                           .fullSizeContentView, .nonactivatingPanel],
                               backing: .buffered, defer: false)
         panel.titlebarAppearsTransparent = true
+        // 藏掉系统红绿灯（大梁老师 2026-07-31 要换成「钉在桌面」）。
+        // **不退回 .borderless**：那样会连带丢掉系统圆角、resize 边和标准拖拽，
+        // 只把三颗按钮藏起来最省事，窗口行为一点不变
+        for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
+            panel.standardWindowButton(kind)?.isHidden = true
+        }
         panel.titleVisibility = .hidden
         // 内容会滚到标题栏底下，.automatic 这时会自己画一条分隔线——
         // 正是大梁老师说「不要上面那条线」的同一条，直接关掉
@@ -172,7 +184,7 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
         panel.hasShadow = true
         // 浮在别的 App 之上：失焦不关的前提是它还看得见，
         // 否则一切去浏览器就被压在后面，等于关了
-        panel.level = .floating
+        panel.level = pinned ? .floating : .normal
         panel.isMovableByWindowBackground = false   // 拖动只认顶部那条把手，别抢内容里的拖拽
         panel.minSize = NSSize(width: 620, height: 380)
         panel.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
@@ -257,7 +269,9 @@ private struct WindowDragHandle: NSViewRepresentable {
 /// 之前给他看的是我手画的仿制稿，图看着行、装上就崩，来回好几轮全耗在这个落差上
 struct ChatWindowChrome: View {
     @EnvironmentObject var store: ChatStore
+    @ObservedObject var controller = ChatWindowController.shared
     @State private var hoverNew = false
+    @State private var hoverPin = false
     @State private var hoverHistory = false
     @State private var showHistory = false
 
@@ -280,11 +294,11 @@ struct ChatWindowChrome: View {
     /// 右侧历史对话侧栏。数据来自 ChatStore.conversations（真有），点一条即切过去
     private var historySidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // 顶部让开 34：底色铺到窗顶，但标题与左边顶栏那一行对齐
+            // 顶部让开：底色铺到窗顶，但标题与左边顶栏那一行对齐
             Text("历史对话")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(MarkdownTypography.textTertiary)
-                .padding(.horizontal, 14).padding(.top, 42).padding(.bottom, 6)
+                .padding(.horizontal, 14).padding(.top, 52).padding(.bottom, 6)
             if store.conversations.isEmpty {
                 Text("还没有历史对话")
                     .font(.system(size: 12))
@@ -382,18 +396,21 @@ struct ChatWindowChrome: View {
     /// 不画拖拽把手（他定的）：macOS 的标题栏本来也没有提示，光标形状就够了
     private var titleBar: some View {
         ZStack {
-            // 窗口标识改成一个闪电（大梁老师 2026-07-31）：这扇窗叫「闪问」，
-            // 一个图标比四个字更省地方也更认得出。
+            // 窗口标识：产品名（大梁老师 2026-07-31 从闪电图标改回文字）。
             // 摆在 ZStack 底层而不是 HStack 中段——左右两侧按钮宽度不等，
             // 用 HStack 的话它会被挤得偏心
-            Image(systemName: "bolt.fill")
-                .font(.system(size: 12, weight: .semibold))
+            Text("ProNotch")
+                .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(MarkdownTypography.textSecondary)
-                .accessibilityLabel("AI 闪问")
-            HStack(spacing: 2) {
-                // 左上角空出来给系统红绿灯（它由窗口标题栏绘制，不在这棵视图树里）。
-                // 三颗灯占到 x≈69（实测按钮原点 9 / 32 / 55，各 14 宽），留 80 才不压边
-                Spacer().frame(width: 80)
+            HStack(spacing: 4) {
+                // 左上角原来空 80 给系统红绿灯，现在换成「钉在桌面」开关
+                iconButton(controller.pinned ? "pin.fill" : "pin.slash",
+                           hovering: hoverPin,
+                           tip: controller.pinned ? "已钉在桌面（点击取消）" : "钉在桌面",
+                           active: controller.pinned) {
+                    controller.pinned.toggle()
+                }
+                .onHover { hoverPin = $0 }
                 Spacer(minLength: 0)
                 // 历史会话（任务书 §3.3.2，P2 条件项）：ChatStore 本来就存着会话列表，
                 // 数据是真的才做——任务书禁止摆没功能的按钮
@@ -407,23 +424,29 @@ struct ChatWindowChrome: View {
                 historyButton
             }
         }
-        .padding(.horizontal, 12)
-        // 34：红绿灯在标题栏里的中心约在距顶 16pt 处（实测按钮原点 y=9、高 14），
-        // 这一行的按钮中心 17pt，两边基本平齐
-        .frame(height: 34)
+        .padding(.horizontal, 10)
+        // 44：红绿灯藏掉之后不必再迁就它们的 16pt 中心线，顶栏可以放开
+        //（大梁老师 2026-07-31 要「整体放大、顶栏可自适应加宽」）
+        .frame(height: 44)
         // 拖拽垫在底层：关闭按钮先拿到点击，其余整条空白交给 AppKit 拖窗
         .background(WindowDragHandle())
     }
 
-    /// 顶栏图标按钮：悬停才显底，静态只有一个淡图标——极简的前提是静态时安静
+    /// 顶栏图标按钮：悬停才显底，静态只有一个淡图标——极简的前提是静态时安静。
+    /// `active` 用于「钉在桌面」这种有开关态的键：亮起来用系统强调色，与底部控件同一语言
     private func iconButton(_ icon: String, hovering: Bool, tip: String,
+                            active: Bool = false,
                             action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(hovering ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary))
-                .frame(width: 24, height: 24)
-                .background(Circle().fill(.quaternary.opacity(hovering ? 1 : 0)))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(active ? AnyShapeStyle(Color(nsColor: .controlAccentColor))
+                                        : (hovering ? AnyShapeStyle(Color.white.opacity(0.92))
+                                                    : AnyShapeStyle(MarkdownTypography.textSecondary)))
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(active
+                                          ? Color(nsColor: .controlAccentColor).opacity(0.12)
+                                          : Color.white.opacity(hovering ? 0.07 : 0)))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)

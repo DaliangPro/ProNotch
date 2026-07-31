@@ -597,8 +597,8 @@ struct ChatView: View {
                       axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...8)
-                // 单行时也留出 26 的高度：输入区太扁，光标像贴在边上（大梁老师 2026-07-31）
-                .frame(minHeight: 26, alignment: .topLeading)
+                // 单行时也留出 32 的高度：输入区太扁，光标像贴在边上（大梁老师 2026-07-31）
+                .frame(minHeight: 32, alignment: .topLeading)
                 .font(.system(size: 14))
                 .foregroundStyle(.primary)
                 .focused($inputFocused)
@@ -666,7 +666,7 @@ struct ChatView: View {
         // 因此落在同一条竖线上（大梁老师要「文字之间有对齐关系」）。
         // 下边只留 4：控件行整体下移、底部留白收窄（大梁老师 2026-07-31），
         // 这个 4 不是随手定的，见下面圆角同心的算法
-        .padding(.horizontal, 12).padding(.top, 12).padding(.bottom, 4)
+        .padding(.horizontal, 12).padding(.top, 14).padding(.bottom, 4)
         // 比窗口材质更厚一层：层级靠材质厚薄编码，不靠描边（Apple 的做法）
         // 只靠材质分不出层：深色下 regularMaterial 和窗口底几乎同色（实测拍出来糊成一片）。
         // 叠一层浅填充 + 一道细描边，层级要看得出来才叫层级
@@ -679,8 +679,18 @@ struct ChatView: View {
             // 底部留白同样取 4，左下角才真的同心（大梁老师：「曲度视觉平行」）
             let shape = RoundedRectangle(cornerRadius: 17, style: .continuous)
             shape.fill(ChatWindowPalette.surface1)
-                .overlay(shape.strokeBorder(ChatWindowPalette.border, lineWidth: 0.5))
+                // 聚焦时四周一圈淡光晕，颜色跟系统强调色走（大梁老师 2026-07-31）。
+                // 两层影子叠：近的一层实一点勾出轮廓，远的一层散开当光。
+                // 用 shadow 而不是加粗描边——描边是「框」，影子才是「光」
+                .shadow(color: inputFocused ? Self.accent.opacity(0.26) : .clear,
+                        radius: 4)
+                .shadow(color: inputFocused ? Self.accent.opacity(0.16) : .clear,
+                        radius: 13)
+                .overlay(shape.strokeBorder(inputFocused ? Self.accent.opacity(0.32)
+                                                         : ChatWindowPalette.border,
+                                            lineWidth: inputFocused ? 0.8 : 0.5))
         }
+        .animation(.easeOut(duration: 0.18), value: inputFocused)
         // 外缘与消息栏同一档（§6.3），左右下三边一条线
         .padding(.horizontal, sideInset).padding(.bottom, 16)
     }
