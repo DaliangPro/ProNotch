@@ -212,6 +212,11 @@ struct ModelSwitcher: View {
     /// 而不是旁边浮出一块面板（大梁老师 2026-07-30）
     @State private var chipWidth: CGFloat = 0
 
+    /// 胶囊高度的单一事实源：frame、下拉的上抬量、上下两块的接缝圆角全从这儿推。
+    /// 教训（大梁老师 2026-07-31 截图「又错位了」）：上抬量曾手写 -26，
+    /// 后来胶囊改高到 28 没人跟着改，下拉和胶囊之间就裂了缝
+    private var chipHeight: CGFloat { dropUp ? 28 : 31 }
+
     /// 展开后这一整块（面板 + 当作底座的按钮）的底色。
     /// 试过 SwiftUI 材质和系统菜单材质，在半透明窗里都渲成近黑、和窗内其他块差一大截；
     /// 0.31 是量出来的：约 (79,79,79)，正落在窗底 66 与 AI 气泡 82 之间
@@ -246,14 +251,16 @@ struct ModelSwitcher: View {
             // 站在它们旁边就是大一圈（大梁老师：「胶囊太大太宽」，2026-07-30）
             .padding(.horizontal, dropUp ? 8 : 10)
             // 刘海里定高 31：与同排标签胶囊(42×31)上下沿齐平（大梁老师定的统一度量）
-            .frame(height: dropUp ? 28 : 31)
+            .frame(height: chipHeight)
             // 展开时按钮**就是面板的底**：同色、只圆下面两角，上沿平着接住面板。
             // 这样模型名从头到尾只有一份，不会因为「面板里再画一份」而交叉淡化出抖动
             //（大梁老师 2026-07-30 实机反馈）
             .background {
                 if dropUp, showList {
-                    UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 14,
-                                           bottomTrailingRadius: 14, topTrailingRadius: 0,
+                    UnevenRoundedRectangle(topLeadingRadius: 0,
+                                           bottomLeadingRadius: chipHeight / 2,
+                                           bottomTrailingRadius: chipHeight / 2,
+                                           topTrailingRadius: 0,
                                            style: .continuous)
                         .fill(Self.panelFill)
                 } else {
@@ -285,12 +292,11 @@ struct ModelSwitcher: View {
         // 而不是旁边浮起来一块（大梁老师 2026-07-30）。
         // 往下弹（刘海）沿用原来的 34 悬浮
         .overlay(alignment: dropUp ? .bottomLeading : .topTrailing) {
-            // x 偏 -8：上面那句 .padding(.leading, -8) 让布局框比内容窄 8pt，
-            // overlay 贴的是**布局框**的左缘，不补这 8 展开后模型名会整体右移 8pt——
-            // 一动就露馅，看着就不是同一个东西了
-            // 往上弹：抬过按钮自身高度(26)，底边正好压在按钮上沿，接成一整块。
-            // x 偏 -8 是补上面那句 .padding(.leading, -8) 缩掉的布局宽度
-            if showList { dropdown.offset(x: dropUp ? -8 : 0, y: dropUp ? -26 : 34) }
+            // 往上弹：抬过胶囊自身高度，面板底边（直角）正好压在胶囊上沿（直角），
+            // 两块拼成一个连续形状。上抬量直接引用 chipHeight——此处曾手写 -26，
+            // 胶囊改高到 28 后就裂缝；x 也曾写 -8 去补一个后来被删掉的负 padding，
+            // 结果整块左漂 8pt（大梁老师 2026-07-31 截图）。魔法数一个不留
+            if showList { dropdown.offset(x: 0, y: dropUp ? -chipHeight : 34) }
         }
         // ⌘K 呼出（任务书 §11）。只有独立窗口那份响应——刘海里的那份也监听的话，
         // 一次 ⌘K 会同时弹两个下拉
@@ -357,7 +363,7 @@ struct ModelSwitcher: View {
                 showList = false
             }
         }
-        // 严格取胶囊实测宽度（量不到才退 160），圆角取胶囊的 13＝26÷2，
+        // 严格取胶囊实测宽度（量不到才退 160），圆角取 chipHeight/2，
         // 底端接缝才严丝合缝。写死下限会让面板比胶囊宽出一截，右边缘顶到「联网」上
         .frame(width: dropUp ? (chipWidth > 1 ? chipWidth : 160) : 220)
         // 刘海里是不透明近黑（要和屏幕顶端的黑连成一片）；独立窗口那是一块毛玻璃，
@@ -374,8 +380,8 @@ struct ModelSwitcher: View {
                 // 试过半透的配方，背后的「问点什么…」直接透过来压在菜单文字上
                 // 只圆上面两角，下沿平着落在按钮上——两块拼成一个连续形状。
                 // 不描边：描边会在拼接处画出一道横线，一体感就没了
-                UnevenRoundedRectangle(topLeadingRadius: 13, bottomLeadingRadius: 0,
-                                       bottomTrailingRadius: 0, topTrailingRadius: 13,
+                UnevenRoundedRectangle(topLeadingRadius: chipHeight / 2, bottomLeadingRadius: 0,
+                                       bottomTrailingRadius: 0, topTrailingRadius: chipHeight / 2,
                                        style: .continuous)
                     .fill(Self.panelFill)
             } else {
