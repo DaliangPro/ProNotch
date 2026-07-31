@@ -89,6 +89,8 @@ struct ChatView: View {
     @State private var windowWidth: CGFloat = 0
     /// 输入块的左右留白。**视觉边界以它为准**
     private var sideInset: CGFloat { windowWidth > 900 ? 24 : 16 }
+    /// 输入框实测高度。内容底部要垫这么高才不会被它压住
+    @State private var composerHeight: CGFloat = 0
     /// 正文的左右留白，**比输入块大一档**（大梁老师 2026-07-31）：
     /// 正文区因此比输入框窄，缩在它里面——一眼看到的那条边界线就只有输入框那一条。
     /// 我第一版理解反了做成了「正文更宽」，正文反而戳出输入框之外，边界成了两条
@@ -109,16 +111,31 @@ struct ChatView: View {
                 // 压底要知道视口多高，所以套 GeometryReader 量一下
                 // 内容列：宽度 min(100%, 920) 且**水平居中**（任务书 §6.3 / §15.2）。
                 // 原来是铺满整窗，窗口一拉宽正文就跟着摊开，左右留白也不对称
-                VStack(alignment: .leading, spacing: 8) {
+                // 输入框**浮在消息区之上**，消息区一直铺到窗底（大梁老师定，2026-07-31）：
+                // 文字往下滚时，消失的那条线就是输入框的上沿，中间没有空档。
+                //
+                // 之前是 VStack 兄弟排布，消息区在输入框上方 8pt 就结束了，
+                // 文字在离输入框还有一截的地方就没了——他连提两次的正是这一点，
+                // 我却一直在改左右留白。
+                //
+                // 代价是内容会滑到输入框底下，所以内容底部必须垫出输入框那么高
+                //（任务书 §6.3 的动态 bottom inset），否则最后一条永远被压住看不全
+                ZStack(alignment: .bottom) {
                     GeometryReader { geo in
                         messageList
                             .onAppear { viewportHeight = geo.size.height }
                             .onChange(of: geo.size.height) { _, h in viewportHeight = h }
                     }
                     .frame(maxHeight: .infinity)
-                    // 正文两侧比输入块多留 16：正文缩在输入框以内，边界只留输入框那一条
+                    // 正文两侧比输入框多留 16：正文缩在输入框以内，左右边界也只留输入框那一条
                     .padding(.horizontal, textInset)
                     windowComposer
+                        // 实测输入框高度喂给上面的内容内边距，行数一变就跟着变
+                        .background(GeometryReader { g in
+                            Color.clear
+                                .onAppear { composerHeight = g.size.height }
+                                .onChange(of: g.size.height) { _, h in composerHeight = h }
+                        })
                 }
                 .frame(maxWidth: 920)
                 // 第二个 frame 才是「居中」：上一个只限宽，不限位置
@@ -378,7 +395,10 @@ struct ChatView: View {
                             .foregroundColor(.orange.opacity(0.75))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    Color.clear.frame(height: 1).id("bottom")
+                    // 垫出输入框那么高：内容滑到底时最后一行正好停在输入框上沿，
+                    // 而不是被压在它下面（任务书 §6.3 / §12.3）
+                    Color.clear.frame(height: host.inNotch ? 1 : max(composerHeight, 1))
+                        .id("bottom")
                         .background(GeometryReader { g in
                             Color.clear.preference(
                                 key: BottomAnchorKey.self,
