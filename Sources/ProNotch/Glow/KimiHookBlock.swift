@@ -50,6 +50,56 @@ enum KimiHookBlock {
     }
 
     /// 摘除我们的块。`scriptPath` 用于旧格式的精确匹配
+    /// 摘掉**托管块之外**的 ProNotch 孤儿 hook。
+    ///
+    /// 由来（大梁老师 2026-07-31 报「Kimi 跑完没光晕」，排查时翻出来的）：
+    /// 早期版本还没有 BEGIN/END 边界标记，写进去的 hook 就散落在数组里；
+    /// 后来的摘除逻辑只认标记内的，够不着它们 —— 于是每装一次就再追加一份。
+    /// 实测他机器上 `agent-busy.sh` 已经堆了 4 份，每次提问白跑 4 次。
+    ///
+    /// 判据是命令里出现 ProNotch 的脚本目录。只删整段 `[[hooks]]`，
+    /// 别人的 hook（vibe-island 之类）一行不碰
+    static func removeOrphans(from toml: String, scriptDir: String) -> String {
+        let lines = toml.components(separatedBy: "\n")
+        var kept: [String] = []
+        var index = 0
+        var insideManaged = false
+
+        while index < lines.count {
+            let line = lines[index]
+            if line.contains(beginMarker) { insideManaged = true }
+            if line.contains(endMarker) { insideManaged = false; kept.append(line); index += 1; continue }
+
+            // 托管块内的交给 remove(from:scriptPath:) 处理，这里不插手
+            guard !insideManaged, line.trimmingCharacters(in: .whitespaces) == "[[hooks]]" else {
+                kept.append(line)
+                index += 1
+                continue
+            }
+            // 收下整段：从 [[hooks]] 到下一个表头（[[ 或 [）或文件尾
+            var block = [line]
+            var scan = index + 1
+            while scan < lines.count {
+                let next = lines[scan].trimmingCharacters(in: .whitespaces)
+                if next.hasPrefix("[[") || next.hasPrefix("[") || next.contains(beginMarker) { break }
+                block.append(lines[scan])
+                scan += 1
+            }
+            if block.contains(where: { $0.contains(scriptDir) }) {
+                // 是 ProNotch 的孤儿：整段丢掉，顺手吃掉它后面多出来的空行
+                while kept.last?.trimmingCharacters(in: .whitespaces).isEmpty == true,
+                      kept.count > 1,
+                      kept[kept.count - 2].trimmingCharacters(in: .whitespaces).isEmpty {
+                    kept.removeLast()
+                }
+            } else {
+                kept.append(contentsOf: block)
+            }
+            index = scan
+        }
+        return kept.joined(separator: "\n")
+    }
+
     static func remove(from toml: String, scriptPath: String) -> Removal {
         var lines = toml.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
 

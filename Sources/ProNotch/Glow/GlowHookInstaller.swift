@@ -584,7 +584,12 @@ enum GlowHookInstaller {
                scriptIsCurrent(paths.busyScript, token: token),
                scriptIsCurrent(paths.waitScript, token: token),
                toml.contains(commandLine), toml.contains(busyLine), toml.contains(waitLine),
-               toml.contains(KimiHookBlock.beginMarker) { return true }
+               toml.contains(KimiHookBlock.beginMarker),
+               // 还得没有托管块外的孤儿。少了这一条，「已是当前格式」会直接返回、
+               // 根本不碰文件，下面的孤儿清理永远跑不到（改完第一版就栽在这儿）
+               KimiHookBlock.removeOrphans(from: toml, scriptDir: paths.scriptDir) == toml {
+                return true
+            }
 
             // 已有引用但不是当前格式 → 先精确摘掉旧的，摘不干净就整笔放弃
             var base = toml
@@ -595,6 +600,9 @@ enum GlowHookInstaller {
                 case .ambiguous:           return false
                 }
             }
+            // 再扫一遍托管块外的孤儿：早期版本没有边界标记，写进去的 hook 摘不掉，
+            // 每装一次就多一份（实测已堆到 4 份）。这一步让重装能自愈
+            base = KimiHookBlock.removeOrphans(from: base, scriptDir: paths.scriptDir)
             guard let staged = AtomicConfigWriter.stageScript(
                     stdinNotifyScript(source: "kimi", token: token),
                     finalPath: paths.kimiScript) else { return false }

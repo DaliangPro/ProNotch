@@ -89,14 +89,29 @@ final class GlowController: ObservableObject {
 
     /// 真实完成信号（pronotch://done?source=…）→ 完成提醒光晕
     func notifyCompletion(_ source: AgentKind, host: String? = nil) {
-        // 总开关 + 该来源单独勾选都需开启；取消勾选的来源即使仍收到残留信号（如旧版孤儿钩子）也不点亮
-        guard settings.glowEnabled, GlowHookInstaller.isInstalled(source) else { return }
+        // 三道闸每一道都埋一条日志。
+        //
+        // 原来三种拦截全是静默 return，「跑完了怎么没亮」在界面之外没有任何可观测点，
+        // 只能靠读代码猜（大梁老师 2026-07-31 报 Kimi 在 Ghostty 跑完没光晕，
+        // 排查到这里才发现根本分不清是没投递到、还是投递了被挡）
+        guard settings.glowEnabled else {
+            AppLog.glow.debug("完成提醒：光晕总开关关着，\(source.rawValue, privacy: .public) 不点亮")
+            return
+        }
+        guard GlowHookInstaller.isInstalled(source) else {
+            AppLog.glow.debug("完成提醒：\(source.rawValue, privacy: .public) 未接入（钩子没装），不点亮")
+            return
+        }
         // 宿主 App：hook 沿进程链找到的「Agent 实际所在的 GUI App」bundle id；
         // 拿不到（旧 hook / 特殊环境）就回退到该 Agent 的桌面版 bundle id（无桌面版的家为 nil）。
         let hostID = (host?.isEmpty == false) ? host : source.appBundleID
         // 只在 Agent 处于后台时提醒：若宿主 App 已在最前台（你正盯着它跑），就不点亮——
         // 既没必要，光晕也无从熄灭（已在前台，等不到「切回它」的激活事件）。
-        if let hostID, NSWorkspace.shared.frontmostApplication?.bundleIdentifier == hostID { return }
+        if let hostID, NSWorkspace.shared.frontmostApplication?.bundleIdentifier == hostID {
+            AppLog.glow.debug("完成提醒：宿主 \(hostID, privacy: .public) 就在最前台，不点亮")
+            return
+        }
+        AppLog.glow.debug("完成提醒：点亮 \(source.rawValue, privacy: .public) 宿主 \(hostID ?? "-", privacy: .public)")
         previewingSource = nil
         testingSource = nil
         if let hostID { activeHosts.insert(hostID) }   // 并发会话各自累计,不互相覆盖
