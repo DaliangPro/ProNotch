@@ -459,6 +459,10 @@ struct MarkdownMessageView: View {
         case .code(let code):
             CodeBlockView(code: code, fontSize: fontSize)
         case .quote(let text):
+            // fixedSize(vertical)：竖线 Rectangle 是消息列里唯一「高度可伸」的东西。
+            // 消息列换成 VStack 后（2026-07-31 卡死修复），贴底的 minHeight 会把
+            // 多余高度按弹性分给子行——竖线一口吞掉整个空档，被拉成通天柱。
+            // 钉住「高度=文字理想高」，弹性归零
             prose(HStack(spacing: 8) {
                 Rectangle()
                     .fill(Color.white.opacity(0.25))
@@ -469,7 +473,8 @@ struct MarkdownMessageView: View {
                                          emphasis: .white.opacity(0.85)))
                     .lineSpacing(type.lineSpacing)
                     .fixedSize(horizontal: false, vertical: true)
-            })
+            }
+                .fixedSize(horizontal: false, vertical: true))
         case .table(let header, let rows, let aligns):
             tableView(header: header, rows: rows, aligns: aligns)
         case .tasks(let items):
