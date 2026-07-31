@@ -98,18 +98,35 @@ final class ChatWindowController: NSObject, NSWindowDelegate {
         removeEscMonitor()
     }
 
-    /// ESC 关窗。
+    /// 键盘监听：**ESC 打断输出，⌘W 关窗**。
     ///
-    /// 不走 `NSPanel.cancelOperation`：那条路要靠响应链从聚焦的 SwiftUI 输入框
-    /// 一直传到窗口，中间隔着 NSHostingView，实测按了没反应。
-    /// 本地监听直截了当，且只在这扇窗是 key 时才吃掉 ESC——
+    /// 分工是大梁老师定的（2026-07-31）：ESC 原来直接关窗，AI 正在吐字时按一下窗口就没了，
+    /// 想打断输出反而没有手段。ESC 在 macOS 里的语义是「中止当前这件事」，
+    /// 关窗则该走系统惯例（⌘W 或左上角红灯）。
+    /// 所以现在 ESC 只在**正在输出时**生效（停止输出），空闲时放行不再关窗。
+    ///
+    /// 不走 `NSPanel.cancelOperation` / `performClose:`：那条路要靠响应链从聚焦的
+    /// SwiftUI 输入框一直传到窗口，中间隔着 NSHostingView，实测按了没反应。
+    /// 本地监听直截了当，且只在这扇窗是 key 时才吃掉按键——
     /// 否则会把别处（刘海、截图选区）的 ESC 一起抢走
     private func installEscMonitor() {
         guard escMonitor == nil else { return }
         escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard event.keyCode == 53, self?.panel?.isKeyWindow == true else { return event }
-            self?.hide()
-            return nil
+            guard let self, self.panel?.isKeyWindow == true else { return event }
+            // ⌘W：按 macOS 惯例关窗（＝红灯，收起不销毁）
+            if event.keyCode == 13, event.modifierFlags.contains(.command) {
+                self.hide()
+                return nil
+            }
+            // ESC：正在输出就打断；没在输出则放行，不再顺手关窗
+            if event.keyCode == 53, event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                .isSubset(of: [.function, .numericPad]) {
+                guard self.env?.chat.isStreaming == true else { return event }
+                self.env?.chat.stopStreaming()
+                AppLog.chat.info("ESC 打断了闪问输出")
+                return nil
+            }
+            return event
         }
     }
 
@@ -284,7 +301,7 @@ struct ChatWindowChrome: View {
             // 三颗灯占到 x≈69（实测按钮原点 9 / 32 / 55，各 14 宽），留 80 才不压边
             Spacer().frame(width: 80)
             Spacer(minLength: 0)
-            iconButton("plus.message", hovering: hoverNew, tip: "新对话") {
+            iconButton("plus", hovering: hoverNew, tip: "新对话") {
                 store.newConversation()
             }
             .onHover { hoverNew = $0 }
