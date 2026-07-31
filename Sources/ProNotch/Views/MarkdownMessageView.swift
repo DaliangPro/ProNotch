@@ -3,6 +3,24 @@ import SwiftUI
 /// 轻量 Markdown 渲染（AI 回复用）：支持标题、无序/有序列表、围栏代码块、
 /// 引用，行内加粗/斜体/代码/链接交给系统 AttributedString 解析。
 /// 无第三方依赖，流式输出时按块增量重排
+///
+/// ## 为什么这里的正文不能划词选中
+///
+/// 这些 Text 上原本都挂着 `.textSelection(.enabled)`，2026-07-31 全部摘掉了——
+/// 它会把整个闪问窗口**卡死**。大梁老师报「拖动、拉宽窄、来回浏览，有几次就卡死」，
+/// 卡住时抓的采样（间隔十几秒两次，主线程都停在同一个布局事务里）指向同一条环：
+///
+///   SelectionOverlay.updateNSView（`.textSelection` 装的那层 AppKit 覆盖视图）
+///     → FallbackAlignmentProvider 量基线 → -[NSControl setFont:]
+///     → -[NSTextField invalidateIntrinsicContentSize]
+///     → AppKitPlatformViewHost.enqueueLayoutInvalidation()
+///
+/// 最后一步**在布局过程里又把布局标脏**，`GraphHost.flushTransactions()` 于是永远收敛不了。
+/// 一条回答有七八个块就是七八套这种覆盖视图，块越多越容易踩上。
+///
+/// 替代手段：整条消息右下角有「复制」，代码块自己带一个复制键。
+/// 想加回划词选中，得先拿到「SelectionOverlay 不再从布局里回写布局」的证据，
+/// 否则就是把这个卡死放回来
 enum MarkdownLite {
     enum Block {
         case paragraph(String)
@@ -421,7 +439,6 @@ struct MarkdownMessageView: View {
                                            emphasisWeight: type.emphasisWeight,
                                            base: type.bodyColor))
                 .lineSpacing(type.lineSpacing)
-                .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true))
         case .heading(let level, let text):
             // 字号必须**从正文推**，不能写死。原来是 15/14/13：窗口正文 14 的时候
@@ -431,7 +448,6 @@ struct MarkdownMessageView: View {
                                            weight: type.headingWeight(level),
                                            emphasisWeight: type.headingWeight(level),
                                            base: .white, emphasis: .white))
-                .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 // 上疏下密：标题与它统辖的正文成一组
                 .padding(.top, type.headingTop)
@@ -441,16 +457,7 @@ struct MarkdownMessageView: View {
         case .ordered(let items):
             prose(listView(items) { "\($0 + 1)." })
         case .code(let code):
-            Text(code)
-                .font(.system(size: fontSize - 1, design: .monospaced))
-                .foregroundColor(.white.opacity(0.88))
-                .textSelection(.enabled)
-                // 滚动容器测量时可能压缩 Text 高度导致截断，固定纵向自适应
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(8)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(Color.black.opacity(0.4)))
+            CodeBlockView(code: code, fontSize: fontSize)
         case .quote(let text):
             prose(HStack(spacing: 8) {
                 Rectangle()
@@ -461,7 +468,6 @@ struct MarkdownMessageView: View {
                                          base: .white.opacity(0.55),
                                          emphasis: .white.opacity(0.85)))
                     .lineSpacing(type.lineSpacing)
-                    .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             })
         case .table(let header, let rows, let aligns):
@@ -478,7 +484,6 @@ struct MarkdownMessageView: View {
                                                  emphasisWeight: type.emphasisWeight,
                                                  base: .white.opacity(item.done ? 0.45 : 0.82)))
                             .strikethrough(item.done, color: .white.opacity(0.35))
-                            .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -546,7 +551,6 @@ struct MarkdownMessageView: View {
             .fill(Color.white.opacity(0.05)))
         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
             .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.5))
-        .textSelection(.enabled)
     }
 
     private func listView(_ items: [String],
@@ -562,9 +566,54 @@ struct MarkdownMessageView: View {
                                              weight: type.bodyWeight,
                                              emphasisWeight: type.emphasisWeight,
                                              base: type.bodyColor))
-                        .textSelection(.enabled)
                 }
             }
         }
+    }
+}
+
+
+/// 代码块：悬停右上角出「复制」。
+///
+/// 由来（2026-07-31）：正文的划词选中被整体摘掉了（见文件顶部），
+/// 但代码是最需要单独拷走的一块——整条消息的「复制」会把前后解释也带上。
+/// 这里用按钮而不是让它可选中，正是因为可选中就是那条卡死环的入口
+private struct CodeBlockView: View {
+    let code: String
+    let fontSize: CGFloat
+    @State private var hovering = false
+    @State private var copied = false
+
+    var body: some View {
+        Text(code)
+            .font(.system(size: fontSize - 1, design: .monospaced))
+            .foregroundColor(.white.opacity(0.88))
+            // 滚动容器测量时可能压缩 Text 高度导致截断，固定纵向自适应
+            .fixedSize(horizontal: false, vertical: true)
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.black.opacity(0.4)))
+            .overlay(alignment: .topTrailing) {
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(code, forType: .string)
+                    copied = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+                } label: {
+                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.white.opacity(0.7))
+                        .frame(width: 22, height: 22)
+                        .background(Circle().fill(Color.white.opacity(0.1)))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(4)
+                // 静态时不出现，别跟代码抢注意力
+                .opacity(hovering || copied ? 1 : 0)
+                .accessibilityLabel(copied ? "已复制" : "复制代码")
+            }
+            .onHover { hovering = $0 }
     }
 }

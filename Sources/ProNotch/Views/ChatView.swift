@@ -996,7 +996,6 @@ private struct MessageBubble: View {
                                 .font(.system(size: type.body, weight: type.bodyWeight))
                                 .foregroundStyle(windowStyle ? AnyShapeStyle(.primary)
                                                              : AnyShapeStyle(Color.white.opacity(0.9)))
-                                .textSelection(.enabled)
                         }
                     }
                 }
