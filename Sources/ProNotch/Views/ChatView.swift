@@ -121,17 +121,19 @@ struct ChatView: View {
                 // 代价是内容会滑到输入框底下，所以内容底部必须垫出输入框那么高
                 //（任务书 §6.3 的动态 bottom inset），否则最后一条永远被压住看不全
                 ZStack(alignment: .bottom) {
-                    GeometryReader { geo in
-                        messageList
-                            .onAppear { viewportHeight = geo.size.height }
-                            .onChange(of: geo.size.height) { _, h in viewportHeight = h }
-                        // 上下两端一层薄渐隐（大梁老师 2026-07-31 要回来，但要小）。
-                        // 下沿不能按视口底算——消息区铺到窗底、下半截压在输入框底下，
-                        // 那儿的渐隐根本看不见。得让它落在输入框上沿
-                        .mask(Self.edgeFade(height: geo.size.height,
-                                            bottomInset: composerHeight))
-                    }
-                    .frame(maxHeight: .infinity)
+                    // 这里**不再写 viewportHeight**。
+                    //
+                    // 它原来有两个写入者：这儿一个、messageList 里的 ScrollView 上还有一个。
+                    // 两者量的几乎是同一块区域，只要差一丁点就互相改写——A 写完触发布局，
+                    // 布局让 B 写，B 写完又触发布局让 A 写。这正是 SwiftUI 布局回环的
+                    // 典型形状，拖动/拉缩时会把主线程拖垮（大梁老师 2026-07-31 报「卡死」）。
+                    // 现在只留 ScrollView 上那一个写入者。
+                    //
+                    // 渐隐也顺手从 mask 换成覆盖渐变，理由见 fadeEdges
+                    messageList
+                        .fadeEdges(top: 14, bottom: 14, bottomInset: composerHeight,
+                                   color: ChatWindowPalette.background)
+                        .frame(maxHeight: .infinity)
                     // 正文两侧比输入框多留 16：正文缩在输入框以内，左右边界也只留输入框那一条
                     .padding(.horizontal, textInset)
                     windowComposer
@@ -146,7 +148,9 @@ struct ChatView: View {
                         .background(GeometryReader { g in
                             Color.clear
                                 .onAppear { composerHeight = g.size.height }
-                                .onChange(of: g.size.height) { _, h in composerHeight = h }
+                                .onChange(of: g.size.height) { _, h in
+                                    if abs(h - composerHeight) > 0.5 { composerHeight = h }
+                                }
                         })
                 }
                 .frame(maxWidth: 920)
@@ -352,25 +356,6 @@ struct ChatView: View {
         return 0.05 + 0.06 * Double(max(0, chronoIndex - windowStart))
     }
 
-    /// 消息区上下的薄渐隐。
-    ///
-    /// `bottomInset` 是输入框高度：消息区铺到窗底、下半截压在输入框底下，
-    /// 渐隐必须落在输入框**上沿**才看得见（按视口底算等于画在看不见的地方）
-    private static func edgeFade(height: CGFloat, bottomInset: CGFloat) -> LinearGradient {
-        let fade: CGFloat = 14                      // 薄薄一层，别像上一版那么厚
-        guard height > fade * 4 else {
-            return LinearGradient(colors: [.black], startPoint: .top, endPoint: .bottom)
-        }
-        let cut = max(height - bottomInset, fade * 2)   // 输入框上沿在视口里的位置
-        return LinearGradient(stops: [
-            .init(color: .clear, location: 0),
-            .init(color: .black, location: fade / height),
-            .init(color: .black, location: (cut - fade) / height),
-            .init(color: .clear, location: cut / height),
-            .init(color: .clear, location: 1),
-        ], startPoint: .top, endPoint: .bottom)
-    }
-
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
@@ -445,7 +430,11 @@ struct ChatView: View {
             .background(GeometryReader { g in
                 Color.clear
                     .onAppear { viewportHeight = g.size.height }
-                    .onChange(of: g.size.height) { _, h in viewportHeight = h }
+                    // 差不到半个点就不写：亚像素来回抖同样会触发一轮布局，
+                    // 拖动窗口时每帧都抖，积累起来就是「拖着拖着越来越卡」
+                    .onChange(of: g.size.height) { _, h in
+                        if abs(h - viewportHeight) > 0.5 { viewportHeight = h }
+                    }
             })
             .onPreferenceChange(BottomAnchorKey.self) { y in
                 // 底部哨兵离视口底还有多远。任务书 §12.1 的「接近底部」阈值是 80
@@ -844,6 +833,34 @@ private struct ConversationRow: View {
         f.locale = Locale(identifier: "zh_CN")
         f.dateFormat = "M月d日"
         return f.string(from: d)
+    }
+}
+
+private extension View {
+    /// 上下两端的薄渐隐。
+    ///
+    /// **用覆盖渐变而不是 mask**：mask 要把整棵消息树先离屏合成一遍再按遮罩取样，
+    /// 拖动窗口/拉缩时每帧都来一次，是卡顿的大头。
+    /// 窗口底色是不透明的纯色，所以「底色 → 透明」的两条渐变盖上去，
+    /// 视觉上和 mask 一模一样，代价只是画两个矩形。
+    ///
+    /// `bottomInset` 是输入框高度：消息区铺到窗底、下半截压在输入框底下，
+    /// 下沿的渐隐必须落在输入框**上沿**才看得见
+    func fadeEdges(top: CGFloat, bottom: CGFloat,
+                   bottomInset: CGFloat, color: Color) -> some View {
+        overlay(alignment: .top) {
+            LinearGradient(colors: [color, color.opacity(0)],
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: top)
+                .allowsHitTesting(false)
+        }
+        .overlay(alignment: .bottom) {
+            LinearGradient(colors: [color.opacity(0), color],
+                           startPoint: .top, endPoint: .bottom)
+                .frame(height: bottom)
+                .padding(.bottom, bottomInset)
+                .allowsHitTesting(false)
+        }
     }
 }
 
