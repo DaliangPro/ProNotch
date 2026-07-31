@@ -73,6 +73,11 @@ struct ChatView: View {
     @State private var followBottom = true
     /// 视口是否已接近底部（任务书 §12.1：距底 ≤ 80）。驱动「回到底部」按钮的显隐
     @State private var atBottom = true
+    /// 窗口里一次最多渲染的消息数与「显示更早」每次追加的量（刘海不设限，列表本来就短）
+    private static let defaultShownLimit = 40
+    private static let earlierChunk = 100
+    @State private var shownLimit = ChatView.defaultShownLimit
+
     /// 留一份滚动代理给「回到底部」按钮用——它在 ScrollViewReader 的闭包外面
     @State private var scrollProxy: ScrollViewProxy?
     @State private var scrollMonitor: Any?
@@ -83,10 +88,15 @@ struct ChatView: View {
     /// 系统开的「减弱动态效果」。开着就只留透明度变化，位移一律取消（任务书 §16.8）
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    /// 窗口宿主专用：内容列宽度冻结（拖缩/侧栏开合期间，见 ChatWindowController.contentFrozen）
+    /// 窗口宿主专用：内容列宽度冻结（拖缩期间，见 ChatWindowController.contentFrozen）
     @Environment(\.chatContentFrozen) private var contentFrozen
     /// 冻结那一刻的内容列宽；nil = 不冻。frame(width: nil) 是空操作，恰好当开关用
     @State private var frozenContentWidth: CGFloat?
+    /// 冻结期间量到的最新值寄存处（引用类型、无 @Published：写它不触发任何视图更新）。
+    /// 冻结的本意是拖缩期间一帧布局都别多跑，实测值照写就前功尽弃；
+    /// 但也不能丢——解冻后 GeometryReader 的 onChange 不会为「没变的旧值」再来一次，
+    /// 不寄存就永远错过最后那笔
+    @State private var frozenMeasures = FrozenMeasureBox()
 
     private let edgeInset: CGFloat = 14
 
@@ -109,13 +119,26 @@ struct ChatView: View {
     /// SwiftUI 会在同一次 flushTransactions 里接着算——账追着账，主线程就出不来了。
     /// 挪到下一圈之后，最坏情况也只是下一帧再修正一次，事件循环永远有喘息的空。
     /// 取整则是把亚像素抖动（108.4 ↔ 108.6 这种）直接压平，多数写入根本不发生
-    private func deferAssign(_ target: Binding<CGFloat>, _ measured: CGFloat) {
+    private func deferAssign(_ target: Binding<CGFloat>, _ measured: CGFloat,
+                             slot: ReferenceWritableKeyPath<FrozenMeasureBox, CGFloat?>? = nil) {
+        // 冻结中：寄存不落盘（落盘＝触发一轮布局，冻结就白冻了）；解冻时统一 flush
+        if contentFrozen, let slot {
+            frozenMeasures[keyPath: slot] = measured
+            return
+        }
         let rounded = measured.rounded()
         guard abs(rounded - target.wrappedValue) >= 1 else { return }
         DispatchQueue.main.async {
             // 排队期间可能又量到了新值：落盘前再核对一次，别拿旧值盖新值
             if abs(rounded - target.wrappedValue) >= 1 { target.wrappedValue = rounded }
         }
+    }
+
+    /// 冻结期间量到的值的寄存处；见 frozenMeasures 的注释
+    final class FrozenMeasureBox {
+        var viewport: CGFloat?
+        var composer: CGFloat?
+        var window: CGFloat?
     }
 
     /// 每段对话固定的系统开场白（纯 UI 引导语，不进 store、不发给 API）
@@ -170,9 +193,9 @@ struct ChatView: View {
                         .background(GeometryReader { g in
                             // 量出来的值一律：取整（压掉亚像素抖动）＋异步写（不给当前布局添账）
                             Color.clear
-                                .onAppear { deferAssign($composerHeight, g.size.height) }
+                                .onAppear { deferAssign($composerHeight, g.size.height, slot: \.composer) }
                                 .onChange(of: g.size.height) { _, h in
-                                    deferAssign($composerHeight, h)
+                                    deferAssign($composerHeight, h, slot: \.composer)
                                 }
                         })
                 }
@@ -185,12 +208,21 @@ struct ChatView: View {
                 // 量整窗宽度决定留白档位。用 background 量，不参与布局
                 .background(GeometryReader { g in
                     Color.clear
-                        .onAppear { deferAssign($windowWidth, g.size.width) }
-                        .onChange(of: g.size.width) { _, w in deferAssign($windowWidth, w) }
+                        .onAppear { deferAssign($windowWidth, g.size.width, slot: \.window) }
+                        .onChange(of: g.size.width) { _, w in deferAssign($windowWidth, w, slot: \.window) }
                 })
                 .onChange(of: contentFrozen) { _, frozen in
                     // 冻结那刻抓当前列宽钉住；放开置回 nil（宽度还没量到就不钉，防 width: 0）
                     frozenContentWidth = (frozen && windowWidth > 0) ? windowWidth : nil
+                    if !frozen {
+                        // 冻结期间寄存的实测值，现在一次落盘
+                        if let v = frozenMeasures.viewport { deferAssign($viewportHeight, v) }
+                        if let v = frozenMeasures.composer { deferAssign($composerHeight, v) }
+                        if let v = frozenMeasures.window { deferAssign($windowWidth, v) }
+                        frozenMeasures.viewport = nil
+                        frozenMeasures.composer = nil
+                        frozenMeasures.window = nil
+                    }
                 }
             } else if store.isConfigured {
                 // 左栏会话导航 + 右栏对话窗（大梁老师定的双栏结构）
@@ -408,8 +440,31 @@ struct ChatView: View {
                                       windowStyle: false)
                             .chatRise(entrancePlayed, offset: 14, delay: dealDelay(0), reduceMotion: reduceMotion)
                     }
+                    // 超长对话只渲染最近一段（大梁老师 2026-07-31「还是卡顿」后定）：
+                    // 消息列表已是全量渲染（Lazy 会卡死，不能回去），几百条的老对话
+                    // 每次断行就是几百条的账。屏幕上常看的只有最近几十条，
+                    // 更早的收在顶部一个按钮后面，点一下再多放一段
+                    let hiddenCount = host.inNotch ? 0 : max(0, store.messages.count - shownLimit)
+                    if hiddenCount > 0 {
+                        Button {
+                            shownLimit += Self.earlierChunk
+                        } label: {
+                            Text("显示更早的 \(min(hiddenCount, Self.earlierChunk)) 条")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(MarkdownTypography.textSecondary)
+                                .padding(.horizontal, 12).padding(.vertical, 6)
+                                .background(Capsule().fill(ChatWindowPalette.surface1))
+                                .overlay(Capsule().strokeBorder(ChatWindowPalette.border,
+                                                                lineWidth: 0.5))
+                        }
+                        .buttonStyle(.plain)
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 6)
+                        .accessibilityLabel("显示更早的消息")
+                    }
                     // enumerated 只为算发牌延迟；id 仍取 message.id，流式更新不重建气泡
-                    ForEach(Array(store.messages.enumerated()), id: \.element.id) { i, message in
+                    ForEach(Array(store.messages.dropFirst(hiddenCount).enumerated()),
+                            id: \.element.id) { i, message in
                         MessageBubble(message: message,
                                       streaming: store.isStreaming
                                           && message.id == store.messages.last?.id,
@@ -468,12 +523,15 @@ struct ChatView: View {
             // 用 background 量高度：不参与布局，不会改变原有的伸缩行为
             .background(GeometryReader { g in
                 Color.clear
-                    .onAppear { deferAssign($viewportHeight, g.size.height) }
+                    .onAppear { deferAssign($viewportHeight, g.size.height, slot: \.viewport) }
                     .onChange(of: g.size.height) { _, h in
-                        deferAssign($viewportHeight, h)
+                        deferAssign($viewportHeight, h, slot: \.viewport)
                     }
             })
             .onPreferenceChange(BottomAnchorKey.self) { y in
+                // 冻结期间不理会：值在拖缩中乱跳，写进去只会白触发按钮显隐动画。
+                // 解冻的那次宽度落盘会重排一轮，preference 自会带着新值再来
+                guard !contentFrozen else { return }
                 // 底部哨兵离视口底还有多远。任务书 §12.1 的「接近底部」阈值是 80
                 guard viewportHeight > 0 else { return }
                 let distance = y - viewportHeight
@@ -536,7 +594,8 @@ struct ChatView: View {
                 DispatchQueue.main.async { scrollProxy?.scrollTo("bottom", anchor: .bottom) }
             }
             .onChange(of: store.currentID) { _, _ in
-                // 切会话后等新列表上屏再落底
+                // 切会话后等新列表上屏再落底；渲染限额同时复位（别把上个会话的扩容带过来）
+                shownLimit = Self.defaultShownLimit
                 followBottom = true
                 DispatchQueue.main.async { proxy.scrollTo("bottom", anchor: .bottom) }
             }
