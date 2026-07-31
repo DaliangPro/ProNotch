@@ -85,6 +85,10 @@ struct ChatView: View {
 
     private let edgeInset: CGFloat = 14
 
+    /// 整窗宽度，用来决定内容列的左右留白档位（任务书 §6.3：>900 用 24，否则 16）
+    @State private var windowWidth: CGFloat = 0
+    private var sideInset: CGFloat { windowWidth > 900 ? 24 : 16 }
+
     /// 每段对话固定的系统开场白（纯 UI 引导语，不进 store、不发给 API）
     private static let greeting = ChatMessage(role: .assistant, content: "想和我聊点什么？")
 
@@ -98,16 +102,29 @@ struct ChatView: View {
                 // 消息**底部对齐**：贴着输入框往上堆，内容少时靠下。
                 // 之前顶部对齐，四成窗口是死空白，一眼就是「没做完」。
                 // 压底要知道视口多高，所以套 GeometryReader 量一下
-                GeometryReader { geo in
-                    messageList
-                        .onAppear { viewportHeight = geo.size.height }
-                        .onChange(of: geo.size.height) { _, h in viewportHeight = h }
+                // 内容列：宽度 min(100%, 920) 且**水平居中**（任务书 §6.3 / §15.2）。
+                // 原来是铺满整窗，窗口一拉宽正文就跟着摊开，左右留白也不对称
+                VStack(alignment: .leading, spacing: 8) {
+                    GeometryReader { geo in
+                        messageList
+                            .onAppear { viewportHeight = geo.size.height }
+                            .onChange(of: geo.size.height) { _, h in viewportHeight = h }
+                    }
+                    .frame(maxHeight: .infinity)
+                    // 左右留白：窄窗 16，宽于 900 时 24（§6.3）。
+                    // 消息与输入块用同一个值，两者外缘才在一条竖线上
+                    .padding(.horizontal, sideInset)
+                    windowComposer
                 }
-                .frame(maxHeight: .infinity)
-                // 左右留白外壳不给，得自己给。这个 16 是全窗的基准竖线：
-                // 气泡外缘、输入块外缘都对它（大梁老师要「三边一致」，且要再窄一点）
-                .padding(.horizontal, 16)
-                windowComposer
+                .frame(maxWidth: 920)
+                // 第二个 frame 才是「居中」：上一个只限宽，不限位置
+                .frame(maxWidth: .infinity)
+                // 量整窗宽度决定留白档位。用 background 量，不参与布局
+                .background(GeometryReader { g in
+                    Color.clear
+                        .onAppear { windowWidth = g.size.width }
+                        .onChange(of: g.size.width) { _, w in windowWidth = w }
+                })
             } else if store.isConfigured {
                 // 左栏会话导航 + 右栏对话窗（大梁老师定的双栏结构）
                 HStack(spacing: 0) {
@@ -618,8 +635,8 @@ struct ChatView: View {
                 .overlay(shape.fill(.white.opacity(0.06)))
                 .overlay(shape.strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
         }
-        // 外缘与消息栏同为 16，左右下三边一条线
-        .padding(.horizontal, 16).padding(.bottom, 16)
+        // 外缘与消息栏同一档（§6.3），左右下三边一条线
+        .padding(.horizontal, sideInset).padding(.bottom, 16)
     }
 
     /// 系统强调色（跟「系统设置 → 外观 → 强调色」走）
