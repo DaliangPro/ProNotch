@@ -313,14 +313,34 @@ struct ChatView: View {
                                       streaming: store.isStreaming
                                           && message.id == store.messages.last?.id,
                                       searching: store.isSearching,
-                                      windowStyle: !host.inNotch)
+                                      windowStyle: !host.inNotch,
+                                      // 只有最后一条能重来：重生成会丢掉这条与它上面那问，
+                                      // 中间某条重来会把后面的对话一起截断（任务书 §8.4 没要求那样）
+                                      onRegenerate: (!host.inNotch && !store.isStreaming
+                                          && message.id == store.messages.last?.id)
+                                          ? { store.regenerateLast() } : nil)
                             .chatRise(entrancePlayed, offset: 14, delay: dealDelay(i + 1))
                     }
                     if let error = store.errorText {
-                        Text(error)
-                            .font(.system(size: 10))
-                            .foregroundColor(.red.opacity(0.8))
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        // 失败必须在界面上可见、且能重试；用户原文保留在会话里不清空
+                        //（任务书 §14.6）
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(error)
+                                .font(.system(size: host.inNotch ? 10 : 12))
+                                .foregroundColor(.red.opacity(0.85))
+                                .fixedSize(horizontal: false, vertical: true)
+                            if !host.inNotch, !store.isStreaming {
+                                Button { store.retryLast() } label: {
+                                    Text("重试")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.9))
+                                        .padding(.horizontal, 10).padding(.vertical, 3)
+                                        .background(Capsule().fill(Color.white.opacity(0.12)))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     // 提醒不是报错（如模型不支持关深度思考）：回复照常出，用灰橙色说一句就够
                     if let notice = store.noticeText {
@@ -752,6 +772,13 @@ private struct MessageBubble: View {
     /// 但大梁老师定下两边都要气泡（2026-07-30）——一眼能分清谁说的比松快更重要
     var windowStyle = false
 
+    @State private var sourcesExpanded = false
+    @State private var showAllSources = false
+    @State private var copied = false
+    @State private var hovering = false
+    /// 「重新生成」由外面接：Store 的动作不该埋在气泡里
+    var onRegenerate: (() -> Void)?
+
     /// 独立窗口里的 AI 回答：不套气泡，直接落在画布上（任务书 §8.1）。
     /// 刘海仍保留淡框——那儿是窄带，没有背景就分不出一条条消息
     private var flatOnCanvas: Bool { windowStyle && message.role == .assistant }
@@ -779,17 +806,18 @@ private struct MessageBubble: View {
                     }
                     .padding(4)
                 } else {
-                    VStack(alignment: .leading, spacing: 4) {
-                        if let count = message.searchResultCount {
+                    VStack(alignment: .leading, spacing: windowStyle ? 8 : 4) {
+                        if windowStyle, message.role == .assistant {
+                            metaLine
+                        } else if let count = message.searchResultCount {
+                            // 刘海仍是原来那条紧凑提示
                             HStack(spacing: 3) {
                                 Image(systemName: "globe")
                                     .font(.system(size: 8))
                                 Text("已参考 \(count) 条搜索结果")
                                     .font(.system(size: 9))
                             }
-                            // 窗口走单色：一片灰里留着刘海那个青，就是个突兀的彩点
-                            .foregroundColor(windowStyle ? .white.opacity(0.42) : .cyan.opacity(0.75))
-                            .padding(.bottom, windowStyle ? 3 : 0)
+                            .foregroundColor(.cyan.opacity(0.75))
                         }
                         if let data = message.imageData, let img = NSImage(data: data) {
                             Image(nsImage: img).resizable().scaledToFit()
@@ -800,6 +828,13 @@ private struct MessageBubble: View {
                             // AI 回复按 Markdown 排版；用户消息保持纯文本
                             // 窗口里正文 14 / 段距 12 / 行距 6；刘海保持原来的紧凑
                             MarkdownMessageView(text: message.content, type: type)
+                            if windowStyle, sourcesExpanded, let sources = message.sources,
+                               !sources.isEmpty {
+                                sourcePanel(sources)
+                            }
+                            if windowStyle, !streaming, !message.content.isEmpty {
+                                actionRow
+                            }
                         } else {
                             Text(message.content)
                                 // 窗口比刘海宽敞得多，12pt 挤着没道理；语义色在毛玻璃上才有 vibrancy
@@ -834,7 +869,134 @@ private struct MessageBubble: View {
         }
         .frame(maxWidth: .infinity,
                alignment: message.role == .user ? .trailing : .leading)
+        .onHover { hovering = $0 }
         .id(message.id)
+    }
+
+    /// 元信息行（任务书 §8.2）：`DeepSeek V4 Pro · 联网 · 深度思考 · 8 个来源`。
+    ///
+    /// 只显示**这条消息自己的快照**，老消息没有快照就整段不显示——
+    /// 绝不拿当前全局设置去反推（§8.2.4）。默认低对比，鼠标进入这条消息才提亮
+    @ViewBuilder
+    private var metaLine: some View {
+        let parts = message.metaParts
+        if !parts.isEmpty {
+            HStack(spacing: 6) {
+                Text(parts.joined(separator: " · "))
+                    .font(.system(size: 12, weight: .medium))
+                if let sources = message.sources, !sources.isEmpty {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.17)) { sourcesExpanded.toggle() }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text(sourcesExpanded ? "收起来源" : "查看来源")
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 8, weight: .semibold))
+                                .rotationEffect(.degrees(sourcesExpanded ? 90 : 0))
+                        }
+                        .font(.system(size: 12, weight: .medium))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .foregroundStyle(hovering ? MarkdownTypography.textSecondary
+                                      : MarkdownTypography.textTertiary)
+        }
+    }
+
+    /// 来源面板（任务书 §9.2）：序号 + 标题 + 域名 + 外部打开。
+    /// 超过 5 条先给 5 条，剩下的点「查看全部」
+    private func sourcePanel(_ sources: [ChatSource]) -> some View {
+        let shown = showAllSources ? sources : Array(sources.prefix(5))
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(shown.enumerated()), id: \.element.id) { index, source in
+                Button {
+                    // 走既有的安全打开逻辑，不自己拼 URL
+                    if let url = URL(string: source.url) { NSWorkspace.shared.open(url) }
+                } label: {
+                    HStack(alignment: .top, spacing: 8) {
+                        Text("\(index + 1)")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(MarkdownTypography.textTertiary)
+                            .frame(width: 16, alignment: .trailing)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(source.title)
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(.white.opacity(0.88))
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                            if !source.domain.isEmpty {
+                                Text(source.domain)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(MarkdownTypography.textTertiary)
+                            }
+                        }
+                        Spacer(minLength: 6)
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(MarkdownTypography.textTertiary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .frame(minHeight: 36)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                if index < shown.count - 1 {
+                    Rectangle().fill(Color.white.opacity(0.07)).frame(height: 1)
+                }
+            }
+            if sources.count > 5, !showAllSources {
+                Button { showAllSources = true } label: {
+                    Text("查看全部 \(sources.count) 个")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(MarkdownTypography.textSecondary)
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(Color(red: 0.082, green: 0.082, blue: 0.09)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
+        .frame(maxWidth: 760, alignment: .leading)
+    }
+
+    /// 消息操作（任务书 §8.4）：复制 + 重新生成。悬停才显形，不抢正文
+    private var actionRow: some View {
+        HStack(spacing: 4) {
+            actionButton(copied ? "checkmark" : "doc.on.doc",
+                         tip: copied ? "已复制" : "复制") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(message.content, forType: .string)
+                copied = true
+                // 1200ms 后复原（任务书 §8.4.3）
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+            }
+            if let onRegenerate {
+                actionButton("arrow.clockwise", tip: "重新生成", action: onRegenerate)
+            }
+        }
+        .opacity(hovering ? 1 : 0)
+        .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+
+    private func actionButton(_ icon: String, tip: String,
+                              action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 11))
+                .foregroundStyle(MarkdownTypography.textSecondary)
+                .frame(width: 26, height: 26)          // 热区 ≥ 26，够点
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .notchTip(tip, edge: .aboveLeading)
+        .accessibilityLabel(tip)
     }
 }
 

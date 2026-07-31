@@ -1,6 +1,27 @@
 import Foundation
 import SwiftUI
 
+/// 提交那一刻的配置快照（任务书 §10.4 / §18）。
+///
+/// 写进对应的 AI 回复里：切了模型再看历史，才知道那条是用什么答的。
+/// 生成过程中改设置只影响下一次请求——快照一旦落下就不再变
+struct ChatModeSnapshot: Equatable, Codable, Sendable {
+    var modelID: String
+    var modelDisplayName: String
+    var networkEnabled: Bool
+    var reasoningEnabled: Bool
+    var submittedAt: Date
+}
+
+/// 一条联网来源（任务书 §18）。
+/// 只存真拿到的字段，缺的就不显示——**绝不编造**（§9.2）
+struct ChatSource: Identifiable, Equatable, Codable, Sendable {
+    var id = UUID()
+    var title: String
+    var url: String
+    var domain: String
+}
+
 struct ChatMessage: Identifiable, Equatable, Codable, Sendable {
     enum Role: String, Codable {
         case user
@@ -12,12 +33,68 @@ struct ChatMessage: Identifiable, Equatable, Codable, Sendable {
     var content: String
     /// 该回复参考的联网搜索结果条数（nil 表示未联网）
     var searchResultCount: Int? = nil
+    /// 来源明细。只有真搜到才有；老消息没有这个字段，展示层退回「只显示条数」
+    var sources: [ChatSource]? = nil
+    /// 提交那一刻的模型与模式快照。老消息为 nil，展示层隐藏缺失字段，
+    /// **不许拿当前全局设置去反推**（任务书 §8.2.4）
+    var snapshot: ChatModeSnapshot? = nil
+    /// 这一轮是被用户按停的（任务书 §14.5）：保留已生成的部分，标出来
+    var stopped: Bool = false
     /// 随消息发送的截图附件（JPEG 数据；「截图问 AI」入口写入）
     var imageData: Data? = nil
 
     /// 落盘只存文字与搜索条数：图片附件体积大且历史图片不需要重发，重启即弃
+    /// 元信息行要显示的几段（任务书 §8.2）：模型、联网、深度思考、来源数、已停止。
+    ///
+    /// **缺什么就少一段**，不占位也不留「未知」。没有快照的老消息整段为空——
+    /// 绝不拿当前全局设置去反推（§8.2.4）
+    var metaParts: [String] {
+        var parts: [String] = []
+        if let snapshot {
+            if !snapshot.modelDisplayName.isEmpty { parts.append(snapshot.modelDisplayName) }
+            if snapshot.networkEnabled { parts.append("联网") }
+            if snapshot.reasoningEnabled { parts.append("深度思考") }
+        }
+        if let searchResultCount, searchResultCount > 0 { parts.append("\(searchResultCount) 个来源") }
+        if stopped { parts.append("已停止") }
+        return parts
+    }
+
+    /// 落盘只存文字与这几样元信息：图片附件体积大且历史图片不需要重发，重启即弃。
+    /// 新增字段一律可选，老档案解出来就是 nil，不做破坏性迁移（任务书 §18）
     private enum CodingKeys: String, CodingKey {
-        case id, role, content, searchResultCount
+        case id, role, content, searchResultCount, sources, snapshot, stopped
+    }
+
+    init(id: UUID = UUID(), role: Role, content: String,
+         searchResultCount: Int? = nil, imageData: Data? = nil,
+         sources: [ChatSource]? = nil, snapshot: ChatModeSnapshot? = nil,
+         stopped: Bool = false) {
+        self.id = id
+        self.role = role
+        self.content = content
+        self.searchResultCount = searchResultCount
+        self.imageData = imageData
+        self.sources = sources
+        self.snapshot = snapshot
+        self.stopped = stopped
+    }
+
+    /// 手写解码：**新增字段一律 decodeIfPresent**。
+    ///
+    /// `stopped` 是非可选 Bool，交给合成的解码器就会要求这个键必须存在——
+    /// 老档案里没有它，整条消息解不出来，连带整个会话文件报废、历史对话全丢。
+    /// 单测（老档案 JSON）当场抓到的，不然装上才发现就晚了
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        role = try c.decode(Role.self, forKey: .role)
+        content = try c.decode(String.self, forKey: .content)
+        searchResultCount = try c.decodeIfPresent(Int.self, forKey: .searchResultCount)
+        sources = try c.decodeIfPresent([ChatSource].self, forKey: .sources)
+        snapshot = try c.decodeIfPresent(ChatModeSnapshot.self, forKey: .snapshot)
+        stopped = try c.decodeIfPresent(Bool.self, forKey: .stopped) ?? false
+        imageData = nil   // 图片不落盘，重启即弃
     }
 }
 
@@ -727,7 +804,14 @@ final class ChatStore: ObservableObject {
         ensureCurrentConversation()
         messages.append(ChatMessage(role: .user, content: trimmed, imageData: attachment))
         let history = messages.map(Self.payloadEntry)
-        messages.append(ChatMessage(role: .assistant, content: ""))
+        // 提交那一刻的配置快照（任务书 §10.4）：写进这条 AI 回复，
+        // 之后改设置只影响下一次请求，历史回复的元信息不会跟着变
+        messages.append(ChatMessage(role: .assistant, content: "", snapshot: ChatModeSnapshot(
+            modelID: model,
+            modelDisplayName: ModelDisplayName.of(model),
+            networkEnabled: webSearchEnabled,
+            reasoningEnabled: thinkingEnabled,
+            submittedAt: Date())))
         if let i = currentIndex {
             // 首条用户消息当侧栏标题（压掉换行，取一行放得下的长度）
             if conversations[i].title.isEmpty {
@@ -774,7 +858,7 @@ final class ChatStore: ObservableObject {
                     // 说话方式与安全边界进系统提示——比塞在几万字材料后面的用户消息里强得多。
                     // 只在真搜到东西时加：没联网的普通对话保持原样，不平白多一层人设
                     payload.insert(["role": "system", "content": Self.searchSystemPrompt()], at: 0)
-                    setLastAssistantSearchCount(results.count)
+                    setLastAssistantSources(results)
                     AppLog.chat.info("联网搜索返回 \(results.count) 条结果")
                 }
             } catch is CancellationError {
@@ -810,12 +894,26 @@ final class ChatStore: ObservableObject {
         AppLog.chat.info("已在搜索阶段停止")
     }
 
-    private func setLastAssistantSearchCount(_ count: Int) {
+    /// 把这一轮真正用上的来源写进消息（条数 + 明细）。
+    /// 明细只留真拿到的字段，一个都不编（任务书 §9.2）
+    private func setLastAssistantSources(_ results: [SearchResult]) {
+        let sources = results.map {
+            ChatSource(title: $0.title.isEmpty ? $0.url : $0.title,
+                       url: $0.url,
+                       domain: Self.domain(of: $0.url))
+        }
         withStreamingConv { msgs in
             if let index = msgs.indices.last, msgs[index].role == .assistant {
-                msgs[index].searchResultCount = count
+                msgs[index].searchResultCount = results.count
+                msgs[index].sources = sources
             }
         }
+    }
+
+    /// 从网址取域名给来源行显示。取不出就留空，展示层自然不显示这一段
+    nonisolated static func domain(of url: String) -> String {
+        guard let host = URL(string: url)?.host else { return "" }
+        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
     }
 
     /// 把搜索结果拼进提示词。
@@ -1089,7 +1187,46 @@ final class ChatStore: ObservableObject {
     }
 
     func stopStreaming() {
+        // 标在消息上而不是只记一个全局标志：一段对话里可能停过好几次，
+        // 全局标志说不清是哪一条被停的（任务书 §14.5）
+        withStreamingConv { msgs in
+            if let index = msgs.indices.last, msgs[index].role == .assistant,
+               !msgs[index].content.isEmpty {
+                msgs[index].stopped = true
+            }
+        }
         streamTask?.cancel()
+    }
+
+    /// 重新生成最后一条回答（任务书 §8.4.4）：丢掉这条回复，
+    /// 拿它前面那条用户消息重发。**用当前的模型与模式**，并落一份新快照
+    func regenerateLast() {
+        guard !isStreaming, isConfigured else { return }
+        guard let last = messages.last, last.role == .assistant else { return }
+        guard messages.count >= 2, messages[messages.count - 2].role == .user else { return }
+        let question = messages[messages.count - 2].content
+        messages.removeLast(2)
+        persistConversations()
+        send(question)
+    }
+
+    /// 重试上一次失败的提问（任务书 §14.6）：用户的原文必须还在，不能清空。
+    /// 与重新生成的区别是——失败时 AI 那条是空的，用户那条要留着
+    func retryLast() {
+        guard !isStreaming, isConfigured else { return }
+        guard let last = messages.last else { return }
+        if last.role == .assistant, last.content.isEmpty, messages.count >= 2,
+           messages[messages.count - 2].role == .user {
+            let question = messages[messages.count - 2].content
+            messages.removeLast(2)
+            persistConversations()
+            send(question)
+        } else if last.role == .user {
+            let question = last.content
+            messages.removeLast()
+            persistConversations()
+            send(question)
+        }
     }
 
     /// 拉取服务端可用模型列表（GET /v1/models，OpenAI 兼容）。
