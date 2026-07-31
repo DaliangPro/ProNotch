@@ -47,6 +47,10 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
     /// 920 内容列 + 220 侧栏 + 两边留白 ≈ 1180
     static let maxWindowWidth: CGFloat = 1180
 
+    /// 最小尺寸的单一事实源：makePanel 的 minSize 与 windowWillResize 的下限都取这里。
+    /// 620 是输入块 + 三个胶囊不换行的下限，380 是「输入块 + 三四行回答」的下限
+    static let minWindowSize = NSSize(width: 620, height: 380)
+
     /// 钉在桌面（窗口置顶）。开＝浮在所有 App 之上，关＝像普通窗口一样被压到后面。
     /// 默认开：这扇窗本来就是「切去浏览器核对一眼还看得见」才有用
     /// 内容列宽度是否处于「冻结」中。
@@ -205,7 +209,7 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
         // 否则一切去浏览器就被压在后面，等于关了
         panel.level = pinned ? .floating : .normal
         panel.isMovableByWindowBackground = false   // 拖动只认顶部那条把手，别抢内容里的拖拽
-        panel.minSize = NSSize(width: 620, height: 380)
+        panel.minSize = Self.minWindowSize
         // 宽度封顶（大梁老师 2026-07-31）：正文列最宽 920、散文再限 760，
         // 超过这个数继续拉宽只会多出两边留白，没有任何信息量。
         // 920 内容列 + 220 侧栏 + 两边留白 ≈ 1180，取整 1180
@@ -272,8 +276,15 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
         contentFrozen = false
     }
 
+    /// 尺寸限制的真正闸门——**上限和下限都得在这儿**。
+    ///
+    /// 拖拽过程中每一帧都会问一次，返回什么就是什么。而且**一旦实现了这个委托，
+    /// 系统就不再替你执行 minSize**：头一版只夹了上限、下限放行，620 形同虚设——
+    /// 大梁老师当场拖穿（2026-07-31「620 停不住」）。
+    /// 高度上限不设，长答案要能拉满屏；高度下限同理归这儿管
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
-        NSSize(width: min(frameSize.width, Self.maxWindowWidth), height: frameSize.height)
+        NSSize(width: min(max(frameSize.width, Self.minWindowSize.width), Self.maxWindowWidth),
+               height: max(frameSize.height, Self.minWindowSize.height))
     }
 
     /// 宽度限制的兜底闸（大梁老师 2026-07-31 反馈「最窄和最宽限制好像没了」）。
@@ -298,7 +309,7 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
         // 然后才落盘。正常路径下夹取是空操作，不会跟拖拽打架
         if let panel, (notification.object as? NSWindow) === panel {
             let width = panel.frame.width
-            let clamped = Self.clampedWidth(width, minWidth: panel.minSize.width)
+            let clamped = Self.clampedWidth(width, minWidth: Self.minWindowSize.width)
             if abs(clamped - width) > 0.5 {
                 AppLog.window.info("闪问窗宽度越界收回: \(Int(width)) → \(Int(clamped))（来路非常规拖拽）")
                 var frame = panel.frame

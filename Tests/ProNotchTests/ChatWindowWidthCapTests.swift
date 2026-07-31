@@ -20,14 +20,29 @@ final class ChatWindowWidthCapTests: XCTestCase {
         XCTAssertEqual(out.width, ChatWindowController.maxWindowWidth)
     }
 
+    /// 由来（大梁老师 2026-07-31「620 停不住」）：实现了 windowWillResize 委托后
+    /// 系统不再执行 minSize，下限必须由委托自己夹。这条拖穿过一次，别再放行
+    func test窄于下限被抬回() {
+        let c = ChatWindowController.shared
+        let out = c.windowWillResize(panel, to: NSSize(width: 300, height: 700))
+        XCTAssertEqual(out.width, ChatWindowController.minWindowSize.width)
+    }
+
+    /// 高度下限同理归委托管（矮于 380 抬回）
+    func test矮于下限被抬回() {
+        let c = ChatWindowController.shared
+        let out = c.windowWillResize(panel, to: NSSize(width: 800, height: 200))
+        XCTAssertEqual(out.height, ChatWindowController.minWindowSize.height)
+    }
+
     func test上限以内原样放行() {
         let c = ChatWindowController.shared
         let out = c.windowWillResize(panel, to: NSSize(width: 900, height: 700))
         XCTAssertEqual(out.width, 900)
     }
 
-    /// 高度不限：长答案要能拉满整屏
-    func test高度不受限() {
+    /// 高度**上限**不设：长答案要能拉满整屏（下限另有用例）
+    func test高度上限不设() {
         let c = ChatWindowController.shared
         for h in [700.0, 1600.0, 4000.0] {
             XCTAssertEqual(c.windowWillResize(panel, to: NSSize(width: 800, height: h)).height, h)
