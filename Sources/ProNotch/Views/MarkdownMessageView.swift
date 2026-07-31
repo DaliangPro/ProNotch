@@ -364,13 +364,14 @@ struct MarkdownTypography {
     //
     // 刘海不跟：那儿字号只有 12，再细就发虚了
 
-    /// 正文。任务书 §7 定的是 400（regular）——大梁老师 2026-07-31 拍板照任务书走，
-    /// 之前为了拉开与加粗的差别压到过 light
-    var bodyWeight: Font.Weight { .regular }
+    /// 正文。任务书 §7 定的是 400（regular），照它走之后大梁老师觉得偏粗，
+    /// 改回 light（2026-07-31 复议）。
+    /// 刘海不跟：那儿正文只有 12pt，再细就发虚
+    var bodyWeight: Font.Weight { compact ? .regular : .light }
     /// 行内加粗。用 semibold 而不是 bold——bold 留给标题，两者才分得开
     var emphasisWeight: Font.Weight { compact ? .semibold : .semibold }
-    /// 次级信息（引用、项目符号、任务项）：比正文还退一步
-    var secondaryWeight: Font.Weight { .regular }
+    /// 次级信息（引用、项目符号、任务项）：跟正文同一档，靠明度再退一步
+    var secondaryWeight: Font.Weight { compact ? .regular : .light }
     /// 表头。表格里不必喊，medium 足够把它和数据行分开
     var tableHeaderWeight: Font.Weight { compact ? .semibold : .medium }
 
