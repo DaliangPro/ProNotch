@@ -32,7 +32,18 @@ enum SessionUsage {
         let tokens: Int
     }
 
-    private struct ClaudeScanCache { let mtime: Date; let size: Int; let entries: [UsageEntry]; let title: String? }
+    /// 与 Codex 侧 CodexScanCache 同一个方子（那边的注释是正文，这边只记差异）：
+    /// resultX = 完整行 + 末尾残行；completeX 只含完整行，是续扫种子；
+    /// scannedOffset 是最后一个换行符之后的绝对偏移
+    private struct ClaudeScanCache {
+        let mtime: Date
+        let size: Int
+        let resultEntries: [UsageEntry]
+        let resultTitle: String?
+        let completeEntries: [UsageEntry]
+        let completeTitle: String?
+        let scannedOffset: UInt64
+    }
     nonisolated(unsafe) private static var claudeCache: [String: ClaudeScanCache] = [:]
     private static let claudeCacheLock = NSLock()
     /// 整读解析的累计次数（测试断言缓存命中用；refresh 单飞，无并发累加）
@@ -66,23 +77,37 @@ enum SessionUsage {
         var out: [(url: URL, entries: [UsageEntry], title: String?)] = []
         var seen: Set<String> = []
         for case let url as URL in en where url.pathExtension == "jsonl" {
-            guard let rv = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
-                  let m = rv.contentModificationDate, m > cutoff else { continue }
+            // stat 不走 URL.resourceValues：它把结果缓存在 URL 值里，续扫判据要新鲜（Codex 侧同教训）
+            guard let attrs = try? fm.attributesOfItem(atPath: url.path),
+                  let m = attrs[.modificationDate] as? Date, m > cutoff else { continue }
             seen.insert(url.path)
-            let size = rv.fileSize ?? 0
+            let size = (attrs[.size] as? NSNumber)?.intValue ?? 0
             claudeCacheLock.lock()
             let cached = claudeCache[url.path]
             claudeCacheLock.unlock()
             if let cached, cached.mtime == m, cached.size == size {
-                out.append((url, cached.entries, cached.title))
+                out.append((url, cached.resultEntries, cached.resultTitle))
                 continue
             }
-            // 变过的文件才整读（每文件一个池：整串文本与逐行 JSON 临时对象逐文件释放）
-            let parsed = autoreleasepool { parseClaudeFile(url, cutoff: cutoff) }
+            // transcript 是只追加的日志：变长就从上次的换行处续扫，只读新增部分。
+            // 变短或同长不同 mtime（被改写）→ 全量。每文件一个池，临时对象逐文件释放
+            let incremental = cached.flatMap { c -> ClaudeScanCache? in
+                (size > c.size && UInt64(size) >= c.scannedOffset) ? c : nil
+            }
+            let parsed = autoreleasepool {
+                parseClaudeFile(url, cutoff: cutoff,
+                                from: incremental?.scannedOffset ?? 0,
+                                seedEntries: incremental?.completeEntries ?? [],
+                                seedTitle: incremental?.completeTitle)
+            }
+            guard let parsed else {
+                if let incremental { out.append((url, incremental.resultEntries, incremental.resultTitle)) }
+                continue
+            }
             claudeCacheLock.lock()
-            claudeCache[url.path] = ClaudeScanCache(mtime: m, size: size, entries: parsed.entries, title: parsed.title)
+            claudeCache[url.path] = parsed
             claudeCacheLock.unlock()
-            out.append((url, parsed.entries, parsed.title))
+            out.append((url, parsed.resultEntries, parsed.resultTitle))
         }
         // mtime 滑出 7 天窗的文件不会再被枚举，顺手清缓存防无限增长
         claudeCacheLock.lock()
@@ -91,39 +116,107 @@ enum SessionUsage {
         return out
     }
 
-    /// 整读解析单个 transcript：有效 usage 条目 + 自定义标题（custom-title 末条最新）。
+    /// 解析单个 transcript（可从换行边界续扫）：有效 usage 条目 + 自定义标题（末条最新）。
     /// 条目按解析时刻的 7 天窗做日粒度粗过滤后入缓存——窗口只向前滑，
-    /// 之后任何轮次需要的条目恒为本集子集（日粒度是精确窗口的超集，消费方再精筛），缓存窗口安全
-    private static func parseClaudeFile(_ url: URL, cutoff: Date) -> (entries: [UsageEntry], title: String?) {
+    /// 之后任何轮次需要的条目恒为本集子集（日粒度是精确窗口的超集，消费方再精筛），缓存窗口安全。
+    ///
+    /// 原实现 `String(contentsOf:)` 整读 + `split(separator:)` 整串咀嚼——刘海卡顿排查时
+    /// 采样 24 秒它独占一条后台核（字符串下标自耗时全场第一，2026-07-31）。
+    /// 现与 Codex 侧同方：FileHandle 分块 + memchr 切行 + memmem 粗筛，
+    /// 只有含 usage / custom-title 的行才拷出来解析 JSON
+    private static func parseClaudeFile(_ url: URL, cutoff: Date, from startOffset: UInt64,
+                                        seedEntries: [UsageEntry],
+                                        seedTitle: String?) -> ClaudeScanCache? {
         claudeParseCount += 1
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return ([], nil) }
-        let cutoffDay = String(iso8601UTC.string(from: cutoff).prefix(10))
-        var entries: [UsageEntry] = []
-        var title: String?
-        for line in text.split(separator: "\n") {
-            // Claude Code 的会话标题（custom-title 行，末条最新）——比首句 prompt 更像「名字」
-            if line.contains("custom-title"),
-               let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
-               obj["type"] as? String == "custom-title",
-               let t = obj["customTitle"] as? String, !t.isEmpty {
-                title = t
-                continue
-            }
-            guard line.contains("\"usage\""), line.contains("\"assistant\""),
-                  let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
-                  (obj["type"] as? String) == "assistant",
-                  let msg = obj["message"] as? [String: Any],
-                  (msg["model"] as? String)?.hasPrefix("claude-") == true,   // 只算官方模型，第三方中转不耗订阅
-                  let usage = msg["usage"] as? [String: Any] else { continue }
-            let tokens = ["input_tokens", "output_tokens", "cache_creation_input_tokens"]
-                .compactMap { (usage[$0] as? NSNumber)?.intValue }.reduce(0, +)
-            guard tokens > 0 else { continue }
-            let tsStr = obj["timestamp"] as? String
-            let day = tsStr.map { String($0.prefix(10)) }
-            if let day, day < cutoffDay { continue }   // 窗外老条目不入缓存（timestamp 缺失保留，沿旧口径）
-            entries.append(UsageEntry(day: day, ts: tsStr.flatMap { ISO8601Flex.parse($0) }, tokens: tokens))
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? fh.close() }
+        if startOffset > 0 {
+            guard (try? fh.seek(toOffset: startOffset)) != nil else { return nil }
         }
-        return (entries, title)
+        let cutoffDay = String(iso8601UTC.string(from: cutoff).prefix(10))
+        var entries = seedEntries
+        var title = seedTitle
+        var offsetAfterLastNewline = startOffset
+        var filePos = startOffset
+        var remainder = Data()
+        let usageNeedle = [UInt8]("\"usage\"".utf8)
+        let titleNeedle = [UInt8]("custom-title".utf8)
+        while let chunk = try? fh.read(upToCount: 8 * 1024 * 1024), !chunk.isEmpty {
+            filePos += UInt64(chunk.count)
+            var data = remainder
+            data.append(chunk)
+            var consumed = 0
+            data.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
+                guard let base = buf.baseAddress else { return }
+                usageNeedle.withUnsafeBufferPointer { un in
+                    titleNeedle.withUnsafeBufferPointer { tn in
+                        guard let unBase = un.baseAddress, let tnBase = tn.baseAddress else { return }
+                        var lineStart = 0
+                        while lineStart < buf.count,
+                              let hit = memchr(base + lineStart, 0x0A, buf.count - lineStart) {
+                            let nl = UnsafeRawPointer(hit) - base
+                            if nl > lineStart {
+                                let len = nl - lineStart
+                                if memmem(base + lineStart, len, unBase, un.count) != nil
+                                    || memmem(base + lineStart, len, tnBase, tn.count) != nil {
+                                    consumeClaudeLine(data.subdata(in: lineStart..<nl),
+                                                      cutoffDay: cutoffDay,
+                                                      into: &entries, title: &title)
+                                }
+                            }
+                            lineStart = nl + 1
+                        }
+                        consumed = lineStart
+                    }
+                }
+            }
+            remainder = data.subdata(in: consumed..<data.count)
+            offsetAfterLastNewline = filePos - UInt64(remainder.count)
+        }
+        // 末尾残行只进结果，不进基底（续扫从它的开头接着读，行补全后恰好算一次）
+        var resultEntries = entries
+        var resultTitle = title
+        consumeClaudeLine(remainder, cutoffDay: cutoffDay, into: &resultEntries, title: &resultTitle)
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        return ClaudeScanCache(mtime: attrs?[.modificationDate] as? Date ?? .distantPast,
+                               size: (attrs?[.size] as? NSNumber)?.intValue ?? 0,
+                               resultEntries: resultEntries, resultTitle: resultTitle,
+                               completeEntries: entries, completeTitle: title,
+                               scannedOffset: offsetAfterLastNewline)
+    }
+
+    /// 单行落账。粗筛在指针环里做过了，这里按原口径解析
+    private static func consumeClaudeLine(_ line: Data, cutoffDay: String,
+                                          into entries: inout [UsageEntry],
+                                          title: inout String?) {
+        guard !line.isEmpty else { return }
+        // Claude Code 的会话标题（custom-title 行，末条最新）——比首句 prompt 更像「名字」
+        if line.range(of: Data("custom-title".utf8)) != nil,
+           let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+           obj["type"] as? String == "custom-title",
+           let t = obj["customTitle"] as? String, !t.isEmpty {
+            title = t
+            return
+        }
+        guard line.range(of: Data("\"usage\"".utf8)) != nil,
+              line.range(of: Data("\"assistant\"".utf8)) != nil,
+              let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              (obj["type"] as? String) == "assistant",
+              let msg = obj["message"] as? [String: Any],
+              (msg["model"] as? String)?.hasPrefix("claude-") == true,   // 只算官方模型，第三方中转不耗订阅
+              let usage = msg["usage"] as? [String: Any] else { return }
+        let tokens = ["input_tokens", "output_tokens", "cache_creation_input_tokens"]
+            .compactMap { (usage[$0] as? NSNumber)?.intValue }.reduce(0, +)
+        guard tokens > 0 else { return }
+        let tsStr = obj["timestamp"] as? String
+        let day = tsStr.map { String($0.prefix(10)) }
+        if let day, day < cutoffDay { return }   // 窗外老条目不入缓存（timestamp 缺失保留，沿旧口径）
+        entries.append(UsageEntry(day: day, ts: tsStr.flatMap { ISO8601Flex.parse($0) }, tokens: tokens))
+    }
+
+    /// 仅测试用：清掉 Claude 文件缓存
+    static func _resetClaudeCacheForTests() {
+        claudeCacheLock.lock(); claudeCache.removeAll(); claudeCacheLock.unlock()
     }
 
     // MARK: - Codex：~/.codex/sessions/近 7 天/*.jsonl 读末条 token
