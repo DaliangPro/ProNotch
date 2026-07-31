@@ -73,7 +73,7 @@ struct ChatView: View {
     @State private var followBottom = true
     /// 视口是否已接近底部（任务书 §12.1：距底 ≤ 80）。驱动「回到底部」按钮的显隐
     @State private var atBottom = true
-    /// 窗口里一次最多渲染的消息数与「显示更早」每次追加的量（刘海不设限，列表本来就短）
+    /// 一次最多渲染的消息数与「显示更早」每次追加的量（窗口与刘海都限——两处共享同一份对话）
     private static let defaultShownLimit = 40
     private static let earlierChunk = 100
     @State private var shownLimit = ChatView.defaultShownLimit
@@ -443,23 +443,29 @@ struct ChatView: View {
                     // 超长对话只渲染最近一段（大梁老师 2026-07-31「还是卡顿」后定）：
                     // 消息列表已是全量渲染（Lazy 会卡死，不能回去），几百条的老对话
                     // 每次断行就是几百条的账。屏幕上常看的只有最近几十条，
-                    // 更早的收在顶部一个按钮后面，点一下再多放一段
-                    let hiddenCount = host.inNotch ? 0 : max(0, store.messages.count - shownLimit)
+                    // 更早的收在顶部一个按钮后面，点一下再多放一段。
+                    // **刘海同样限**：头一版只限了窗口，以为「刘海列表本来就短」——
+                    // 错了，两处共享同一份对话，切到闪问页就是把几百条一口气建全，
+                    // 正是他说「切到这一页非常卡」的原因（2026-07-31）
+                    let hiddenCount = max(0, store.messages.count - shownLimit)
                     if hiddenCount > 0 {
                         Button {
                             shownLimit += Self.earlierChunk
                         } label: {
                             Text("显示更早的 \(min(hiddenCount, Self.earlierChunk)) 条")
-                                .font(.system(size: 11, weight: .medium))
+                                .font(.system(size: host.inNotch ? 10 : 11, weight: .medium))
                                 .foregroundStyle(MarkdownTypography.textSecondary)
-                                .padding(.horizontal, 12).padding(.vertical, 6)
-                                .background(Capsule().fill(ChatWindowPalette.surface1))
-                                .overlay(Capsule().strokeBorder(ChatWindowPalette.border,
-                                                                lineWidth: 0.5))
+                                .padding(.horizontal, host.inNotch ? 9 : 12)
+                                .padding(.vertical, host.inNotch ? 4 : 6)
+                                .background(Capsule().fill(host.inNotch
+                                    ? Color.white.opacity(0.08) : ChatWindowPalette.surface1))
+                                .overlay(Capsule().strokeBorder(host.inNotch
+                                    ? Color.white.opacity(0.12) : ChatWindowPalette.border,
+                                    lineWidth: 0.5))
                         }
                         .buttonStyle(.plain)
                         .frame(maxWidth: .infinity)
-                        .padding(.top, 6)
+                        .padding(.top, host.inNotch ? 2 : 6)
                         .accessibilityLabel("显示更早的消息")
                     }
                     // enumerated 只为算发牌延迟；id 仍取 message.id，流式更新不重建气泡
