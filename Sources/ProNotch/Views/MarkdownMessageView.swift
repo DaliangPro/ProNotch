@@ -14,8 +14,6 @@ enum MarkdownLite {
         /// 表格。AI 拿表格答题很常见，不解析的话竖线会连同分隔行一起原样吐出来，
         /// 那正是大梁老师说「根本没法看」的东西（2026-07-31）
         case table(header: [String], rows: [[String]], aligns: [Align])
-        /// 水平分隔线（--- / *** / ___）
-        case rule
         /// 任务列表（- [ ] / - [x]）
         case tasks([(text: String, done: Bool)])
     }
@@ -115,9 +113,17 @@ enum MarkdownLite {
                 blocks.append(.table(header: cells, rows: rows, aligns: sep.map(alignment(of:))))
                 continue
             }
+            // 分隔线**识别但不渲染**（大梁老师 2026-07-31 定）。
+            //
+            // 标题已有明确层级、段落间距也拉开了，再画一条线就是同一件事说三遍，
+            // 反而把版面切碎。DeepSeek 写中文长答案时习惯每节之间来一条 `---`，
+            // 全画出来就成了「每段中间都有线」。
+            //
+            // 但**必须继续识别**：不识别的话 `---` 会掉进段落，原样显示成三个横杠。
+            // 这里只当作一次分段（flushAll），不产出任何块——产出空块的话
+            // VStack 会多算一次 spacing，原地留下一道可疑的大空档
             if isRule(line) {
                 flushAll()
-                blocks.append(.rule)
                 continue
             }
             if let task = parseTask(line) {
@@ -459,11 +465,6 @@ struct MarkdownMessageView: View {
             })
         case .table(let header, let rows, let aligns):
             tableView(header: header, rows: rows, aligns: aligns)
-        case .rule:
-            Rectangle()
-                .fill(Color.white.opacity(0.14))
-                .frame(height: 1)
-                .padding(.vertical, 2)
         case .tasks(let items):
             prose(VStack(alignment: .leading, spacing: type.listItemSpacing) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in

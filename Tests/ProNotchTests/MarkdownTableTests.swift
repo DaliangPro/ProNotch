@@ -76,10 +76,30 @@ final class MarkdownTableTests: XCTestCase {
         if case .table = blocks[1] {} else { XCTFail("中间那块该是表格") }
     }
 
-    func test分隔线单独成块() {
+    /// 分隔线识别但不渲染（大梁老师 2026-07-31）：既不画线，也不许漏成三个横杠文字
+    func test分隔线被吞掉且不留空块() {
         let blocks = MarkdownLite.parse("上面\n\n---\n\n下面")
-        XCTAssertEqual(blocks.count, 3)
-        if case .rule = blocks[1] {} else { XCTFail("中间应是分隔线") }
+        XCTAssertEqual(blocks.count, 2, "只剩上下两段，中间不产出任何块")
+        guard case .paragraph(let a)? = blocks.first,
+              case .paragraph(let b) = blocks[1] else { return XCTFail("上下应是两个段落") }
+        XCTAssertEqual(a, "上面")
+        XCTAssertEqual(b, "下面")
+    }
+
+    /// 紧贴正文的分隔线也要吞掉，且**必须切断段落**，不能把上下粘成一段
+    func test紧贴正文的分隔线也切段() {
+        let blocks = MarkdownLite.parse("上面\n---\n下面")
+        XCTAssertEqual(blocks.count, 2)
+        if case .paragraph(let a)? = blocks.first { XCTAssertEqual(a, "上面") }
+        if case .paragraph(let b) = blocks[1] { XCTAssertEqual(b, "下面") }
+    }
+
+    /// 三种写法都要吞
+    func test三种分隔线写法都吞() {
+        for mark in ["---", "***", "___", "- - -"] {
+            let blocks = MarkdownLite.parse("上面\n\n\(mark)\n\n下面")
+            XCTAssertEqual(blocks.count, 2, "\(mark) 没被吞掉")
+        }
     }
 
     func test任务列表带勾选态() {
