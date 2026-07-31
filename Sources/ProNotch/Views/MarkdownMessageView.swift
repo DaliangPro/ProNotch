@@ -303,35 +303,44 @@ enum MarkdownLite {
 ///
 /// 两档形态：刘海是一条窄带，塞得下才是第一位；独立窗口是拿来读长文的，按阅读舒适度定
 struct MarkdownTypography {
-    /// 正文字号（刘海 12 / 窗口 14）
+    /// 正文字号（刘海 12 / 窗口 16）。窗口的 16 与行高 1.7 出自重构任务书 §7
     var body: CGFloat = 12
     /// 紧凑档（刘海）。窗口用舒适档
     var compact: Bool = true
 
     /// 行距。中文方块字密度高，行高不到 1.6 倍就发闷；
     /// SwiftUI 的 lineSpacing 是**在默认行高之上再加**，所以取 0.5 倍字号
+    /// 行高目标 1.7 倍（任务书 §7）。SwiftUI 的 lineSpacing 是**在默认行高之上再加**，
+    /// PingFang 默认约 1.2 倍，所以补 0.5 倍字号
     var lineSpacing: CGFloat { compact ? 1 : body * 0.5 }
 
-    /// 段落之间。要明显大于行距，段落才分得开——取行距的两倍出头
-    var blockSpacing: CGFloat { compact ? body * 0.5 : body * 1.1 }
+    /// 段落之间。任务书 §7：段落底部间距 14（正文 16 时约 0.875 倍）
+    var blockSpacing: CGFloat { compact ? body * 0.5 : body * 0.875 }
 
     /// 标题**上疏下密**：上面留够才看得出它领起新一段，
-    /// 下面收紧才与自己统辖的正文成组。上下一样多的话，标题会浮在两段中间谁也不挨
-    var headingTop: CGFloat { compact ? body * 0.3 : body * 1.0 }
-    var headingBottom: CGFloat { compact ? 0 : body * 0.2 }
+    /// 下面收紧才与自己统辖的正文成组。上下一样多的话，标题会浮在两段中间谁也不挨。
+    /// 任务书 §7：上 22–26、下 10–12（正文 16 时约 1.5 倍与 0.7 倍）
+    var headingTop: CGFloat { compact ? body * 0.3 : body * 1.5 }
+    var headingBottom: CGFloat { compact ? 0 : body * 0.65 }
 
-    /// 标题字号。差 1pt 等于没差——一级级拉开才认得出层级
+    /// 标题字号。任务书 §7 定的是 22 / 19 / 17（正文 16），即 +6 / +3 / +1
     func heading(_ level: Int) -> CGFloat {
-        body + (level <= 1 ? 5 : (level == 2 ? 3 : 1.5))
+        body + (level <= 1 ? 6 : (level == 2 ? 3 : 1))
     }
 
-    var listItemSpacing: CGFloat { compact ? 3 : body * 0.45 }
-    var markerGap: CGFloat { compact ? 6 : body * 0.55 }
+    /// 标题字重：H1/H2 约 650、H3 约 600（任务书 §7）。
+    /// SwiftUI 没有 650 这一档，semibold(600) 与 bold(700) 之间取 semibold 更接近
+    func headingWeight(_ level: Int) -> Font.Weight { level <= 2 ? .bold : .semibold }
+
+    /// 任务书 §7：列表项间距 6–8，缩进 1.35–1.5em
+    var listItemSpacing: CGFloat { compact ? 3 : body * 0.44 }
+    var markerGap: CGFloat { compact ? 6 : body * 0.4 }
 
     /// 正文一行最多多宽。**这是读着吃不吃力的头号变量**：
-    /// 中文一行超过 40 字，回行时极易串行。按 36 字折算，窗口再宽正文也不跟着摊开。
+    /// 中文一行超过 40 字，回行时极易串行。任务书 §6.4 定的上限是 760pt，
+    /// 按正文 16 折算约 47 字——取两者中更稳的 760。
     /// 只管散文（段落/列表/引用），表格和代码不受限——它们本来就该横着铺
-    var proseWidth: CGFloat? { compact ? nil : body * 36 }
+    var proseWidth: CGFloat? { compact ? nil : 760 }
 
     /// 气泡内边距：正文越大，四周越要留得开
     var bubbleH: CGFloat { compact ? 10 : body * 1.15 }
@@ -349,19 +358,22 @@ struct MarkdownTypography {
     //
     // 刘海不跟：那儿字号只有 12，再细就发虚了
 
-    /// 正文
-    var bodyWeight: Font.Weight { compact ? .regular : .light }
+    /// 正文。任务书 §7 定的是 400（regular）——大梁老师 2026-07-31 拍板照任务书走，
+    /// 之前为了拉开与加粗的差别压到过 light
+    var bodyWeight: Font.Weight { .regular }
     /// 行内加粗。用 semibold 而不是 bold——bold 留给标题，两者才分得开
     var emphasisWeight: Font.Weight { compact ? .semibold : .semibold }
     /// 次级信息（引用、项目符号、任务项）：比正文还退一步
-    var secondaryWeight: Font.Weight { compact ? .regular : .light }
+    var secondaryWeight: Font.Weight { .regular }
     /// 表头。表格里不必喊，medium 足够把它和数据行分开
     var tableHeaderWeight: Font.Weight { compact ? .semibold : .medium }
 
-    func headingWeight(_ level: Int) -> Font.Weight { level <= 2 ? .bold : .semibold }
-
-    /// 正文颜色。字重轻了要把明度补回来一点，不然又轻又暗就发虚了
-    var bodyColor: Color { .white.opacity(compact ? 0.9 : 0.82) }
+    /// 正文颜色。任务书 §5.1 的 `--qc-text-primary` 是 0.92
+    var bodyColor: Color { .white.opacity(compact ? 0.9 : 0.92) }
+    /// 元信息 / 次要按钮（`--qc-text-secondary`）
+    static let textSecondary = Color.white.opacity(0.64)
+    /// Placeholder / 禁用（`--qc-text-tertiary`）
+    static let textTertiary = Color.white.opacity(0.42)
 }
 
 struct MarkdownMessageView: View {

@@ -1,11 +1,15 @@
 import SwiftUI
 
 private extension View {
-    /// 闪问出场元素的通用动效：从下方 offset 处升起淡入，靠 delay 错峰（发牌节奏）
-    func chatRise(_ played: Bool, offset: CGFloat, delay: Double) -> some View {
-        self.offset(y: played ? 0 : offset)
+    /// 闪问出场元素的通用动效：从下方 offset 处升起淡入，靠 delay 错峰（发牌节奏）。
+    /// 系统开了「减弱动态效果」就只留淡入，位移取消（任务书 §16.8 / §17.3）
+    func chatRise(_ played: Bool, offset: CGFloat, delay: Double,
+                  reduceMotion: Bool = false) -> some View {
+        self.offset(y: (played || reduceMotion) ? 0 : offset)
             .opacity(played ? 1 : 0)
-            .animation(.spring(response: 0.38, dampingFraction: 0.66).delay(delay),
+            .animation(reduceMotion
+                       ? .easeOut(duration: 0.14).delay(delay)
+                       : .spring(response: 0.38, dampingFraction: 0.66).delay(delay),
                        value: played)
     }
 }
@@ -67,10 +71,17 @@ struct ChatView: View {
     /// 判据是**用户真的滚了**，不是「内容长出视口」——后者在流式输出时每一帧都成立，
     /// 拿它当判据等于永远不跟随
     @State private var followBottom = true
+    /// 视口是否已接近底部（任务书 §12.1：距底 ≤ 80）。驱动「回到底部」按钮的显隐
+    @State private var atBottom = true
+    /// 留一份滚动代理给「回到底部」按钮用——它在 ScrollViewReader 的闭包外面
+    @State private var scrollProxy: ScrollViewProxy?
     @State private var scrollMonitor: Any?
 
     /// 消息滚动区的坐标空间名；底部哨兵靠它算自己离视口顶部多远
     private static let scrollSpace = "chatMessageScroll"
+
+    /// 系统开的「减弱动态效果」。开着就只留透明度变化，位移一律取消（任务书 §16.8）
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let edgeInset: CGFloat = 14
 
@@ -105,7 +116,7 @@ struct ChatView: View {
                         .frame(width: CGFloat(sidebarWidth))
                         .frame(maxHeight: .infinity)
                         .modifier(ChatPanelFrame(bordered: host.inNotch))
-                        .chatRise(entrancePlayed, offset: 16, delay: 0)
+                        .chatRise(entrancePlayed, offset: 16, delay: 0, reduceMotion: reduceMotion)
                     sidebarDivider
                     // 右框：对话窗（消息区 + 输入框）。气泡在 messageList 内逐条发牌，
                     // 输入框等最后一张牌落定后再弹（像键盘弹出收尾）
@@ -113,7 +124,8 @@ struct ChatView: View {
                         messageList
                         inputBar
                             .chatRise(entrancePlayed, offset: 24,
-                                      delay: dealDelay(store.messages.count) + 0.08)
+                                      delay: dealDelay(store.messages.count) + 0.08,
+                                      reduceMotion: reduceMotion)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .padding(.horizontal, host.inNotch ? 10 : 16)
@@ -180,7 +192,7 @@ struct ChatView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, edgeInset)
-        .chatRise(entrancePlayed, offset: 16, delay: 0)
+        .chatRise(entrancePlayed, offset: 16, delay: 0, reduceMotion: reduceMotion)
     }
 
     /// 可拖拽的侧栏分隔线：1pt 视觉线 + 7pt 热区，悬停变左右箭头光标，拖动调宽 150–300
@@ -238,6 +250,13 @@ struct ChatView: View {
     ///
     /// 只认「用户真的滚了」这一个信号。若改用「内容超出视口」之类的几何判据，
     /// 流式输出时每帧都成立，等于永远不跟随
+    /// 输入法是否正在组合（有未上屏的候选词）。
+    /// 取当前 key 窗口的字段编辑器问 `hasMarkedText`——这是 macOS 唯一可靠的判据
+    static func isComposing() -> Bool {
+        guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView else { return false }
+        return editor.hasMarkedText()
+    }
+
     private func installScrollMonitor() {
         guard scrollMonitor == nil else { return }
         let vm = self.vm
@@ -294,7 +313,7 @@ struct ChatView: View {
                     if host.inNotch {
                         MessageBubble(message: Self.greeting, streaming: false, searching: false,
                                       windowStyle: false)
-                            .chatRise(entrancePlayed, offset: 14, delay: dealDelay(0))
+                            .chatRise(entrancePlayed, offset: 14, delay: dealDelay(0), reduceMotion: reduceMotion)
                     }
                     // enumerated 只为算发牌延迟；id 仍取 message.id，流式更新不重建气泡
                     ForEach(Array(store.messages.enumerated()), id: \.element.id) { i, message in
@@ -302,14 +321,34 @@ struct ChatView: View {
                                       streaming: store.isStreaming
                                           && message.id == store.messages.last?.id,
                                       searching: store.isSearching,
-                                      windowStyle: !host.inNotch)
-                            .chatRise(entrancePlayed, offset: 14, delay: dealDelay(i + 1))
+                                      windowStyle: !host.inNotch,
+                                      // 只有最后一条能重来：重生成会丢掉这条与它上面那问，
+                                      // 中间某条重来会把后面的对话一起截断（任务书 §8.4 没要求那样）
+                                      onRegenerate: (!host.inNotch && !store.isStreaming
+                                          && message.id == store.messages.last?.id)
+                                          ? { store.regenerateLast() } : nil)
+                            .chatRise(entrancePlayed, offset: 14, delay: dealDelay(i + 1), reduceMotion: reduceMotion)
                     }
                     if let error = store.errorText {
-                        Text(error)
-                            .font(.system(size: 10))
-                            .foregroundColor(.red.opacity(0.8))
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        // 失败必须在界面上可见、且能重试；用户原文保留在会话里不清空
+                        //（任务书 §14.6）
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(error)
+                                .font(.system(size: host.inNotch ? 10 : 12))
+                                .foregroundColor(.red.opacity(0.85))
+                                .fixedSize(horizontal: false, vertical: true)
+                            if !host.inNotch, !store.isStreaming {
+                                Button { store.retryLast() } label: {
+                                    Text("重试")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.9))
+                                        .padding(.horizontal, 10).padding(.vertical, 3)
+                                        .background(Capsule().fill(Color.white.opacity(0.12)))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     // 提醒不是报错（如模型不支持关深度思考）：回复照常出，用灰橙色说一句就够
                     if let notice = store.noticeText {
@@ -337,9 +376,43 @@ struct ChatView: View {
                     .onChange(of: g.size.height) { _, h in viewportHeight = h }
             })
             .onPreferenceChange(BottomAnchorKey.self) { y in
-                // 底部哨兵回到视口内（留 24pt 容差）＝ 用户自己滚回了底部，恢复跟随
-                if viewportHeight > 0, y <= viewportHeight + 24 { followBottom = true }
+                // 底部哨兵离视口底还有多远。任务书 §12.1 的「接近底部」阈值是 80
+                guard viewportHeight > 0 else { return }
+                let distance = y - viewportHeight
+                atBottom = distance <= 80
+                // 回到底部即恢复跟随（留 24pt 容差，比「接近」更严，免得刚滚一点就又被拽下去）
+                if distance <= 24 { followBottom = true }
             }
+            // 「回到底部」：离底 80pt 以上才出现（任务书 §12.2）。
+            // 压在消息区右下角而不是居中——居中会正好盖住最后一行正文
+            .overlay(alignment: .bottom) {
+                if !host.inNotch, !atBottom {
+                    Button {
+                        followBottom = true
+                        if reduceMotion {
+                            scrollProxy?.scrollTo("bottom", anchor: .bottom)
+                        } else {
+                            withAnimation(.easeOut(duration: 0.16)) {
+                                scrollProxy?.scrollTo("bottom", anchor: .bottom)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.75))
+                            .frame(width: 32, height: 32)
+                            .background(Circle().fill(Color(red: 0.161, green: 0.161, blue: 0.176)))
+                            .overlay(Circle().strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
+                            .shadow(color: .black.opacity(0.35), radius: 8, y: 2)
+                    }
+                    .buttonStyle(.plain)
+                    .notchTip("回到底部", edge: .aboveLeading)
+                    .accessibilityLabel("回到底部")
+                    .padding(.bottom, 8)
+                    .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.15), value: atBottom)
             .onChange(of: store.messages.last?.content) { _, _ in
                 guard followBottom else { return }
                 proxy.scrollTo("bottom", anchor: .bottom)
@@ -351,6 +424,7 @@ struct ChatView: View {
             }
             .onAppear {
                 followBottom = true
+                scrollProxy = proxy
                 proxy.scrollTo("bottom", anchor: .bottom)
             }
         }
@@ -480,7 +554,10 @@ struct ChatView: View {
                 .focused($inputFocused)
                 .onSubmit { sendDraft() }
                 .onKeyPress(.return, phases: .down) { press in
-                    guard press.modifiers.contains(.command) else { return .ignored }
+                    // 换行：⌘回车与 ⇧回车都认（大梁老师 2026-07-31 定「两个都支持」）。
+                    // 系统自带的 ⌥回车也仍然有效
+                    guard press.modifiers.contains(.command)
+                            || press.modifiers.contains(.shift) else { return .ignored }
                     if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
                         editor.insertNewlineIgnoringFieldEditor(nil)
                         return .handled
@@ -510,7 +587,8 @@ struct ChatView: View {
                             .background(Circle().fill(.secondary))
                     }
                     .buttonStyle(.plain)
-                    .notchTip("停止", edge: .aboveLeading)
+                    .notchTip("停止生成 Esc", edge: .aboveLeading)
+                    .accessibilityLabel("停止生成")
                 } else {
                     Button { sendDraft() } label: {
                         Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold))
@@ -523,7 +601,8 @@ struct ChatView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(store.draftMessage.isEmpty)
-                    .notchTip("发送（回车）", edge: .aboveLeading)
+                    .notchTip("发送 Enter", edge: .aboveLeading)
+                    .accessibilityLabel("发送")
                 }
             }
         }
@@ -567,12 +646,25 @@ struct ChatView: View {
                     Capsule().fill(.quaternary)
                 }
             }
-            .contentShape(Capsule())
+            // 热区撑到 32 高（任务书 §10.2.5 / §16.5），视觉仍是 26——
+            // 胶囊本身再高就压过输入框了
+            .frame(height: 32)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // 开关状态不能只靠颜色（§10.2.6）：读屏要能报出「已选中」
+        .accessibilityLabel(title)
+        .accessibilityValue(on ? "已开启" : "已关闭")
+        .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
     }
 
     private func sendDraft() {
+        // **输入法正在选词时不许发送**（任务书 §10.1.6）。
+        //
+        // 中文输入时按回车是「确认候选词」，不是「发消息」。SwiftUI 的 onSubmit
+        // 分不清这两者，于是打一半的拼音一按回车就被当成问题发出去了。
+        // macOS 上的判据是字段编辑器有没有 marked text（未上屏的组合中文字）
+        guard !Self.isComposing() else { return }
         // 自己发了新消息＝注意力回到最新一条，恢复自动跟随
         followBottom = true
         let text = store.draftMessage
@@ -702,6 +794,17 @@ private struct MessageBubble: View {
     /// 但大梁老师定下两边都要气泡（2026-07-30）——一眼能分清谁说的比松快更重要
     var windowStyle = false
 
+    @State private var sourcesExpanded = false
+    @State private var showAllSources = false
+    @State private var copied = false
+    @State private var hovering = false
+    /// 「重新生成」由外面接：Store 的动作不该埋在气泡里
+    var onRegenerate: (() -> Void)?
+
+    /// 独立窗口里的 AI 回答：不套气泡，直接落在画布上（任务书 §8.1）。
+    /// 刘海仍保留淡框——那儿是窄带，没有背景就分不出一条条消息
+    private var flatOnCanvas: Bool { windowStyle && message.role == .assistant }
+
     /// 这条消息用哪套排版度量。刘海走紧凑档，独立窗口走舒适档
     private var type: MarkdownTypography {
         MarkdownTypography(body: windowStyle ? 14 : 12, compact: !windowStyle)
@@ -710,31 +813,34 @@ private struct MessageBubble: View {
     var body: some View {
         HStack {
             // 两侧都留空档：气泡才有「贴着一边」的形，不然就是一条通栏
+            // 用户气泡最大宽度 min(68%, 640)（任务书 §6.5）——靠左侧空档挤出来
             if message.role == .user { Spacer(minLength: windowStyle ? 64 : 80) }
             Group {
                 if message.content.isEmpty && streaming {
                     HStack(spacing: 6) {
                         ProgressView()
                             .controlSize(.small)
-                        if searching {
-                            Text("正在联网搜索…")
-                                .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.5))
-                        }
+                        Text(searching ? "正在联网搜索…" : "正在生成…")
+                            .font(.system(size: windowStyle ? 12.5 : 11))
+                            .foregroundColor(.white.opacity(windowStyle ? 0.64 : 0.5))
                     }
                     .padding(4)
+                    // 读屏只播报这一句「开始」，不逐字跟读流式正文（任务书 §16.7）
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(searching ? "正在联网搜索" : "正在生成回答")
                 } else {
-                    VStack(alignment: .leading, spacing: 4) {
-                        if let count = message.searchResultCount {
+                    VStack(alignment: .leading, spacing: windowStyle ? 8 : 4) {
+                        if windowStyle, message.role == .assistant {
+                            metaLine
+                        } else if let count = message.searchResultCount {
+                            // 刘海仍是原来那条紧凑提示
                             HStack(spacing: 3) {
                                 Image(systemName: "globe")
                                     .font(.system(size: 8))
                                 Text("已参考 \(count) 条搜索结果")
                                     .font(.system(size: 9))
                             }
-                            // 窗口走单色：一片灰里留着刘海那个青，就是个突兀的彩点
-                            .foregroundColor(windowStyle ? .white.opacity(0.42) : .cyan.opacity(0.75))
-                            .padding(.bottom, windowStyle ? 3 : 0)
+                            .foregroundColor(.cyan.opacity(0.75))
                         }
                         if let data = message.imageData, let img = NSImage(data: data) {
                             Image(nsImage: img).resizable().scaledToFit()
@@ -745,6 +851,13 @@ private struct MessageBubble: View {
                             // AI 回复按 Markdown 排版；用户消息保持纯文本
                             // 窗口里正文 14 / 段距 12 / 行距 6；刘海保持原来的紧凑
                             MarkdownMessageView(text: message.content, type: type)
+                            if windowStyle, sourcesExpanded, let sources = message.sources,
+                               !sources.isEmpty {
+                                sourcePanel(sources)
+                            }
+                            if windowStyle, !streaming, !message.content.isEmpty {
+                                actionRow
+                            }
                         } else {
                             Text(message.content)
                                 // 窗口比刘海宽敞得多，12pt 挤着没道理；语义色在毛玻璃上才有 vibrancy
@@ -756,36 +869,165 @@ private struct MessageBubble: View {
                     }
                 }
             }
-            // 内边距也从正文字号推：正文越大，四周越要留得开
-            .padding(.horizontal, type.bubbleH)
-            .padding(.vertical, type.bubbleV)
+            // AI 回答**直接落在背景画布上**，没有内边距也没有底色（任务书 §8.1，
+            // 大梁老师 2026-07-31 拍板照办）：长回答套在一整块深灰里，正文层级被那块
+            // 背景压掉，卡片宽度还随内容变、阅读边界不稳。
+            // 只有代码块 / 表格 / 引用 / 来源这类才用局部卡片。
+            // 用户消息仍是右侧气泡——一眼认出哪句是自己问的（任务书 §3.1.4）
+            .padding(.horizontal, flatOnCanvas ? 0 : (windowStyle ? 14 : type.bubbleH))
+            .padding(.vertical, flatOnCanvas ? 0 : (windowStyle ? 10 : type.bubbleV))
             .background {
-                if windowStyle {
-                    // 两边都是气泡，靠**材质厚薄**分谁说的：
-                    // 我的提问用厚材质（跟输入块同一档，都是「我这边」），
-                    // AI 的回答用最薄的一档，长文压在上面才不闷。半径 14 与输入块一致
-                    let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    if message.role == .user {
-                        // 同理不用材质：regularMaterial 在半透明窗里渲得比窗底还暗，
-                        // 成了整屏唯一一块「比背景深」的东西。tertiary 比 quaternary
-                        // 明确亮一档，「我说的」因此更实、AI 那侧更轻
-                        shape.fill(.tertiary)
-                    } else {
-                        // 不用 ultraThinMaterial：材质在已经半透明的窗里会跟着背后桌面走，
-                        // 深桌面下渲成近黑、浅桌面下发白，同一块气泡颜色不可控
-                        //（离屏实测就是一块黑）。.quaternary 是确定的一档淡提亮
-                        shape.fill(.quaternary)
-                    }
+                if flatOnCanvas {
+                    Color.clear
+                } else if windowStyle {
+                    // 我的提问：圆角 14（任务书 §5.2），底色用 surface-2
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(Color(red: 0.118, green: 0.118, blue: 0.129))
                 } else {
                     RoundedRectangle(cornerRadius: 10)
                         .fill(Color.white.opacity(message.role == .user ? 0.16 : 0.06))
                 }
             }
-            if message.role == .assistant { Spacer(minLength: windowStyle ? 64 : 80) }
+            if message.role == .assistant, !flatOnCanvas { Spacer(minLength: 80) }
         }
         .frame(maxWidth: .infinity,
                alignment: message.role == .user ? .trailing : .leading)
+        .onHover { hovering = $0 }
         .id(message.id)
+    }
+
+    /// 元信息行（任务书 §8.2）：`DeepSeek V4 Pro · 联网 · 深度思考 · 8 个来源`。
+    ///
+    /// 只显示**这条消息自己的快照**，老消息没有快照就整段不显示——
+    /// 绝不拿当前全局设置去反推（§8.2.4）。默认低对比，鼠标进入这条消息才提亮
+    @ViewBuilder
+    private var metaLine: some View {
+        let parts = message.metaParts
+        if !parts.isEmpty {
+            HStack(spacing: 6) {
+                Text(parts.joined(separator: " · "))
+                    .font(.system(size: 12, weight: .medium))
+                if let sources = message.sources, !sources.isEmpty {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.17)) { sourcesExpanded.toggle() }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text(sourcesExpanded ? "收起来源" : "查看来源")
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 8, weight: .semibold))
+                                .rotationEffect(.degrees(sourcesExpanded ? 90 : 0))
+                        }
+                        .font(.system(size: 12, weight: .medium))
+                        .frame(minHeight: 32)          // 热区 ≥32（§16.5）
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("联网来源，共 \(sources.count) 个")
+                    .accessibilityValue(sourcesExpanded ? "已展开" : "已收起")
+                }
+            }
+            .foregroundStyle(hovering ? MarkdownTypography.textSecondary
+                                      : MarkdownTypography.textTertiary)
+        }
+    }
+
+    /// 来源面板（任务书 §9.2）：序号 + 标题 + 域名 + 外部打开。
+    /// 超过 5 条先给 5 条，剩下的点「查看全部」
+    private func sourcePanel(_ sources: [ChatSource]) -> some View {
+        let shown = showAllSources ? sources : Array(sources.prefix(5))
+        return VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(shown.enumerated()), id: \.element.id) { index, source in
+                Button {
+                    // 走既有的安全打开逻辑，不自己拼 URL
+                    if let url = URL(string: source.url) { NSWorkspace.shared.open(url) }
+                } label: {
+                    HStack(alignment: .top, spacing: 8) {
+                        Text("\(index + 1)")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(MarkdownTypography.textTertiary)
+                            .frame(width: 16, alignment: .trailing)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(source.title)
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(.white.opacity(0.88))
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
+                            // 域名 + 发布时间。发布时间只有搜索引擎真给了才有，
+                            // 没有就整段不显示（任务书 §9.2：不许编）
+                            let sub = [source.domain, source.published ?? ""]
+                                .filter { !$0.isEmpty }.joined(separator: " · ")
+                            if !sub.isEmpty {
+                                Text(sub)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(MarkdownTypography.textTertiary)
+                            }
+                        }
+                        Spacer(minLength: 6)
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(MarkdownTypography.textTertiary)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .frame(minHeight: 36)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("第 \(index + 1) 个来源：\(source.title)，来自 \(source.domain)")
+                if index < shown.count - 1 {
+                    Rectangle().fill(Color.white.opacity(0.07)).frame(height: 1)
+                }
+            }
+            if sources.count > 5, !showAllSources {
+                Button { showAllSources = true } label: {
+                    Text("查看全部 \(sources.count) 个")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(MarkdownTypography.textSecondary)
+                        .padding(.horizontal, 10).padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(Color(red: 0.082, green: 0.082, blue: 0.09)))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .strokeBorder(Color.white.opacity(0.10), lineWidth: 1))
+        .frame(maxWidth: 760, alignment: .leading)
+    }
+
+    /// 消息操作（任务书 §8.4）：复制 + 重新生成。悬停才显形，不抢正文
+    private var actionRow: some View {
+        HStack(spacing: 4) {
+            actionButton(copied ? "checkmark" : "doc.on.doc",
+                         tip: copied ? "已复制" : "复制") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(message.content, forType: .string)
+                copied = true
+                // 1200ms 后复原（任务书 §8.4.3）
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { copied = false }
+            }
+            if let onRegenerate {
+                actionButton("arrow.clockwise", tip: "重新生成", action: onRegenerate)
+            }
+        }
+        .opacity(hovering ? 1 : 0)
+        .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+
+    private func actionButton(_ icon: String, tip: String,
+                              action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 11))
+                .foregroundStyle(MarkdownTypography.textSecondary)
+                .frame(width: 26, height: 26)          // 热区 ≥ 26，够点
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .notchTip(tip, edge: .aboveLeading)
+        .accessibilityLabel(tip)
     }
 }
 
