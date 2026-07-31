@@ -170,9 +170,10 @@ private struct WeatherAlertCardView: View {
     }
 
     private func card(_ a: WeatherAlert) -> some View {
+        // 点一下就是关掉它，不再顺手展开刘海到组件页（大梁老师 2026-07-31 定的分工）：
+        // 天气是「告诉你一声」，看完即弃；只有「有人在等你」那类才需要把你送到能处理的地方
         NotchGrownCard(width: Self.cardWidth, grownHeight: 180, glow: glowColor(a), shown: shown) {
             weather.dismissAlert()
-            vm.expandProgrammatically(switchingTo: .widgets)
         } content: {
             VStack(spacing: 9) {
                 Text("恶劣天气预警")

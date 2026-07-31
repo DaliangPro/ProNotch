@@ -114,15 +114,29 @@ enum AgentWaitPolicy {
     static func canAnswerOnCard(tool: String) -> Bool {
         !selfPromptingTools.contains(tool)
     }
+
+    /// 「去宿主那儿处理」按钮的标题。
+    ///
+    /// 写死「打开终端」是不对的：同一个 Claude Code 可能跑在终端里，也可能是桌面版 App，
+    /// 按钮说「打开终端」而实际跳到桌面版，人会以为按错了（大梁老师 2026-07-31）。
+    /// 名字取不到时仍退回「打开终端」——绝大多数 Agent 确实跑在终端里，这个兜底不离谱
+    static func openHostTitle(appName: String?) -> String {
+        let name = appName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return name.isEmpty ? "打开终端" : "打开" + name
+    }
 }
 
 /// 等待拍板提醒的状态层：一次挂一张卡，后来的排队等着。
 ///
-/// 两种卡的停留规则不同：
-/// - 只提醒一声的（别家的中途信号）停 8 秒自动收回，信号送到就够了；
-/// - 能当场答复的（Claude Code 的授权请求）**一直挂着直到答复**（大梁老师定）——
-///   它不是通知而是待办，自己消失就等于把待办悄悄扔了，而终端那头还在等。
-///   随时可按「打开终端」脱身，不会真被一张卡钉住
+/// **卡一律挂着，点掉才收**（大梁老师 2026-07-31 重申）。
+///
+/// 曾经分成两档：能当场答的常驻，答不了的停 8 秒自收。但这个分档站不住——
+/// 进这个 store 的每一条都是「某个 Agent 在等你」，区别只在于**能不能在卡上直接答**，
+/// 而不在于「要不要你回应」。答不了的（比如 AskUserQuestion，选项在窗口里、卡上摆不出来）
+/// 同样是待办，自己消失就等于把待办悄悄扔了，人回头一看什么都没有
+/// ——这正是大梁老师说「怎么又没提醒」的成因。
+///
+/// 答不了的那张卡点一下＝收卡并跳到宿主 App 去处理，所以常驻不会真把人钉住
 ///
 /// 只存内存不落盘：这是个「此刻」的信号，重启后那个对话框早就不在原样了，
 /// 恢复出来只会误导人（重启时还挂着的请求由 `AgentPermissionBroker.releaseOrphans` 放行）
@@ -136,13 +150,9 @@ final class AgentWaitStore: ObservableObject {
     /// 一条一条来，答完自动换下一条——四个按钮的卡摞在一起是按不准的
     @Published private(set) var queued: [AgentWaitNotice] = []
 
-    /// 停留时长。可注入只为测试：真等 8 秒会让用例慢得没法跑
-    private let autoDismissAfter: TimeInterval
     private let broker: AgentPermissionBroker
-    private var dismissTask: Task<Void, Never>?
 
-    init(autoDismissAfter: TimeInterval = 8, broker: AgentPermissionBroker = AgentPermissionBroker()) {
-        self.autoDismissAfter = autoDismissAfter
+    init(broker: AgentPermissionBroker = AgentPermissionBroker()) {
         self.broker = broker
     }
 
@@ -209,25 +219,10 @@ final class AgentWaitStore: ObservableObject {
 
     private func show(_ notice: AgentWaitNotice) {
         self.notice = notice
-        dismissTask?.cancel()
-        dismissTask = nil
-        // 能答复的那种不自动收（大梁老师定：一直等到答复）
-        guard !notice.isAnswerable else { return }
-        // 8 秒后自行收回：信号送到就够了，长期挂着会挡住刘海下方区域。
-        // 错过了还有 Agent 页的会话卡可查
-        dismissTask = Task { @MainActor [weak self] in
-            guard let seconds = self?.autoDismissAfter else { return }
-            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            guard !Task.isCancelled else { return }
-            // 期间换了另一条提醒就不越权收别人的卡
-            if self?.notice == notice { self?.advance() }
-        }
     }
 
     /// 换下一条：队列空了才真收卡
     private func advance() {
-        dismissTask?.cancel()
-        dismissTask = nil
         guard !queued.isEmpty else { notice = nil; return }
         show(queued.removeFirst())
     }

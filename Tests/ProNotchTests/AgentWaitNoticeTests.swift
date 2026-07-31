@@ -173,37 +173,36 @@ final class AgentWaitNoticeTests: XCTestCase {
         XCTAssertEqual(AgentKind.claude.appBundleID, "com.anthropic.claudefordesktop")
     }
 
-    func test到时自动收回() async throws {
-        let store = AgentWaitStore(autoDismissAfter: 0.05)
+    func test不会自动收回() async throws {
+        // 大梁老师 2026-07-31 重申：这张卡是「有人在等你」，不是天气那种说一声就完的，
+        // 只有点掉才收。曾经答不了的那档会 8 秒自收，人回头一看什么都没有
+        let store = AgentWaitStore()
         store.present(notice(), frontmost: nil)
         XCTAssertNotNil(store.notice)
 
-        try await Task.sleep(nanoseconds: 200_000_000)
-        XCTAssertNil(store.notice, "8 秒自动收回是大梁老师定的停留方式，到时必须自己走")
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertNotNil(store.notice, "没人点它就得一直挂着")
     }
 
-    /// 前一张的倒计时不能把后一张一起收掉：两条挨得近时（另一家也在等），
-    /// 后一张刚弹出来就被前一张的定时器抹了，用户看到的是「闪一下就没了」
-    func test新的一条重置倒计时() async throws {
-        let store = AgentWaitStore(autoDismissAfter: 0.12)
+    /// 只提醒一声的两条挨着来：后来的顶掉前一条（最新那条才是此刻在等你的），
+    /// 但顶掉之后**不会自己消失**——这才是与旧行为的区别
+    func test只提醒的两条互相顶掉但不会自己消失() async throws {
+        let store = AgentWaitStore()
         store.present(notice(session: "s1"), frontmost: nil)
-        try await Task.sleep(nanoseconds: 80_000_000)
         store.present(notice(session: "s2"), frontmost: nil)
+        XCTAssertEqual(store.notice?.session, "s2", "最新那条顶上")
 
-        try await Task.sleep(nanoseconds: 80_000_000)
-        XCTAssertEqual(store.notice?.session, "s2", "旧倒计时到点了，但不该带走新的一条")
-
-        try await Task.sleep(nanoseconds: 150_000_000)
-        XCTAssertNil(store.notice, "新的一条自己也要按时收回")
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertNotNil(store.notice, "顶上来的这条也得一直挂着")
     }
 
-    func test手动收回后倒计时不再回来() async throws {
-        let store = AgentWaitStore(autoDismissAfter: 0.05)
+    func test点掉之后不会自己再回来() async throws {
+        let store = AgentWaitStore()
         store.present(notice(), frontmost: nil)
         store.dismiss()
         XCTAssertNil(store.notice)
 
-        try await Task.sleep(nanoseconds: 150_000_000)
+        try await Task.sleep(nanoseconds: 200_000_000)
         XCTAssertNil(store.notice)
     }
 
@@ -218,7 +217,7 @@ final class AgentWaitNoticeTests: XCTestCase {
         let paths = GlowHookPaths.rooted(at: tmp.path)
         try FileManager.default.createDirectory(atPath: paths.permissionDir,
                                                 withIntermediateDirectories: true)
-        return AgentWaitStore(autoDismissAfter: 0.05,
+        return AgentWaitStore(
                               broker: AgentPermissionBroker(paths: paths))
     }
 
@@ -252,12 +251,21 @@ final class AgentWaitNoticeTests: XCTestCase {
         XCTAssertNotNil(store.notice, "自动收回会把一件还没办的事悄悄抹掉")
     }
 
-    /// 只提醒一声的那种照旧 8 秒收回——两种卡的停留规则本来就该不同
-    func test只提醒的卡照旧自动收回() async throws {
+    /// 按钮标题必须跟着宿主走。写死「打开终端」而实际跳到桌面版，人会以为按错了
+    func test去宿主按钮的标题跟着宿主走() {
+        XCTAssertEqual(AgentWaitPolicy.openHostTitle(appName: "终端"), "打开终端")
+        XCTAssertEqual(AgentWaitPolicy.openHostTitle(appName: "Claude"), "打开Claude")
+        XCTAssertEqual(AgentWaitPolicy.openHostTitle(appName: "iTerm"), "打开iTerm")
+        XCTAssertEqual(AgentWaitPolicy.openHostTitle(appName: nil), "打开终端", "取不到名字退回终端")
+        XCTAssertEqual(AgentWaitPolicy.openHostTitle(appName: "  "), "打开终端", "空白也算取不到")
+    }
+
+    /// 只提醒一声的那种也一样不自动收——两档规则已统一（大梁老师 2026-07-31）
+    func test只提醒的卡也不自动收回() async throws {
         let store = try answerableStore()
         store.present(notice(), frontmost: nil)
         try await Task.sleep(nanoseconds: 250_000_000)
-        XCTAssertNil(store.notice)
+        XCTAssertNotNil(store.notice, "答不了的那张同样是待办，不许自己走")
     }
 
     /// 同时来两条很常见（两个终端各跑一个）。四个按钮的卡摞在一起是按不准的，

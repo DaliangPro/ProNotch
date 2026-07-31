@@ -252,8 +252,10 @@ struct AgentWaitCardView: View {
                 WaitActionButton(title: "拒绝", tone: .danger) {
                     wait.answer(.deny)
                 }
-                // 想在终端里慢慢看的退路：答一份「不作决策」，终端立刻照旧弹框，再跳过去
-                WaitActionButton(title: "打开终端", tone: .quiet) {
+                // 想在宿主里慢慢看的退路：答一份「不作决策」，那头立刻照旧弹框，再跳过去。
+                // 标题跟着宿主走——跑在终端就是「打开终端」，跑在桌面版就是「打开Claude」
+                WaitActionButton(title: AgentWaitPolicy.openHostTitle(appName: hostAppName(n)),
+                                 tone: .quiet) {
                     wait.answer(.terminal)
                     jump(n)
                 }
@@ -274,6 +276,17 @@ struct AgentWaitCardView: View {
     /// 会话在监控台列表里就走 `activate`（顺带把该会话的「该你了」标记清掉，
     /// 语义一致：你已经去处理了）；不在列表里（刘海收起时监控台不扫描，新会话可能还没进表）
     /// 就直接按 hook 报来的宿主 bundle id 前置那个 App
+    /// 宿主 App 的显示名（终端 / iTerm / Claude…）。与 `jump` 同一套候选顺序，
+    /// 保证按钮上写的那个 App 就是按下去会跳到的那个
+    private func hostAppName(_ n: AgentWaitNotice) -> String? {
+        let candidates = [n.host, n.source.appBundleID].compactMap { $0 }.filter { !$0.isEmpty }
+        for bid in candidates {
+            guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bid) else { continue }
+            return url.deletingPathExtension().lastPathComponent
+        }
+        return nil
+    }
+
     private func jump(_ n: AgentWaitNotice) {
         if let s = sessions.sessions.first(where: { $0.source == n.source && $0.id == n.session }) {
             sessions.activate(s)
