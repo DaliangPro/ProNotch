@@ -182,7 +182,9 @@ final class UsageStore: ObservableObject {
         let gen = generation
         // Task 继承 MainActor 隔离：loader.load 是 nonisolated async，会自动跳去后台跑，
         // 回来后 apply 天然在主线程，不必再 MainActor.run 套一层
-        refreshTask = Task { [weak self, loader] in
+        // .utility：这是后台盘点，不该跟 UI 抢核。此前继承 UI 的 user-initiated，
+        // 开机全库扫描时一个核被吃满还排在高优先级队列上（2026-07-31 采样）
+        refreshTask = Task(priority: .utility) { [weak self, loader] in
             let snapshot = await loader.load(enabled: enabled)
             self?.apply(snapshot, generation: gen, enabled: enabled)
         }

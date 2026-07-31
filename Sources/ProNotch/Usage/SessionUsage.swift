@@ -182,28 +182,68 @@ enum SessionUsage {
     /// last_token_usage），只累加时间窗内的事件。不能读尾部 total_token_usage 累计值——
     /// 它是「会话一生」的累计（实测单调不清零）：05/31 起的老会话近 7 天只占其累计 22%，
     /// 按一生累计分摊会把老会话高估 4.6 倍。实测 Σ每轮 last ≈ 末条累计（偏差 <1%），逐事件求和可靠。
-    /// 大文件（主力会话 200MB）全量扫描的开销用 mtime+size 缓存兜住：文件没变直接复用天桶。
-    private struct CodexScanCache { let mtime: Date; let size: Int; let dayTokens: [String: Int]; let parent: String? }
+    /// 大文件（主力会话 200MB）的开销分两层兜：
+    /// - mtime+size 全等 → 直接复用 resultTokens，零 IO；
+    /// - 文件**变长**了（rollout 是只追加的日志）→ 从上次的换行处**续扫**，只读新增的几 KB。
+    ///   completeTokens 是「只含完整行」的基底——上次的末尾残行故意不落在里面，
+    ///   续扫从残行开头接着读，行补全后恰好算一次，不重不漏；
+    /// - 变短或同长不同 mtime（被改写）→ 全量重扫。
+    /// 此前只有第一层，主力会话每追加一笔就 200MB 从头重扫一遍，
+    /// 一整个核被 `Data.firstIndex(of:)` 吃满（2026-07-31 采样自耗时榜第一，大梁老师叫修）
+    private struct CodexScanCache {
+        let mtime: Date
+        let size: Int
+        /// 完整行聚合＋末尾残行 ＝ 对外结果
+        let resultTokens: [String: Int]
+        /// 只含完整行的聚合，续扫的种子
+        let completeTokens: [String: Int]
+        /// 最后一个换行符之后的绝对偏移，续扫起点
+        let scannedOffset: UInt64
+        let parent: String?
+    }
     nonisolated(unsafe) private static var codexCache: [String: CodexScanCache] = [:]
     private static let codexCacheLock = NSLock()
 
-    /// 单文件信息：近 7 天天桶 + 父任务 id（缓存按 mtime+size 失效；天粒度过滤误差 ≤1 天，估算够用）
-    private static func codexFileInfo(_ url: URL) -> (buckets: [String: Int], parent: String?) {
-        let rv = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
-        let mtime = rv?.contentModificationDate ?? .distantPast
-        let size = rv?.fileSize ?? 0
+    /// 单文件信息：近 7 天天桶 + 父任务 id（缓存与续扫见 CodexScanCache；
+    /// 天粒度过滤误差 ≤1 天，估算够用。internal 是为了测试续扫等于全扫）
+    static func codexFileInfo(_ url: URL) -> (buckets: [String: Int], parent: String?) {
+        // 不走 URL.resourceValues：它会把 stat 结果缓存在 URL 值里，同一个 URL 第二次
+        // 问拿到的是旧数——续扫判据（mtime+size）必须每次都是新鲜的
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let mtime = attrs?[.modificationDate] as? Date ?? .distantPast
+        let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0
         codexCacheLock.lock()
         let cached = codexCache[url.path]
         codexCacheLock.unlock()
         if let cached, cached.mtime == mtime, cached.size == size {
-            return (cached.dayTokens, cached.parent)
+            return (cached.resultTokens, cached.parent)
         }
-        let buckets = scanCodexDayBuckets(url)
-        let parent = codexParentThreadId(url)
+        // 变长且旧偏移仍在文件内 → 追加式续扫；否则全量
+        let incremental = cached.flatMap { c -> CodexScanCache? in
+            (size > c.size && UInt64(size) >= c.scannedOffset) ? c : nil
+        }
+        guard let scan = scanCodexLines(url,
+                                        from: incremental?.scannedOffset ?? 0,
+                                        seed: incremental?.completeTokens ?? [:]) else {
+            return (incremental?.resultTokens ?? [:], incremental?.parent)
+        }
+        var result = scan.complete
+        consumeTokenLine(scan.tail, into: &result)   // 活跃会话最新一笔常是无换行的末行
+        // parent 在首行、永不变：续扫沿用，全扫才读
+        let parent = incremental.map(\.parent) ?? codexParentThreadId(url)
         codexCacheLock.lock()
-        codexCache[url.path] = CodexScanCache(mtime: mtime, size: size, dayTokens: buckets, parent: parent)
+        codexCache[url.path] = CodexScanCache(mtime: mtime, size: size,
+                                              resultTokens: result,
+                                              completeTokens: scan.complete,
+                                              scannedOffset: scan.offsetAfterLastNewline,
+                                              parent: parent)
         codexCacheLock.unlock()
-        return (buckets, parent)
+        return (result, parent)
+    }
+
+    /// 仅测试用：清掉 Codex 文件缓存，保证用例之间互不串味
+    static func _resetCodexCacheForTests() {
+        codexCacheLock.lock(); codexCache.removeAll(); codexCacheLock.unlock()
     }
 
     /// 子代理文件的父任务 id：session_meta（首行）的 parent_thread_id；普通会话返回 nil
@@ -219,37 +259,71 @@ enum SessionUsage {
 
     private static let iso8601UTC = ISO8601DateFormatter()
 
-    /// 全量流式扫描：按天聚合每条 token_count 事件的有效 token（(input−cached)+output）。
-    /// 分块读 + 只对含 token_count 的行做 JSON 解析，200MB 亚秒级
-    private static func scanCodexDayBuckets(_ url: URL) -> [String: Int] {
-        guard let fh = try? FileHandle(forReadingFrom: url) else { return [:] }
+    /// 一次扫描的产物。complete 只含完整行；tail 是末尾没换行收尾的残行，
+    /// **由调用方决定**要不要算进结果——续扫的正确性全靠残行不进基底
+    struct CodexLineScan {
+        var complete: [String: Int]
+        var offsetAfterLastNewline: UInt64
+        var tail = Data()
+    }
+
+    /// 流式扫描（可从任意换行边界续扫）：按天聚合每条 token_count 事件的
+    /// 有效 token（(input−cached)+output）。
+    ///
+    /// 行切分用 memchr、粗筛用 memmem——原来是 `Data.firstIndex(of:)` 逐字节走
+    /// Collection 抽象，每字节一次索引换算，200MB 一遍就是几十亿次；换成 libc
+    /// 的指针原语后同样一遍是内存带宽级别。只有含 token_count 的行才拷出来解析 JSON
+    static func scanCodexLines(_ url: URL, from startOffset: UInt64,
+                               seed: [String: Int]) -> CodexLineScan? {
+        guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? fh.close() }
-        let needle = Data("token_count".utf8)
-        let newline = UInt8(ascii: "\n")
-        var buckets: [String: Int] = [:]
+        if startOffset > 0 {
+            guard (try? fh.seek(toOffset: startOffset)) != nil else { return nil }
+        }
+        var scan = CodexLineScan(complete: seed, offsetAfterLastNewline: startOffset)
+        var filePos = startOffset
         var remainder = Data()
-        func consume(_ line: Data) {
-            guard line.range(of: needle) != nil,
-                  let obj = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-                  let last = findDict(key: "last_token_usage", in: obj) else { return }
-            let input = (last["input_tokens"] as? NSNumber)?.intValue ?? 0
-            let cachedIn = (last["cached_input_tokens"] as? NSNumber)?.intValue ?? 0
-            let output = (last["output_tokens"] as? NSNumber)?.intValue ?? 0
-            let eff = max(0, input - cachedIn) + output
-            guard eff > 0, let ts = obj["timestamp"] as? String, ts.count >= 10 else { return }
-            buckets[String(ts.prefix(10)), default: 0] += eff
-        }
+        let needle = [UInt8]("token_count".utf8)
         while let chunk = try? fh.read(upToCount: 8 * 1024 * 1024), !chunk.isEmpty {
-            var data = remainder; data.append(chunk)
-            var start = data.startIndex
-            while let nl = data[start...].firstIndex(of: newline) {
-                consume(data[start..<nl])
-                start = data.index(after: nl)
+            filePos += UInt64(chunk.count)
+            var data = remainder
+            data.append(chunk)
+            var consumed = 0
+            data.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
+                guard let base = buf.baseAddress else { return }
+                needle.withUnsafeBufferPointer { np in
+                    guard let npBase = np.baseAddress else { return }
+                    var lineStart = 0
+                    while lineStart < buf.count,
+                          let hit = memchr(base + lineStart, 0x0A, buf.count - lineStart) {
+                        let nl = UnsafeRawPointer(hit) - base
+                        if nl > lineStart,
+                           memmem(base + lineStart, nl - lineStart, npBase, np.count) != nil {
+                            consumeTokenLine(data.subdata(in: lineStart..<nl), into: &scan.complete)
+                        }
+                        lineStart = nl + 1
+                    }
+                    consumed = lineStart
+                }
             }
-            remainder = Data(data[start...])
+            remainder = data.subdata(in: consumed..<data.count)
+            scan.offsetAfterLastNewline = filePos - UInt64(remainder.count)
         }
-        consume(remainder)   // 末行无换行结尾时最后一条只在这里；活跃会话最新那笔正是末行
-        return buckets
+        scan.tail = remainder
+        return scan
+    }
+
+    /// 单行落桶。粗筛（含 token_count 才解析）在这里再核一次，残行也能直接喂
+    private static func consumeTokenLine(_ line: Data, into buckets: inout [String: Int]) {
+        guard !line.isEmpty, line.range(of: Data("token_count".utf8)) != nil,
+              let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+              let last = findDict(key: "last_token_usage", in: obj) else { return }
+        let input = (last["input_tokens"] as? NSNumber)?.intValue ?? 0
+        let cachedIn = (last["cached_input_tokens"] as? NSNumber)?.intValue ?? 0
+        let output = (last["output_tokens"] as? NSNumber)?.intValue ?? 0
+        let eff = max(0, input - cachedIn) + output
+        guard eff > 0, let ts = obj["timestamp"] as? String, ts.count >= 10 else { return }
+        buckets[String(ts.prefix(10)), default: 0] += eff
     }
 
     /// 递归找指定 key 的字典（包裹层级随 Codex 版本变化，不写死路径；找特定 key，不受字典遍历顺序影响）
