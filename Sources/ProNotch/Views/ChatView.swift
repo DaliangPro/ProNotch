@@ -83,6 +83,11 @@ struct ChatView: View {
     /// 系统开的「减弱动态效果」。开着就只留透明度变化，位移一律取消（任务书 §16.8）
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    /// 窗口宿主专用：内容列宽度冻结（拖缩/侧栏开合期间，见 ChatWindowController.contentFrozen）
+    @Environment(\.chatContentFrozen) private var contentFrozen
+    /// 冻结那一刻的内容列宽；nil = 不冻。frame(width: nil) 是空操作，恰好当开关用
+    @State private var frozenContentWidth: CGFloat?
+
     private let edgeInset: CGFloat = 14
 
     /// 整窗宽度，用来决定内容列的左右留白档位（任务书 §6.3：>900 用 24，否则 16）
@@ -172,6 +177,9 @@ struct ChatView: View {
                         })
                 }
                 .frame(maxWidth: 920)
+                // 冻结期间钉住列宽：宽度变化只表现为平移和边缘裁切（帧帧便宜），
+                // 正文完全不断行；放开的那一帧一次断行到位
+                .frame(width: frozenContentWidth)
                 // 第二个 frame 才是「居中」：上一个只限宽，不限位置
                 .frame(maxWidth: .infinity)
                 // 量整窗宽度决定留白档位。用 background 量，不参与布局
@@ -180,6 +188,10 @@ struct ChatView: View {
                         .onAppear { deferAssign($windowWidth, g.size.width) }
                         .onChange(of: g.size.width) { _, w in deferAssign($windowWidth, w) }
                 })
+                .onChange(of: contentFrozen) { _, frozen in
+                    // 冻结那刻抓当前列宽钉住；放开置回 nil（宽度还没量到就不钉，防 width: 0）
+                    frozenContentWidth = (frozen && windowWidth > 0) ? windowWidth : nil
+                }
             } else if store.isConfigured {
                 // 左栏会话导航 + 右栏对话窗（大梁老师定的双栏结构）
                 HStack(spacing: 0) {

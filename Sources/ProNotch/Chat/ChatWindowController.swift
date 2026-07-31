@@ -49,6 +49,16 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
 
     /// 钉在桌面（窗口置顶）。开＝浮在所有 App 之上，关＝像普通窗口一样被压到后面。
     /// 默认开：这扇窗本来就是「切去浏览器核对一眼还看得见」才有用
+    /// 内容列宽度是否处于「冻结」中。
+    ///
+    /// 由来（大梁老师 2026-07-31）：卡死修完后（消息列表已全量渲染），
+    /// 拖边缘缩放与开合侧栏「非常卡顿」——宽度每变一帧，几十条消息的正文
+    /// 就全部重新断行一帧，一帧几十毫秒。断行才是成本，位移不是。
+    /// 所以：**变宽过程中把内容列钉在原宽**（纯位移+裁切，帧帧都便宜），
+    /// 结束后放开，一次断行到位。ChatView 读它来决定钉不钉
+    @Published var contentFrozen = false
+    private var unfreezeWork: DispatchWorkItem?
+
     @Published var pinned = true {
         didSet { panel?.level = pinned ? .floating : .normal }
     }
@@ -253,6 +263,31 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
     ///
     /// 拖拽过程中每一帧都会问一次，返回什么就是什么——比 `maxSize` 可靠
     /// （后者实测只给光标反馈，不夹尺寸）。高度不限，长答案要能拉满屏
+    /// 实时拖缩：AppKit 有明确的起止回调，冻结直接映射到这一段
+    func windowWillStartLiveResize(_ notification: Notification) {
+        unfreezeWork?.cancel(); unfreezeWork = nil
+        contentFrozen = true
+    }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        unfreezeWork?.cancel(); unfreezeWork = nil
+        contentFrozen = false
+    }
+
+    /// 侧栏开合没有系统起止回调：冻一小段（盖住 0.16s 滑动 + 余量），到点自动放开。
+    /// 效果是侧栏滑动期间正文只平移不断行，滑完再一次断行——
+    /// 卡顿从「动画中间」挪到「动画结束后的一帧」，眼睛里就是顺的
+    func freezeContentBriefly(_ duration: TimeInterval = 0.24) {
+        unfreezeWork?.cancel()
+        contentFrozen = true
+        let work = DispatchWorkItem { [weak self] in
+            self?.contentFrozen = false
+            self?.unfreezeWork = nil
+        }
+        unfreezeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
+    }
+
     func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
         NSSize(width: min(frameSize.width, Self.maxWindowWidth), height: frameSize.height)
     }
@@ -293,6 +328,18 @@ private struct WindowDragHandle: NSViewRepresentable {
 ///
 /// 非 private：离屏渲染要直接拍**这个真实的生产视图**给大梁老师看。
 /// 之前给他看的是我手画的仿制稿，图看着行、装上就崩，来回好几轮全耗在这个落差上
+private struct ChatContentFrozenKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// 闪问窗口内容列宽度是否冻结中（见 ChatWindowController.contentFrozen）
+    var chatContentFrozen: Bool {
+        get { self[ChatContentFrozenKey.self] }
+        set { self[ChatContentFrozenKey.self] = newValue }
+    }
+}
+
 struct ChatWindowChrome: View {
     @EnvironmentObject var store: ChatStore
     @ObservedObject var controller = ChatWindowController.shared
@@ -310,7 +357,9 @@ struct ChatWindowChrome: View {
             //
             // 给这个布局变化上动画，等于让整棵消息树按帧重排：正文限宽 760、
             // Markdown 要重新断行、GeometryReader 每帧重算——一帧的活干几十帧，
-            // 卡的就是这个。宽度一步到位反而顺，侧栏自己滑进来就够有动感了
+            // 卡的就是这个。宽度一步到位反而顺，侧栏自己滑进来就够有动感了。
+            // 切换前先把内容列宽冻住：滑动期间正文只平移，滑完再一次断行
+            controller.freezeContentBriefly()
             showHistory.toggle()
         }
         .onHover { hoverHistory = $0 }
@@ -382,6 +431,7 @@ struct ChatWindowChrome: View {
                 titleBar
                 ChatView(host: .window)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .environment(\.chatContentFrozen, controller.contentFrozen)
             }
             // 侧栏与「顶栏 + 内容」并排，因此从窗顶一直铺到窗底，
             // 不再被顶栏压掉一截（大梁老师 2026-07-31）
