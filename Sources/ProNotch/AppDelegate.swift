@@ -107,6 +107,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         setupMainMenu()
         setupStatusItem()
         setupNotchWindow()
+        // 闪问独立浮窗：控制器常驻（很轻，面板首次打开才建）。
+        // 必须排在 setupNotchWindow 之后——它要借那份 NotchViewModel 填进 SwiftUI 环境
+        ChatWindowController.shared.configure(env: env,
+                                              notchViewModel: windowControllers.first?.viewModel)
 
         // 启动时静默检查更新：发现新版才提醒（不打扰）
         UNUserNotificationCenter.current().delegate = self
@@ -189,13 +193,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             Task { @MainActor in
                 guard let self, let img else { return }
                 self.env.chat.attachScreenshot(img)
-                if let wc = self.windowControllers.first {
-                    wc.viewModel.expandProgrammatically(switchingTo: .chat)
-                }
-                // 展开动画落定、面板成为 key 后再补一次聚焦，保证光标真正落进输入框
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                    self?.env.chat.focusInputTick += 1
-                }
+                // 跟快捷键走同一条路：截图问 AI 更需要一块大地方——
+                // 图要看得清，答案也常常长
+                ChatWindowController.shared.show()
+                _ = self
             }
         }
 
@@ -410,19 +411,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                             updates: updateChecker, weather: env.weather, snippets: env.snippets)
     }
 
-    /// AI 闪问快捷键：未展开→展开到闪问并聚焦输入框；已展开在别的页→切到闪问；已在闪问→收起
+    /// AI 闪问快捷键：唤出独立浮窗（再按一次关掉）。
+    ///
+    /// 2026-07-29 起不再展开刘海（大梁老师定）：闪问是「问一句、读一段」的事，
+    /// 答案还可能很长，它需要一块能自己摆位置、能一直摊在那儿的地方。
+    /// 刘海里的闪问页保留，鼠标滑上去照旧能问——两处共用同一份对话
     @objc func toggleChatPanel() {
-        guard let wc = windowControllers.first else { return }
-        let vm = wc.viewModel
-        if vm.isExpanded, vm.activeTab == .chat {
-            vm.collapseNow()
-            return
-        }
-        vm.expandProgrammatically(switchingTo: .chat)
-        // 展开动画落定、面板成为 key 后聚焦输入框，直接打字
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            self?.env.chat.focusInputTick += 1
-        }
+        ChatWindowController.shared.toggle()
     }
 
     /// 系统标准关于面板：图标、名称、版本来自 Info.plist，

@@ -6,6 +6,15 @@ import SwiftUI
 struct PageEntrance: ViewModifier {
     @EnvironmentObject var vm: NotchViewModel
     @Binding var played: Bool
+    /// 出场动画的驱动开关。
+    ///
+    /// nil ＝ 跟刘海展开态走，这是刘海内各页的默认。独立窗口必须显式传 true：
+    /// 那里的 `isExpanded` 说的是**刘海**的状态，跟这个窗口毫无关系——
+    /// 刘海收着的时候它恒为 false，出场永远不播，整页元素停在 opacity 0，窗口一片空白
+    var active: Bool?
+
+    /// 真正驱动出场的那个值
+    private var driver: Bool { active ?? vm.isExpanded }
 
     func body(content: Content) -> some View {
         content
@@ -18,14 +27,14 @@ struct PageEntrance: ViewModifier {
             // 已常驻，走 onChange 稳定路径）。
             // .task 挂载即跑一次、且随 id（isExpanded）翻转重跑，对「全新实例随展开同拍
             // 挂载」稳定不漏；展开→replay，收起→复位。
-            .task(id: vm.isExpanded) {
-                if vm.isExpanded { replay() } else { played = false }
+            .task(id: driver) {
+                if driver { replay() } else { played = false }
             }
     }
 
     private func replay() {
         // 常驻内容树在收起状态也会构建：此时只复位，等展开再播
-        guard vm.isExpanded else { played = false; return }
+        guard driver else { played = false; return }
         played = false
         // 初始态先上屏一帧再翻 true，元素才有从起点到终点的路可走；
         // 0.10s 起播赶上面板 +8% 过冲（峰值约 0.21s，内容淡入 0.05s 起、0.17s 齐）——
@@ -35,8 +44,9 @@ struct PageEntrance: ViewModifier {
 }
 
 extension View {
-    /// 挂在页面根视图上；played 为该页出场动画的驱动开关
-    func pageEntrance(_ played: Binding<Bool>) -> some View {
-        modifier(PageEntrance(played: played))
+    /// 挂在页面根视图上；played 为该页出场动画的开关。
+    /// `active` 留空＝跟刘海展开态走；独立窗口须传 true（理由见 PageEntrance.active）
+    func pageEntrance(_ played: Binding<Bool>, active: Bool? = nil) -> some View {
+        modifier(PageEntrance(played: played, active: active))
     }
 }

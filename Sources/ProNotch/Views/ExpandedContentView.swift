@@ -194,14 +194,28 @@ struct ExpandedContentView: View {
 }
 
 /// 右上角模型切换器（大梁老师定）：点击展开面板内自绘下拉，选中立即生效并持久化；
-/// 列表不走系统菜单——无边框面板里系统弹窗定位会飘（与设置表单的下拉同一处理）
-private struct ModelSwitcher: View {
+/// 列表不走系统菜单——无边框面板里系统弹窗定位会飘（与设置表单的下拉同一处理）。
+/// 非 private：闪问独立窗口的顶栏也要用它（否则那边看不到、也换不了模型）
+struct ModelSwitcher: View {
+    /// 下拉往上弹。闪问独立窗口把这个胶囊放在输入框下方（大梁老师定），
+    /// 往下弹会整片溢出窗口底边被裁掉——那正是他反馈「菜单看不清字」的成因，
+    /// 只不过上一版溢出的是左边缘。刘海那边仍是往下弹，行为不变
+    var dropUp = false
+
     @EnvironmentObject var chatStore: ChatStore
     @EnvironmentObject var vm: NotchViewModel
     @EnvironmentObject var settings: SettingsStore
     @EnvironmentObject var quickActions: QuickActionsStore
     @State private var showList = false
     @State private var hovering = false
+    /// 胶囊自身的宽度。展开的面板要和它**一样宽**，看着才是「这颗胶囊长高了」，
+    /// 而不是旁边浮出一块面板（大梁老师 2026-07-30）
+    @State private var chipWidth: CGFloat = 0
+
+    /// 展开后这一整块（面板 + 当作底座的按钮）的底色。
+    /// 试过 SwiftUI 材质和系统菜单材质，在半透明窗里都渲成近黑、和窗内其他块差一大截；
+    /// 0.31 是量出来的：约 (79,79,79)，正落在窗底 66 与 AI 气泡 82 之间
+    static let panelFill = Color(white: 0.31)
 
     var body: some View {
         Button {
@@ -211,31 +225,68 @@ private struct ModelSwitcher: View {
         } label: {
             HStack(spacing: 4) {
                 Text(chatStore.model.isEmpty ? "选择模型" : chatStore.model)
-                    .font(.system(size: 12.5, weight: .medium))
+                    .font(.system(size: dropUp ? 11.5 : 12.5, weight: .medium))
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .frame(maxWidth: 170)
+                    // **不要**在这儿写 frame(maxWidth:)。SwiftUI 的 maxWidth 会撑满可用宽度：
+                    // 短模型名占满 170pt，右边的箭头被顶到最远处，中间空一大块
+                    //（先是「文字左边有留白」，加了 alignment 又变成「文字和箭头之间有留白」，
+                    // 两次都是同一个误用）。lineLimit + 中间截断已经够收住超长名字
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8.5, weight: .semibold))
                     .rotationEffect(.degrees(showList ? 180 : 0))
             }
             .foregroundColor(.white.opacity(hovering || showList ? 0.9 : 0.55))
-            .padding(.horizontal, 10)
-            // 胶囊定高 31：与同排标签胶囊(42×31)上下沿齐平（大梁老师定的统一度量）；
-            // 字号 12.5 随 31 高胶囊相应放大（大梁老师定），宽度上限同步放宽
-            .frame(height: 31)
-            .background(Capsule().fill(Color.white.opacity(hovering || showList ? 0.12 : 0)))
+            // 独立窗口里它和「联网」「深度思考」并排，得跟那两个胶囊等身：
+            // 26 高 / 11.5 字 / 8 内边距。原来照搬刘海的 31 高 12.5 字，
+            // 站在它们旁边就是大一圈（大梁老师：「胶囊太大太宽」，2026-07-30）
+            .padding(.horizontal, dropUp ? 8 : 10)
+            // 刘海里定高 31：与同排标签胶囊(42×31)上下沿齐平（大梁老师定的统一度量）
+            .frame(height: dropUp ? 26 : 31)
+            // 展开时按钮**就是面板的底**：同色、只圆下面两角，上沿平着接住面板。
+            // 这样模型名从头到尾只有一份，不会因为「面板里再画一份」而交叉淡化出抖动
+            //（大梁老师 2026-07-30 实机反馈）
+            .background {
+                if dropUp, showList {
+                    UnevenRoundedRectangle(topLeadingRadius: 0, bottomLeadingRadius: 13,
+                                           bottomTrailingRadius: 13, topTrailingRadius: 0,
+                                           style: .continuous)
+                        .fill(Self.panelFill)
+                } else {
+                    Capsule().fill(Color.white.opacity(hovering || showList ? 0.12 : 0))
+                }
+            }
+            .background(GeometryReader { g in
+                Color.clear.onAppear { chipWidth = g.size.width }
+                    .onChange(of: g.size.width) { _, w in chipWidth = w }
+            })
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        // 布局占位缩回 25（与标签行/搜索框同款负 padding）：行高与右缘对齐线不动
-        .padding(.vertical, -3)
+        // 刘海里布局占位缩回 25（与标签行/搜索框同款负 padding）：行高与右缘对齐线不动。
+        // 窗口里胶囊本来就只有 26，再缩就和邻居对不齐了
+        .padding(.vertical, dropUp ? 0 : -3)
+        // 独立窗口里它在输入框正下方：胶囊自带 10pt 内边距，不抵掉的话模型名比
+        // 上方的占位符右 10pt——两行字差一点点最难看（大梁老师要「文字有对齐关系」）。
+        // 悬停时的胶囊底往左多探 10pt，仍在输入块内，不碰边
+        .padding(.leading, dropUp ? -8 : 0)
         .help("切换配置 / 模型")
         // 下拉悬浮在按钮右下方，盖住内容页不参与布局（标签行 zIndex 已抬高）；
         // 34 = 布局高 25 + 胶囊下凸 3 + 气口 6
-        .overlay(alignment: .topTrailing) {
-            if showList { dropdown.offset(y: 34) }
+        // 往下弹时按右缘对齐（刘海里这个胶囊在顶栏右侧，往左展开正好）；
+        // 往上弹时按左缘对齐（独立窗口里它在左下角，往右展开才有地方）
+        // 往上弹时 offset 归零：整块面板的**底边压在胶囊上**，面板最下面那行就是
+        // 按钮自己（模型名 + 向上的箭头），于是看着是「顺着这个按钮往上长出来的」，
+        // 而不是旁边浮起来一块（大梁老师 2026-07-30）。
+        // 往下弹（刘海）沿用原来的 34 悬浮
+        .overlay(alignment: dropUp ? .bottomLeading : .topTrailing) {
+            // x 偏 -8：上面那句 .padding(.leading, -8) 让布局框比内容窄 8pt，
+            // overlay 贴的是**布局框**的左缘，不补这 8 展开后模型名会整体右移 8pt——
+            // 一动就露馅，看着就不是同一个东西了
+            // 往上弹：抬过按钮自身高度(26)，底边正好压在按钮上沿，接成一整块。
+            // x 偏 -8 是补上面那句 .padding(.leading, -8) 缩掉的布局宽度
+            if showList { dropdown.offset(x: dropUp ? -8 : 0, y: dropUp ? -26 : 34) }
         }
         // 内容常驻不销毁：面板收起时手动合上，避免下次展开还挂着下拉
         .onChange(of: vm.isExpanded) { _, expanded in
@@ -265,7 +316,8 @@ private struct ModelSwitcher: View {
                             .frame(height: rowHeight)
                     }
                     ForEach(items, id: \.self) { name in
-                        SwitcherRow(name: name, isSelected: name == chatStore.model) {
+                        SwitcherRow(name: name, isSelected: name == chatStore.model,
+                                    compact: dropUp) {
                             chatStore.selectModel(name)
                             withAnimation(.easeIn(duration: 0.1)) { showList = false }
                         }
@@ -293,12 +345,37 @@ private struct ModelSwitcher: View {
                 showList = false
             }
         }
-        .frame(width: 220)
-        .background(RoundedRectangle(cornerRadius: 8)
-            .fill(Color(red: 0.11, green: 0.11, blue: 0.12)))
-        .overlay(RoundedRectangle(cornerRadius: 8)
-            .strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
-        .shadow(color: .black.opacity(0.5), radius: 10, y: 4)
+        // 严格取胶囊实测宽度（量不到才退 160），圆角取胶囊的 13＝26÷2，
+        // 底端接缝才严丝合缝。写死下限会让面板比胶囊宽出一截，右边缘顶到「联网」上
+        .frame(width: dropUp ? (chipWidth > 1 ? chipWidth : 160) : 220)
+        // 刘海里是不透明近黑（要和屏幕顶端的黑连成一片）；独立窗口那是一块毛玻璃，
+        // 再摆一块近黑硬色板就格格不入（大梁老师 2026-07-30）。
+        // 窗口改用与输入块同一套：regularMaterial + 一层浅填充 + 细描边 + 半径 14
+        .background {
+            if dropUp {
+                // 这块浮层试过两条路都不行：SwiftUI 的 .regularMaterial 渲成近黑，
+                // NSVisualEffectView 的 .menu 也一样黑——离屏取样 (34,34,34)，
+                // 而窗底 66、输入块 58、AI 气泡 82、我的气泡 108，就它一个特别黑，
+                // 这正是大梁老师说的「格格不入」（2026-07-30）。
+                // 改成一块确定性的同族灰：0.31 渲出来 (79,79,79)，正落在窗底 66 与
+                // AI 气泡 82 之间，既像浮起来的一层又不跳。必须完全不透——
+                // 试过半透的配方，背后的「问点什么…」直接透过来压在菜单文字上
+                // 只圆上面两角，下沿平着落在按钮上——两块拼成一个连续形状。
+                // 不描边：描边会在拼接处画出一道横线，一体感就没了
+                UnevenRoundedRectangle(topLeadingRadius: 13, bottomLeadingRadius: 0,
+                                       bottomTrailingRadius: 0, topTrailingRadius: 13,
+                                       style: .continuous)
+                    .fill(Self.panelFill)
+            } else {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(red: 0.11, green: 0.11, blue: 0.12))
+                    .overlay(RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
+            }
+        }
+        // 往上弹时投影也要朝上：y 仍为 +4 的话，阴影正好落在下面那个「底座按钮」上，
+        // 拼接处压出一道暗带，一体感就断了
+        .shadow(color: .black.opacity(0.5), radius: 10, y: dropUp ? -4 : 4)
     }
 
     /// 下拉顶部的配置套切换区：每套一行，点选切过去（异步载入那套 Key）；当前套打勾
@@ -359,24 +436,28 @@ private struct ProviderSwitchRow: View {
 private struct SwitcherRow: View {
     let name: String
     let isSelected: Bool
+    /// 独立窗口里这块面板要和胶囊等宽（融合的前提），横向就那么点地方——
+    /// 内边距、间距、勾选一起收窄，否则模型名会被截成「deepseek-v4-…」
+    var compact = false
     let action: () -> Void
     @State private var hovering = false
 
     var body: some View {
         Button(action: action) {
-            HStack {
+            HStack(spacing: compact ? 4 : 8) {
                 Text(name)
                     .font(.system(size: 11))
                     .foregroundColor(.white.opacity(0.85))
                     .lineLimit(1)
-                Spacer()
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
                 if isSelected {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 9))
+                        .font(.system(size: compact ? 8 : 9))
                         .foregroundColor(.white.opacity(0.7))
                 }
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, compact ? 8 : 10)
             .padding(.vertical, 5)
             .background(Color.white.opacity(hovering ? 0.12 : 0))
             .contentShape(Rectangle())
@@ -411,8 +492,9 @@ private struct SwitcherFooter: View {
     }
 }
 
-/// API 连通状态灯：绿=连通，红=失败（悬停看原因），黄=检测中；点击重新检测
-private struct ConnectivityLight: View {
+/// API 连通状态灯：绿=连通，红=失败（悬停看原因），黄=检测中；点击重新检测。
+/// 非 private：闪问独立窗口顶栏共用
+struct ConnectivityLight: View {
     @EnvironmentObject var chatStore: ChatStore
 
     var body: some View {

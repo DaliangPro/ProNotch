@@ -12,17 +12,38 @@ private extension View {
 
 /// 会话栏 / 对话窗的统一外框：圆角 + 极淡填充 + 细描边，给左右两块明确边界
 private struct ChatPanelFrame: ViewModifier {
+    /// 独立窗口传 false：那边走「无框留白」。侧栏一个框、消息区一个框、输入框再一个框，
+    /// 三层套嵌在独立窗口里像网页 div 拼的——这正是大梁老师说「不优雅」的地方（2026-07-29）
+    var bordered = true
     func body(content: Content) -> some View {
         content
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.white.opacity(0.025)))
+                .fill(Color.white.opacity(bordered ? 0.025 : 0)))
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.1), lineWidth: 1))
+                .strokeBorder(Color.white.opacity(bordered ? 0.1 : 0), lineWidth: 1))
     }
+}
+
+/// 闪问长在哪儿。
+///
+/// 刘海页与独立窗口对四件事的答案完全不同：出场动画由谁驱动、粘贴监听何时生效、
+/// 要不要按住「别收起刘海」、以及点「打开设置」之后收谁。
+/// 这些差异靠 `NotchViewModel` 是表达不出来的——独立窗口里 `isExpanded`
+/// 说的是刘海的状态，跟这个窗口毫无关系
+enum ChatHost {
+    /// 刘海展开态里的一页
+    case notch
+    /// 快捷键唤出的独立浮窗
+    case window
+
+    var inNotch: Bool { self == .notch }
 }
 
 /// AI 闪问：未配置时引导去设置；配置后左栏会话导航、右栏消息列表 + 输入框，流式输出
 struct ChatView: View {
+    /// 默认 .notch：刘海那边的调用点一处不用改
+    var host: ChatHost = .notch
+
     @EnvironmentObject var vm: NotchViewModel
     @EnvironmentObject var store: ChatStore
     @EnvironmentObject var quickActions: QuickActionsStore
@@ -37,6 +58,8 @@ struct ChatView: View {
     @State private var dividerHover = false
     @State private var dragBaseWidth: Double?
     @State private var dividerCursorOn = false
+    /// 独立窗口消息视口的高度：拿来把内容压到底部（见 body 窗口分支的 GeometryReader）
+    @State private var viewportHeight: CGFloat = 0
 
     private let edgeInset: CGFloat = 14
 
@@ -45,14 +68,35 @@ struct ChatView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if store.isConfigured {
+            if store.isConfigured, !host.inNotch {
+                // 独立窗口：单栏。大梁老师定——这扇窗专管「问一句」，
+                // 历史对话在刘海的闪问页里看，不必在这儿再摆一列
+                // maxHeight 必须给：不给的话消息区只占内容高度，输入框紧跟其后，
+                // 下面整片空着——大梁老师看到的「下面莫名其妙的大留白」就是这个
+                // 消息**底部对齐**：贴着输入框往上堆，内容少时靠下。
+                // 之前顶部对齐，四成窗口是死空白，一眼就是「没做完」。
+                // 压底要知道视口多高，所以套 GeometryReader 量一下
+                GeometryReader { geo in
+                    messageList
+                        .onAppear { viewportHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { _, h in viewportHeight = h }
+                        // 上下两端渐隐（大梁老师定）：滚动的文字不该被一条硬边切断，
+                        // 淡出去才像「还有内容在外面」。26pt 折算成比例，视口多高都一样厚
+                        .mask(Self.edgeFade(height: geo.size.height))
+                }
+                .frame(maxHeight: .infinity)
+                // 左右留白外壳不给，得自己给。这个 16 是全窗的基准竖线：
+                // 气泡外缘、输入块外缘都对它（大梁老师要「三边一致」，且要再窄一点）
+                .padding(.horizontal, 16)
+                windowComposer
+            } else if store.isConfigured {
                 // 左栏会话导航 + 右栏对话窗（大梁老师定的双栏结构）
                 HStack(spacing: 0) {
                     // 左框：会话记录
                     ConversationSidebar()
                         .frame(width: CGFloat(sidebarWidth))
                         .frame(maxHeight: .infinity)
-                        .modifier(ChatPanelFrame())
+                        .modifier(ChatPanelFrame(bordered: host.inNotch))
                         .chatRise(entrancePlayed, offset: 16, delay: 0)
                     sidebarDivider
                     // 右框：对话窗（消息区 + 输入框）。气泡在 messageList 内逐条发牌，
@@ -64,9 +108,9 @@ struct ChatView: View {
                                       delay: dealDelay(store.messages.count) + 0.08)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, host.inNotch ? 10 : 16)
                     .padding(.vertical, 8)
-                    .modifier(ChatPanelFrame())
+                    .modifier(ChatPanelFrame(bordered: host.inNotch))
                 }
                 .frame(maxHeight: .infinity)
             } else {
@@ -75,20 +119,21 @@ struct ChatView: View {
             }
         }
         // 左右留白对齐全局基准线（见 ExpandedContentView.pageHInset）
-        .padding(.horizontal, ExpandedContentView.pageHInset)
-        .pageEntrance($entrancePlayed)
+        .padding(.horizontal, host.inNotch ? ExpandedContentView.pageHInset : 0)
+        // 独立窗口传 true：那边 isExpanded 是刘海的状态，等它等不到，整页会停在透明
+        .pageEntrance($entrancePlayed, active: host.inNotch ? nil : true)
         .onAppear {
             store.checkConnectivity()
             installPasteMonitor()
         }
         .onDisappear {
-            vm.keyboardHold = false
+            if host.inNotch { vm.keyboardHold = false }
             setDividerCursor(false)
             if let monitor = pasteMonitor { NSEvent.removeMonitor(monitor); pasteMonitor = nil }
         }
         // 悬停分隔线时被收起：onHover(false) 不会再来，补一次收光标防残留
         .onChange(of: vm.isExpanded) { _, expanded in
-            if !expanded {
+            if host.inNotch, !expanded {
                 setDividerCursor(false)
                 dividerHover = false
                 dragBaseWidth = nil
@@ -112,7 +157,8 @@ struct ChatView: View {
             Button {
                 settings.pendingSection = SettingsView.Section.chat.rawValue
                 quickActions.openAppSettings()
-                vm.collapseNow()
+                // 让路给弹出的设置窗：刘海是收起，独立窗口是关掉自己
+                if host.inNotch { vm.collapseNow() } else { ChatWindowController.shared.hide() }
             } label: {
                 Text("去设置")
                     .font(.system(size: 11, weight: .medium))
@@ -131,7 +177,8 @@ struct ChatView: View {
     private var sidebarDivider: some View {
         Rectangle()
             // 两侧已有边框，静态时分隔线隐形，仅悬停/拖拽淡显作提示
-            .fill(Color.white.opacity(dividerHover || dragBaseWidth != nil ? 0.28 : 0))
+            .fill(Color.white.opacity(dividerHover || dragBaseWidth != nil ? 0.28
+                                                                          : (host.inNotch ? 0 : 0.05)))
             .frame(width: 1)
             .padding(.vertical, 4)
             .padding(.horizontal, 4)
@@ -160,6 +207,8 @@ struct ChatView: View {
 
     /// 把「手上有活没干完」的判定结果同步给刘海（判据与理由见 ChatStore.shouldHoldNotch）
     private func syncKeyboardHold() {
+        // 独立窗口不会自动收起，这把锁在那边没有意义；碰它反而会误锁刘海
+        guard host.inNotch else { return }
         vm.keyboardHold = ChatStore.shouldHoldNotch(inputFocused: inputFocused,
                                                     draft: store.draftMessage,
                                                     streaming: store.isStreaming)
@@ -183,7 +232,8 @@ struct ChatView: View {
             guard event.modifierFlags.contains(.command),
                   event.charactersIgnoringModifiers?.lowercased() == "v" else { return event }
             let attached = MainActor.assumeIsolated {   // 事件监听在主线程回调
-                guard vm.isExpanded, vm.activeTab == .chat,
+                guard host.inNotch ? (vm.isExpanded && vm.activeTab == .chat)
+                                   : ChatWindowController.shared.isKeyWindow,
                       store.isConfigured,
                       let image = NSImage(pasteboard: .general) else { return false }
                 store.attachScreenshot(image)
@@ -205,19 +255,35 @@ struct ChatView: View {
         return 0.05 + 0.06 * Double(max(0, chronoIndex - windowStart))
     }
 
+    /// 消息区上下两端的渐隐遮罩。26pt 固定厚度，按视口高度折成比例
+    private static func edgeFade(height: CGFloat) -> LinearGradient {
+        let fade = height > 120 ? 26 / height : 0
+        return LinearGradient(stops: [
+            .init(color: .clear, location: 0),
+            .init(color: .black, location: fade),
+            .init(color: .black, location: 1 - fade),
+            .init(color: .clear, location: 1),
+        ], startPoint: .top, endPoint: .bottom)
+    }
+
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
-                LazyVStack(spacing: 6) {
-                    // 每段对话的开场白由系统发出：固定在最顶，先于历史消息
-                    MessageBubble(message: Self.greeting, streaming: false, searching: false)
-                        .chatRise(entrancePlayed, offset: 14, delay: dealDelay(0))
+                LazyVStack(spacing: host.inNotch ? 6 : 18) {
+                    // 开场白只在刘海里出现。独立窗口是「问一句就走」的地方，
+                    // 一句硬编码的装饰语占着最显眼的位置，却不进对话也不发 API，纯占位
+                    if host.inNotch {
+                        MessageBubble(message: Self.greeting, streaming: false, searching: false,
+                                      windowStyle: false)
+                            .chatRise(entrancePlayed, offset: 14, delay: dealDelay(0))
+                    }
                     // enumerated 只为算发牌延迟；id 仍取 message.id，流式更新不重建气泡
                     ForEach(Array(store.messages.enumerated()), id: \.element.id) { i, message in
                         MessageBubble(message: message,
                                       streaming: store.isStreaming
                                           && message.id == store.messages.last?.id,
-                                      searching: store.isSearching)
+                                      searching: store.isSearching,
+                                      windowStyle: !host.inNotch)
                             .chatRise(entrancePlayed, offset: 14, delay: dealDelay(i + 1))
                     }
                     if let error = store.errorText {
@@ -235,7 +301,9 @@ struct ChatView: View {
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
-                .padding(.trailing, 2)
+                .padding(.trailing, host.inNotch ? 2 : 0)
+                // 不足一屏时压到底部；刘海不用，那儿本来就是满的
+                .frame(minHeight: host.inNotch ? nil : viewportHeight, alignment: .bottom)
             }
             .onChange(of: store.messages.last?.content) { _, _ in
                 proxy.scrollTo("bottom", anchor: .bottom)
@@ -339,9 +407,131 @@ struct ChatView: View {
                 .help("发送")
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.08)))
+        .padding(.horizontal, host.inNotch ? 10 : 14)
+        .padding(.vertical, host.inNotch ? 6 : 9)
+        // 刘海里是贴着面板的方角输入框；独立窗口改成悬浮胶囊 + 阴影，与背景脱开——
+        // 无框布局里如果它也没有边界，就看不出「这儿能打字」
+        .background {
+            if host.inNotch {
+                RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.08))
+            } else {
+                Capsule().fill(Color(white: 0.115))
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.07), lineWidth: 0.5))
+                    .shadow(color: .black.opacity(0.35), radius: 12, y: 4)
+            }
+        }
+    }
+
+    /// 独立窗口的输入区：一个块，**模型选择器就在里面**。
+    ///
+    /// 大梁老师的原话：「他选模型的那个位置，为什么不能跟输入框在一起呢」。
+    /// 之前我把它摆在输入框外面下方，隔了一层；现在收进块内下行，
+    /// 和联网、思考、附件、发送排成一家人（DeepSeek 网页版、ChatGPT 都是这个做法）。
+    ///
+    /// 配色一律走系统语义色而不是刘海那套 `white.opacity(...)` 叠层——
+    /// 这扇窗的底是毛玻璃，透着桌面，只有语义色自带的 vibrancy 才保证文字始终清楚
+    private var windowComposer: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            TextField("", text: $store.draftMessage,
+                      prompt: Text("问点什么…").foregroundStyle(.tertiary),
+                      axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...8)
+                .font(.system(size: 14))
+                .foregroundStyle(.primary)
+                .focused($inputFocused)
+                .onSubmit { sendDraft() }
+                .onKeyPress(.return, phases: .down) { press in
+                    guard press.modifiers.contains(.command) else { return .ignored }
+                    if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
+                        editor.insertNewlineIgnoringFieldEditor(nil)
+                        return .handled
+                    }
+                    return .ignored
+                }
+                .onChange(of: store.focusInputTick) { _, _ in inputFocused = true }
+                .padding(.top, 2)
+            HStack(spacing: 7) {
+                ModelSwitcher(dropUp: true)
+                // 图标与刘海用同一套（大梁老师定）：地球 + 那张思考气泡原件，
+                // 同一个功能在两处不该长两个样
+                windowToolChip("联网", on: store.webSearchEnabled,
+                               action: { store.webSearchEnabled.toggle() }) {
+                    Image(systemName: "globe").font(.system(size: 12))
+                }
+                windowToolChip("深度思考", on: store.thinkingEnabled,
+                               action: { store.thinkingEnabled.toggle() }) {
+                    ThinkingBubbleIcon(side: 14)
+                }
+                Spacer(minLength: 4)
+                if store.isStreaming {
+                    Button { store.stopStreaming() } label: {
+                        Image(systemName: "stop.fill").font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(width: 27, height: 27)
+                            .background(Circle().fill(.secondary))
+                    }
+                    .buttonStyle(.plain)
+                    .notchTip("停止", edge: .aboveLeading)
+                } else {
+                    Button { sendDraft() } label: {
+                        Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(store.draftMessage.isEmpty ? AnyShapeStyle(.secondary)
+                                                                        : AnyShapeStyle(Color.black))
+                            .frame(width: 27, height: 27)
+                            .background(Circle().fill(store.draftMessage.isEmpty
+                                                      ? AnyShapeStyle(.quaternary)
+                                                      : AnyShapeStyle(.white)))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(store.draftMessage.isEmpty)
+                    .notchTip("发送（回车）", edge: .aboveLeading)
+                }
+            }
+        }
+        // 内边距 12 与气泡的 12 一致：输入框占位符、模型名和气泡里的正文
+        // 因此落在同一条竖线上（大梁老师要「文字之间有对齐关系」）
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        // 比窗口材质更厚一层：层级靠材质厚薄编码，不靠描边（Apple 的做法）
+        // 只靠材质分不出层：深色下 regularMaterial 和窗口底几乎同色（实测拍出来糊成一片）。
+        // 叠一层浅填充 + 一道细描边，层级要看得出来才叫层级
+        .background {
+            let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+            shape.fill(.regularMaterial)
+                .overlay(shape.fill(.white.opacity(0.06)))
+                .overlay(shape.strokeBorder(.white.opacity(0.10), lineWidth: 0.5))
+        }
+        // 外缘与消息栏同为 16，左右下三边一条线
+        .padding(.horizontal, 16).padding(.bottom, 16)
+    }
+
+    /// 系统强调色（跟「系统设置 → 外观 → 强调色」走）
+    private static var accent: Color { Color(nsColor: .controlAccentColor) }
+
+    private func windowToolChip<Icon: View>(_ title: String, on: Bool,
+                                            action: @escaping () -> Void,
+                                            @ViewBuilder icon: () -> Icon) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                icon()
+                Text(title).font(.system(size: 11.5))
+            }
+            // 开＝系统强调色（大梁老师定：跟他系统设置里那个颜色一致，他的机器是黄色）。
+            // 用 NSColor.controlAccentColor 而不是 SwiftUI 的 Color.accentColor：
+            // 后者在没有 App 环境时（比如离屏渲染）会退成另一个色，前者始终读系统真值
+            .foregroundStyle(on ? AnyShapeStyle(Self.accent) : AnyShapeStyle(.secondary))
+            .padding(.horizontal, 9).frame(height: 26)
+            .background {
+                if on {
+                    Capsule().fill(Self.accent.opacity(0.18))
+                        .overlay(Capsule().strokeBorder(Self.accent.opacity(0.45), lineWidth: 0.5))
+                } else {
+                    Capsule().fill(.quaternary)
+                }
+            }
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     private func sendDraft() {
@@ -459,10 +649,16 @@ private struct MessageBubble: View {
     let message: ChatMessage
     let streaming: Bool
     let searching: Bool
+    /// 独立窗口的排版：正文 14pt、两侧都套气泡、走系统语义色与材质。
+    ///
+    /// AI 的回答一度是不套框的整段文字（想着长文读起来松快），
+    /// 但大梁老师定下两边都要气泡（2026-07-30）——一眼能分清谁说的比松快更重要
+    var windowStyle = false
 
     var body: some View {
         HStack {
-            if message.role == .user { Spacer(minLength: 80) }
+            // 两侧都留空档：气泡才有「贴着一边」的形，不然就是一条通栏
+            if message.role == .user { Spacer(minLength: windowStyle ? 64 : 80) }
             Group {
                 if message.content.isEmpty && streaming {
                     HStack(spacing: 6) {
@@ -484,7 +680,9 @@ private struct MessageBubble: View {
                                 Text("已参考 \(count) 条搜索结果")
                                     .font(.system(size: 9))
                             }
-                            .foregroundColor(.cyan.opacity(0.75))
+                            // 窗口走单色：一片灰里留着刘海那个青，就是个突兀的彩点
+                            .foregroundColor(windowStyle ? .white.opacity(0.42) : .cyan.opacity(0.75))
+                            .padding(.bottom, windowStyle ? 3 : 0)
                         }
                         if let data = message.imageData, let img = NSImage(data: data) {
                             Image(nsImage: img).resizable().scaledToFit()
@@ -493,22 +691,48 @@ private struct MessageBubble: View {
                         }
                         if message.role == .assistant {
                             // AI 回复按 Markdown 排版；用户消息保持纯文本
-                            MarkdownMessageView(text: message.content)
+                            // 窗口里正文 14 / 段距 12 / 行距 6；刘海保持原来的紧凑
+                            MarkdownMessageView(text: message.content,
+                                                fontSize: windowStyle ? 14 : 12,
+                                                blockSpacing: windowStyle ? 12 : 6,
+                                                lineSpacing: windowStyle ? 6 : 0)
                         } else {
                             Text(message.content)
-                                .font(.system(size: 12))
-                                .foregroundColor(.white.opacity(0.9))
+                                // 窗口比刘海宽敞得多，12pt 挤着没道理；语义色在毛玻璃上才有 vibrancy
+                                .font(.system(size: windowStyle ? 14 : 12))
+                                .foregroundStyle(windowStyle ? AnyShapeStyle(.primary)
+                                                             : AnyShapeStyle(Color.white.opacity(0.9)))
                                 .textSelection(.enabled)
                         }
                     }
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Color.white.opacity(message.role == .user ? 0.16 : 0.06)))
-            if message.role == .assistant { Spacer(minLength: 80) }
+            // 12 与输入块的内边距一样：气泡里的字和输入框里的字落在同一条竖线上
+            .padding(.horizontal, windowStyle ? 12 : 10)
+            .padding(.vertical, windowStyle ? 9 : 6)
+            .background {
+                if windowStyle {
+                    // 两边都是气泡，靠**材质厚薄**分谁说的：
+                    // 我的提问用厚材质（跟输入块同一档，都是「我这边」），
+                    // AI 的回答用最薄的一档，长文压在上面才不闷。半径 14 与输入块一致
+                    let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    if message.role == .user {
+                        // 同理不用材质：regularMaterial 在半透明窗里渲得比窗底还暗，
+                        // 成了整屏唯一一块「比背景深」的东西。tertiary 比 quaternary
+                        // 明确亮一档，「我说的」因此更实、AI 那侧更轻
+                        shape.fill(.tertiary)
+                    } else {
+                        // 不用 ultraThinMaterial：材质在已经半透明的窗里会跟着背后桌面走，
+                        // 深桌面下渲成近黑、浅桌面下发白，同一块气泡颜色不可控
+                        //（离屏实测就是一块黑）。.quaternary 是确定的一档淡提亮
+                        shape.fill(.quaternary)
+                    }
+                } else {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.white.opacity(message.role == .user ? 0.16 : 0.06))
+                }
+            }
+            if message.role == .assistant { Spacer(minLength: windowStyle ? 64 : 80) }
         }
         .frame(maxWidth: .infinity,
                alignment: message.role == .user ? .trailing : .leading)
@@ -520,15 +744,17 @@ private struct MessageBubble: View {
 /// 深度思考图标：大梁老师提供的思考气泡原图（bundle 资源），
 /// 模板渲染跟随前景色（开＝青、关＝灰）
 private struct ThinkingBubbleIcon: View {
+    /// 画布边长。刘海是 16——本原件内容只占画布 86% 高，16 才与旁边 13pt 的地球
+    /// 实际等大（换原件要重算，别照抄）。窗口胶囊里地球是 12pt，按同比例取 14
+    var side: CGFloat = 16
+
     var body: some View {
         if let img = NSImage(named: "TabIconThinking") {
             Image(nsImage: img)
                 .renderingMode(.template)
                 .resizable()
                 .scaledToFit()
-                // 16 = 13.8 ÷ 0.86：本原件内容只占画布 86% 高，按这个比例反推
-                // 才与旁边 13pt 的地球实际等大（换原件要重算，别照抄数字）
-                .frame(width: 16, height: 16)
+                .frame(width: side, height: side)
         } else {
             // swift run 裸二进制无 bundle 资源时兜底
             Image(systemName: "brain").font(.system(size: 13))

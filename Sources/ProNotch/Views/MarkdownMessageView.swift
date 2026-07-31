@@ -138,9 +138,17 @@ enum MarkdownLite {
 struct MarkdownMessageView: View {
     let text: String
 
+    /// 正文字号。写死过 12——那是**刘海**的字号，于是独立窗口把用户消息调到 14 之后，
+    /// AI 的回答（正文主体）仍是 12，又挤又不搭（2026-07-30 拍真视图才看出来）
+    var fontSize: CGFloat = 12
+    /// 块间距。段落之间 6pt 在 14 号字下几乎贴着，长答案会挤成一团
+    var blockSpacing: CGFloat = 6
+    /// 段内行距
+    var lineSpacing: CGFloat = 0
+
     var body: some View {
         let blocks = MarkdownLite.parse(text)
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: blockSpacing) {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 blockView(block)
             }
@@ -152,8 +160,9 @@ struct MarkdownMessageView: View {
         switch block {
         case .paragraph(let text):
             Text(MarkdownLite.inline(text))
-                .font(.system(size: 12))
+                .font(.system(size: fontSize))
                 .foregroundColor(.white.opacity(0.9))
+                .lineSpacing(lineSpacing)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         case .heading(let level, let text):
