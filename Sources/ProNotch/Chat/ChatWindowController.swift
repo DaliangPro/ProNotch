@@ -43,6 +43,10 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
     /// 首次打开的尺寸。此后由 `setFrameAutosaveName` 记住用户自己调的
     private let defaultSize = NSSize(width: 860, height: 560)
 
+    /// 宽度上限：正文列最宽 920、散文再限 760，超过之后继续拉宽只多出两边留白。
+    /// 920 内容列 + 220 侧栏 + 两边留白 ≈ 1180
+    static let maxWindowWidth: CGFloat = 1180
+
     /// 钉在桌面（窗口置顶）。开＝浮在所有 App 之上，关＝像普通窗口一样被压到后面。
     /// 默认开：这扇窗本来就是「切去浏览器核对一眼还看得见」才有用
     @Published var pinned = true {
@@ -69,6 +73,12 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
         }
         let panel = self.panel ?? makePanel(env: env)
         self.panel = panel
+        // autosave 里可能存着上限生效之前拉出来的超宽尺寸，开窗时夹回来。
+        // 写在 makePanel 里没用——那时 autosave 还没恢复
+        if panel.frame.width > Self.maxWindowWidth {
+            panel.setContentSize(NSSize(width: Self.maxWindowWidth,
+                                        height: panel.frame.height))
+        }
         if !panel.isVisible { placeIfNeeded(panel) }
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
@@ -190,7 +200,11 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
         // 宽度封顶（大梁老师 2026-07-31）：正文列最宽 920、散文再限 760，
         // 超过这个数继续拉宽只会多出两边留白，没有任何信息量。
         // 920 内容列 + 220 侧栏 + 两边留白 ≈ 1180，取整 1180
-        panel.maxSize = NSSize(width: 1180, height: CGFloat.greatestFiniteMagnitude)
+        // `maxSize` 只负责让右下角出现「不能再宽」的光标反馈，**夹不住尺寸**——
+        // 实测设了 1180 之后 setContentSize(1600) 照样出 1600（上一版就只设了它，
+        // 大梁老师反馈「并没有做限制」）。真正的闸门在 windowWillResize
+        panel.maxSize = NSSize(width: Self.maxWindowWidth,
+                               height: CGFloat.greatestFiniteMagnitude)
         panel.collectionBehavior = [.fullScreenAuxiliary, .moveToActiveSpace]
         panel.delegate = self
         // 位置与大小自动记住，不用自己存
@@ -235,6 +249,14 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
     ///
     /// 系统 close 按钮默认走 `close()`：窗口被销毁，下次呼出要重建整棵视图树，
     /// autosave 的位置也可能来不及落盘。这扇窗要的是「藏起来」，和 ESC 同一个行为
+    /// 宽度上限的真正闸门。
+    ///
+    /// 拖拽过程中每一帧都会问一次，返回什么就是什么——比 `maxSize` 可靠
+    /// （后者实测只给光标反馈，不夹尺寸）。高度不限，长答案要能拉满屏
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        NSSize(width: min(frameSize.width, Self.maxWindowWidth), height: frameSize.height)
+    }
+
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         hide()
         return false
@@ -370,15 +392,6 @@ struct ChatWindowChrome: View {
         // 必须顶掉安全区：.fullSizeContentView 下 SwiftUI 会按标题栏高度给内容加一段
         // 顶部安全区内缩，于是这条顶栏整体被压到红绿灯下面——「新对话」比三颗灯低一截，
         // 上面还空出一条（离屏拍出来才发现，2026-07-30）
-        // 产品名压在最上层、相对**整扇窗**居中。
-        // 原来它长在顶栏里，而顶栏只覆盖左栏——侧栏一开就偏心（大梁老师 2026-07-31）
-        .overlay(alignment: .top) {
-            Text("ProNotch")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(MarkdownTypography.textSecondary)
-                .frame(height: 44)
-                .allowsHitTesting(false)      // 别挡住底下那条拖拽区
-        }
         .ignoresSafeArea(edges: .top)
         // 不透明底（大梁老师 2026-07-31 定）。此前是 NSVisualEffectView 毛玻璃，
         // 透出背后桌面——看着好看，但窗内每一块的实际颜色都跟着桌面走，
@@ -409,6 +422,16 @@ struct ChatWindowChrome: View {
     /// 不画拖拽把手（他定的）：macOS 的标题栏本来也没有提示，光标形状就够了
     private var titleBar: some View {
         ZStack {
+            // 产品名居中于**内容区**，不是整扇窗（大梁老师 2026-07-31 两轮才定）：
+            // 上一版挪到整窗浮层，侧栏一开内容整体左移、标题却钉在原地不动，
+            // 反而更怪。它属于左边这一栏，就该跟着这一栏走。
+            //
+            // 摆在 ZStack 底层而不是 HStack 中段——左右两侧按钮宽度不等，
+            // 用 HStack 的话它会被挤得偏心
+            Text("ProNotch")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(MarkdownTypography.textSecondary)
+                .allowsHitTesting(false)      // 别挡住底下那条拖拽区
             HStack(spacing: 4) {
                 // 左上角原来空 80 给系统红绿灯，现在换成「钉在桌面」开关
                 // 图形固定，只有颜色变（大梁老师 2026-07-31：不要那道斜杠）
@@ -431,8 +454,8 @@ struct ChatWindowChrome: View {
                 .onHover { hoverNew = $0 }
                 historyButton
             }
+            .padding(.horizontal, 10)
         }
-        .padding(.horizontal, 10)
         // 44：红绿灯藏掉之后不必再迁就它们的 16pt 中心线，顶栏可以放开
         //（大梁老师 2026-07-31 要「整体放大、顶栏可自适应加宽」）
         .frame(height: 44)
