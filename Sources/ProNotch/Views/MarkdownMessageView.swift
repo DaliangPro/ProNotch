@@ -34,6 +34,12 @@ enum MarkdownLite {
         return c
     }()
 
+    /// 仅测试用：清空两层渲染缓存，量「冷/热」对比时用
+    static func _resetRenderCachesForTests() {
+        parseCache.removeAllObjects()
+        inlineCache.removeAllObjects()
+    }
+
     static func parseCached(_ text: String) -> [Block] {
         if let hit = parseCache.object(forKey: text as NSString) { return hit.blocks }
         let blocks = parse(text)

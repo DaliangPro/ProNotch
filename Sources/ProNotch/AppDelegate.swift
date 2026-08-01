@@ -113,6 +113,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // 必须排在 setupNotchWindow 之后——它要借那份 NotchViewModel 填进 SwiftUI 环境
         ChatWindowController.shared.configure(env: env,
                                               notchViewModel: windowControllers.first?.viewModel)
+        // 启动 2 秒后（让路给启动关键路径）预热闪问：解析缓存 + 独立窗面板。
+        // 首次呼出/首次切页的「第一次卡顿」就是这两笔冷账（大梁老师 2026-07-31）
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let env = self?.env else { return }
+            ChatPrewarm.warm(chat: env.chat)
+        }
 
         // 启动时静默检查更新：发现新版才提醒（不打扰）
         UNUserNotificationCenter.current().delegate = self

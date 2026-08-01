@@ -108,6 +108,17 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
         removeEscMonitor()
     }
 
+    /// 预热：把面板连同整棵视图树提前建好但**不上屏**（ChatPrewarm 在启动空闲时调）。
+    /// 面板本来就是首开建好后终身复用——这里只是把「首开现建的一百来毫秒」
+    /// 挪到没人看着的时刻。真正 show() 时一切照旧，只剩 orderFront
+    func warmUp() {
+        guard panel == nil, let env else { return }
+        let p = makePanel(env: env)
+        panel = p
+        p.contentView?.layoutSubtreeIfNeeded()
+        AppLog.chat.info("闪问独立窗面板已预热")
+    }
+
     /// 键盘监听：**ESC 打断输出，⌘W 关窗**。
     ///
     /// 分工是大梁老师定的（2026-07-31）：ESC 原来直接关窗，AI 正在吐字时按一下窗口就没了，
