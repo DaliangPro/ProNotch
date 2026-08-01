@@ -267,7 +267,10 @@ struct ChatView: View {
         // 左右留白对齐全局基准线（见 ExpandedContentView.pageHInset）
         .padding(.horizontal, host.inNotch ? ExpandedContentView.pageHInset : 0)
         // 独立窗口传 true：那边 isExpanded 是刘海的状态，等它等不到，整页会停在透明
-        .pageEntrance($entrancePlayed, active: host.inNotch ? nil : true)
+        // 刘海：切页进来内容即现，发牌只在展开那一下播（大梁老师 2026-07-31）；
+        // 独立窗口保持首开播出场
+        .pageEntrance($entrancePlayed, active: host.inNotch ? nil : true,
+                      replayOnRemount: !host.inNotch)
         .onAppear {
             store.checkConnectivity()
             installPasteMonitor()
