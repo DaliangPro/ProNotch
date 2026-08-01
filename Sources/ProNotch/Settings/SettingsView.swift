@@ -1047,7 +1047,7 @@ struct SettingsView: View {
 
             saveRow
 
-            Text("每套配置各自保存地址、Key 与多个模型；兼容 OpenAI /v1/chat/completions。联网搜索与深度思考在对话输入框左侧的地球、大脑图标随手开关。改完点「保存」生效。")
+            Text("每套配置各自保存地址、Key 与多个模型；兼容 OpenAI /v1/chat/completions。联网搜索与深度思考在对话输入框左侧的地球、大脑图标随手开关。模型点选即生效；地址与 Key 改完点「保存」。")
                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.35))
                 .fixedSize(horizontal: false, vertical: true).padding(.leading, 2)
         }
@@ -1110,14 +1110,17 @@ struct SettingsView: View {
             }
             ChatModelAddRow { name in
                 chatStore.addModelToList(name)
-                chatStore.draftModel = name   // 加完顺手选为当前（草稿，保存后生效）
+                chatStore.selectModel(name)   // 加完即选为当前，立即生效（与点选行同语义）
             }
         }
     }
 
     private func chatModelManageRow(_ name: String) -> some View {
         HStack(spacing: 8) {
-            Button { chatStore.draftModel = name } label: {
+            // 点选即生效（大梁老师 2026-08-01）：此前这里只写草稿、要点「保存」才落地，
+            // 但勾勾当场就挪过去了——看着像已生效实际没有，闪问界面自然「不跟着变」。
+            // 改走 selectModel，与闪问窗右上角切换器同一条路：改 model、持久化、同步配置存档
+            Button { chatStore.selectModel(name) } label: {
                 HStack {
                     Text(name).font(.system(size: 13)).foregroundColor(.white.opacity(0.9)).lineLimit(1)
                     Spacer()
