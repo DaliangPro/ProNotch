@@ -370,6 +370,12 @@ final class NotchViewModel: ObservableObject {
     }
 
     private func updateFullscreenHiding() {
+        // stop() 之后一律不动窗口。切空间监听里那个 0.6s 延迟补查是排队闭包，
+        // stop() 摘监听拦不住它——它迟到执行时若撞上「全屏刚结束」，
+        // 下面的 orderFrontRegardless 会把**已经 close 的旧刘海窗拉回屏幕**。
+        // 显示器变动时系统还会挪它的坐标，于是「屏幕中间莫名其妙多出一个刘海」
+        //（大梁老师 2026-08-01 实况，孤儿窗悬在 (320,323)）
+        guard !stopped else { return }
         let shouldHide = shouldHideForFullscreen?() == true
         guard shouldHide != hiddenForFullscreen else { return }
         hiddenForFullscreen = shouldHide
@@ -383,8 +389,16 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
+    /// stop() 之后的墓碑标记：任何迟到的异步闭包都不得再碰窗口
+    private(set) var stopped = false
+
     /// 窗口重建/退出前调用，移除监听与定时器
     func stop() {
+        stopped = true
+        // 切断窗口引用 + 全屏回调：即便还有排队中的闭包迟到执行，
+        // 它们手里也已经没有窗口可以复活（第二道保险，第一道是 stopped 闸）
+        panel = nil
+        shouldHideForFullscreen = nil
         stopMouseTracking()
         if let observer = spaceObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
@@ -490,6 +504,7 @@ final class NotchViewModel: ObservableObject {
     /// 只翻 isExpanded 走稳定路径）才正常。这正是「快捷键首呼闪问没 UI、第二次才有」的根因。
     /// 合进同一 `withAnimation` 后，页面挂载即见 isExpanded=true，出场正常触发。
     func expandProgrammatically(switchingTo tab: Tab) {
+        guard !stopped else { return }
         if hiddenForFullscreen {
             hiddenForFullscreen = false
             forcedShowOverFullscreen = true

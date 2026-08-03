@@ -460,7 +460,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             guard let self else { return }
             let mode = self.env.settings.notchScreenMode
             let rects = NotchGeometry.screens(for: mode).map { NotchGeometry.notchRect(on: $0) }
-            if rects == self.windowControllers.map(\.viewModel.notchRect) { return }
+            if rects == self.windowControllers.map(\.viewModel.notchRect) {
+                // 屏幕集没变也不能白走：显示器休眠/插拔的瞬间，系统可能已经把
+                // 面板挪到了别的坐标（它以为那块屏没了）。矩形相等只说明「该在哪」，
+                // 不保证「现在在哪」——把每扇窗按自己的刘海位重新钉一遍
+                self.windowControllers.forEach { $0.reassertFrame() }
+                return
+            }
             self.setupNotchWindow()
         }
         pendingScreenRebuild = work

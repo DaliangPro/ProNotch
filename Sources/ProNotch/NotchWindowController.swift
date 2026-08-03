@@ -65,6 +65,12 @@ final class NotchWindowController {
         viewModel.collapseNow()
     }
 
+    /// 显示器参数抖动后把面板钉回该在的位置（系统在屏幕瞬断时会擅自挪窗）
+    func reassertFrame() {
+        let target = viewModel.windowFrame
+        if panel.frame != target { panel.setFrame(target, display: true) }
+    }
+
     func close() {
         // 只清理窗口自身的资源；数据层由 AppDelegate 统一管理生命周期
         if let observer = slotObserver {
