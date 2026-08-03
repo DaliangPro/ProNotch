@@ -49,10 +49,12 @@ enum SessionUsage {
     /// 整读解析的累计次数（测试断言缓存命中用；refresh 单飞，无并发累加）
     nonisolated(unsafe) static var claudeParseCount = 0
 
-    static func scanClaude(root: URL = defaultClaudeRoot) -> [Scanned] {
+    static func scanClaude(root: URL = defaultClaudeRoot, since: Date? = nil) -> [Scanned] {
         // 按条目时间过滤（不只按文件 mtime）：断续跑数周的长会话，只算近 7 天的条目，
-        // 否则一生累计参与分摊会高估老会话（与 Codex 侧同一失真）
-        let cutoffDay = String(iso8601UTC.string(from: Date().addingTimeInterval(-window)).prefix(10))
+        // 否则一生累计参与分摊会高估老会话（与 Codex 侧同一失真）。
+        // `since`＝额度窗口起点，语义见 scanCodex(since:)
+        let cutoff = max(Date().addingTimeInterval(-window), since ?? .distantPast)
+        let cutoffDay = String(iso8601UTC.string(from: cutoff).prefix(10))
         return claudeFileScans(root: root).compactMap { file in
             let sum = file.entries.lazy
                 .filter { $0.day.map { $0 >= cutoffDay } ?? true }   // timestamp 缺失视为在窗内（沿旧口径）
@@ -221,13 +223,22 @@ enum SessionUsage {
 
     // MARK: - Codex：~/.codex/sessions/近 7 天/*.jsonl 读末条 token
 
-    static func scanCodex() -> [Scanned] {
+    /// `since`：额度窗口的起点（重置时刻）。Top 5 的分账公式是「token 占比 × 已用%」，
+    /// 分子分母必须同一段时间——固定往前推 7 天的话，重置前的老会话也来分当前额度，
+    /// 把真正花额度的会话稀释掉（大梁老师 2026-08-03「Codex 严重不准」的病根：
+    /// OpenAI 的 Pro Lite 只有一个 7 天窗，7/31 22:26 才重置，而 token 侧从 7/27 起算）。
+    /// 不传则维持 7 天口径（额度端点没通时的退路）
+    static var defaultCodexRoot: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/sessions")
+    }
+
+    static func scanCodex(root: URL = defaultCodexRoot, since: Date? = nil) -> [Scanned] {
         // 按 mtime 全量枚举，不能按日期目录扫最近几天：Codex 把 rollout 文件放在
         // 「会话开始日」的目录里持续追加数月——主力长会话（实测 05/31 目录 200MB 今天还在写）
         // 按日期目录扫必漏，Top 5 就只剩边角小会话
         let fm = FileManager.default
-        let root = fm.homeDirectoryForCurrentUser.appendingPathComponent(".codex/sessions")
-        let cutoff = Date().addingTimeInterval(-window)
+        // 窗口起点取「额度重置点」与「7 天前」中较晚者：既贴额度语义，又不放大扫描范围
+        let cutoff = max(Date().addingTimeInterval(-window), since ?? .distantPast)
         var raw: [(scanned: Scanned, parent: String?)] = []
         guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else { return [] }
         // 每个文件一个池（return 即跳过该文件）：头尾分块读也有 MB 级临时串，逐文件释放
@@ -237,7 +248,8 @@ enum SessionUsage {
                   let m = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
                   m > cutoff else { return }
             let info = codexFileInfo(f)
-            let cutoffDay = String(iso8601UTC.string(from: Date().addingTimeInterval(-window)).prefix(10))
+            // 天桶按同一个 cutoff 过滤（天粒度，重置时刻所在的那天整天计入，误差 ≤1 天）
+            let cutoffDay = String(iso8601UTC.string(from: cutoff).prefix(10))
             let tokens = info.buckets.filter { $0.key >= cutoffDay }.values.reduce(0, +)
             guard tokens > 0 else { return }
             raw.append((Scanned(id: f.deletingPathExtension().lastPathComponent, tokens: tokens, url: f), info.parent))

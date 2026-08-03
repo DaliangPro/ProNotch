@@ -51,9 +51,18 @@ struct ProductionUsageLoader: UsageLoading {
         let cl = enabled.contains(.claude) ? await ClaudeQuotaLoader.load() : nil
         let gr = enabled.contains(.grok) ? await GrokQuotaLoader.load() : nil
         let km = enabled.contains(.kimi) ? await KimiQuotaLoader.load() : nil
-        // 每会话 token 统计（与额度数据源解耦）；Top 5 占比锚定周额度已用%（无周窗则退 5 小时窗）
-        let claudeSessions = enabled.contains(.claude) ? SessionUsage.scanClaude() : []
-        let codexSessions = enabled.contains(.codex) ? SessionUsage.scanCodex() : []
+        // 每会话 token 统计（与额度数据源解耦）；Top 5 占比锚定周额度已用%（无周窗则退 5 小时窗）。
+        // token 窗口锚到额度窗口的起点（resetsAt − 窗长）：分子分母同一段时间，
+        // 重置前的老会话不再来分当前额度（大梁老师 2026-08-03「Codex 严重不准」）
+        func windowStart(_ q: ServiceQuota?) -> Date? {
+            guard let w = q?.secondary ?? q?.primary,
+                  let reset = w.resetsAt else { return nil }
+            return reset.addingTimeInterval(-Double(w.windowMinutes) * 60)
+        }
+        let claudeSessions = enabled.contains(.claude)
+            ? SessionUsage.scanClaude(since: windowStart(cl)) : []
+        let codexSessions = enabled.contains(.codex)
+            ? SessionUsage.scanCodex(since: windowStart(cx)) : []
         let kimiSessions = enabled.contains(.kimi) ? SessionUsage.scanKimi() : []
         let grokSessions = enabled.contains(.grok) ? SessionUsage.scanGrok() : []
         let claudeTop = SessionUsage.top(claudeSessions,
