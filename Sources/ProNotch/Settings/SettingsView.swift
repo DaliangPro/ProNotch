@@ -1205,6 +1205,10 @@ struct SettingsView: View {
             fieldRow("Brave Key") {
                 MaskedSecureField(placeholder: "免费注册即可获取（brave.com/search/api）", text: $chatStore.draftBraveKey)
             }
+        case .bocha:
+            fieldRow("博查 Key") {
+                MaskedSecureField(placeholder: "注册领免费额度（open.bochaai.com）", text: $chatStore.draftBochaKey)
+            }
         case .duckduckgo:
             fieldRow("搜索 Key") {
                 Text("DuckDuckGo 免费，无需 Key")

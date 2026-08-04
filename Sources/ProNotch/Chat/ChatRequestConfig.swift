@@ -15,6 +15,9 @@ struct ChatRequestConfig: Sendable, Equatable {
     let model: String
     let searchEngine: SearchEngine
     let searchKey: String
+    /// 按问题语言分流用的备用引擎与 Key（两把 Key 都配了才有值，见 ChatStore.pickEngine）
+    var alternateEngine: SearchEngine?
+    var alternateKey: String = ""
     /// 深度思考。true=不干预、随服务端默认；false=请求体里显式发 thinking:{type:disabled}
     let thinking: Bool
 

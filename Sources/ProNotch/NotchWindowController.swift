@@ -109,6 +109,7 @@ final class NotchWindowController {
         switch engine {
         case .tavily:     key = env.chat.tavilyKey
         case .brave:      key = env.chat.braveKey
+        case .bocha:      key = env.chat.bochaKey
         case .duckduckgo: key = ""
         }
         Task { @MainActor in

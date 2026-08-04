@@ -202,6 +202,9 @@ final class ChatStore: ObservableObject {
     @Published var draftTavilyKey: String
     @Published private(set) var braveKey: String
     @Published var draftBraveKey: String
+    /// 博查 Key（国内索引，中文场景用；账号 chatBochaKey）
+    @Published private(set) var bochaKey: String
+    @Published var draftBochaKey: String
     @Published private(set) var isSearching = false
     /// 待发送的截图附件（JPEG；随下一条用户消息发出后清空）
     @Published var draftAttachment: Data?
@@ -250,11 +253,24 @@ final class ChatStore: ObservableObject {
         switch engine {
         case .tavily:     key = tavilyKey
         case .brave:      key = braveKey
+        case .bocha:      key = bochaKey
         case .duckduckgo: key = ""
+        }
+        // 按语言自动分流的备用引擎（大梁老师 2026-08-03 拍板）：
+        // 选了海外家又填了博查 Key → 中文问题改走博查；选了博查又填了 Tavily Key
+        // → 英文问题改走 Tavily。两把 Key 都在才启用，否则这里给 nil、行为与从前一致
+        let alternate: (SearchEngine, String)?
+        if engine.strongInChinese, !tavilyKey.isEmpty {
+            alternate = (.tavily, tavilyKey)
+        } else if !engine.strongInChinese, !bochaKey.isEmpty {
+            alternate = (.bocha, bochaKey)
+        } else {
+            alternate = nil
         }
         return ChatRequestConfig(providerID: currentProviderID, baseURL: baseURL,
                                  apiKey: apiKey, model: model,
                                  searchEngine: engine, searchKey: key,
+                                 alternateEngine: alternate?.0, alternateKey: alternate?.1 ?? "",
                                  thinking: thinkingEnabled)
     }
 
@@ -289,6 +305,9 @@ final class ChatStore: ObservableObject {
         let testBrave = defaults.string(forKey: "chatBraveKey") ?? ""
         braveKey = testBrave
         draftBraveKey = testBrave
+        let testBocha = defaults.string(forKey: "chatBochaKey") ?? ""
+        bochaKey = testBocha
+        draftBochaKey = testBocha
         let savedEngine = defaults.string(forKey: "chatSearchEngine") ?? SearchEngine.duckduckgo.rawValue
         searchEngine = savedEngine
         draftSearchEngine = savedEngine
@@ -558,11 +577,13 @@ final class ChatStore: ObservableObject {
             let api = keys.read(account)
             let tavily = keys.read("chatTavilyKey")
             let brave = keys.read("chatBraveKey")
+            let bocha = keys.read("chatBochaKey")
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 if self.apiKey.isEmpty { self.apiKey = api; self.draftAPIKey = api }
                 if self.tavilyKey.isEmpty { self.tavilyKey = tavily; self.draftTavilyKey = tavily }
                 if self.braveKey.isEmpty { self.braveKey = brave; self.draftBraveKey = brave }
+                if self.bochaKey.isEmpty { self.bochaKey = bocha; self.draftBochaKey = bocha }
             }
         }
     }
@@ -592,6 +613,7 @@ final class ChatStore: ObservableObject {
         model = draftModel.trimmingCharacters(in: .whitespaces)
         tavilyKey = draftTavilyKey.trimmingCharacters(in: .whitespaces)
         braveKey = draftBraveKey.trimmingCharacters(in: .whitespaces)
+        bochaKey = draftBochaKey.trimmingCharacters(in: .whitespaces)
         searchEngine = draftSearchEngine
         providerRevision += 1   // 端点/Key/模型都可能变，在途的异步结果一律作废
         draftBaseURL = baseURL
@@ -599,6 +621,7 @@ final class ChatStore: ObservableObject {
         draftModel = model
         draftTavilyKey = tavilyKey
         draftBraveKey = braveKey
+        draftBochaKey = bochaKey
         let defaults = env.defaults
         defaults.set(baseURL, forKey: PrefKey.chatBaseURL)
         defaults.set(model, forKey: PrefKey.chatModel)
@@ -619,6 +642,7 @@ final class ChatStore: ObservableObject {
         env.saveKey(apiKey, account: account)
         env.saveKey(tavilyKey, account: "chatTavilyKey")
         env.saveKey(braveKey, account: "chatBraveKey")
+        env.saveKey(bochaKey, account: "chatBochaKey")
         AppLog.chat.info("已保存 AI 设置，端点: \(LogRedaction.endpoint(try? self.currentRequestConfig().chatCompletionsURL()), privacy: .public)")
         checkConnectivity(force: true)
     }
@@ -663,6 +687,7 @@ final class ChatStore: ObservableObject {
         switch engine {
         case .tavily:     key = draftTavilyKey
         case .brave:      key = draftBraveKey
+        case .bocha:      key = draftBochaKey
         case .duckduckgo: key = ""
         }
         Task { [weak self] in
@@ -851,8 +876,14 @@ final class ChatStore: ObservableObject {
                     return
                 }
                 isSearching = true
+                // 按问题语言挑渠道：海外索引对中文网页、论坛、公众号覆盖天然弱，
+                // 中文索引反过来对英文资料弱——同一个问题交给擅长的那家
+                let picked = Self.pickEngine(for: question, config: config)
+                if picked.engine != config.searchEngine {
+                    AppLog.chat.info("按问题语言改走 \(picked.engine.rawValue, privacy: .public)")
+                }
                 let results = try await WebSearch.searchMany(
-                    queries: plan.queries, engine: config.searchEngine, key: config.searchKey,
+                    queries: plan.queries, engine: picked.engine, key: picked.key,
                     timeRange: plan.timeRange, news: plan.news)
                 if !results.isEmpty {
                     payload[payload.count - 1]["content"] = Self.replacingText(
@@ -1047,6 +1078,21 @@ final class ChatStore: ObservableObject {
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.dateFormat = "yyyy年M月d日"
         return formatter.string(from: Date())
+    }
+
+    /// 按问题语言在「主引擎」与「备用引擎」之间挑一个（纯函数，可测）。
+    /// 没配备用引擎时永远返回主引擎——行为与单引擎时代完全一致
+    nonisolated static func pickEngine(for question: String,
+                                       config: ChatRequestConfig) -> (engine: SearchEngine, key: String) {
+        guard let alt = config.alternateEngine, !config.alternateKey.isEmpty else {
+            return (config.searchEngine, config.searchKey)
+        }
+        let wantsChinese = SearchEngine.isChineseQuery(question)
+        // 想要中文就挑中文强的那个，想要英文就挑另一个
+        if wantsChinese == config.searchEngine.strongInChinese {
+            return (config.searchEngine, config.searchKey)
+        }
+        return (alt, config.alternateKey)
     }
 
     /// 一轮检索的计划：**要不要搜**、查几条、限不限时间、走不走新闻源

@@ -23,16 +23,50 @@ enum SearchEngine: String, CaseIterable {
     case duckduckgo
     case tavily
     case brave
+    /// 博查：国内索引。前三家都是海外系，中文网页、论坛、公众号覆盖天然弱
+    ///（大梁老师 2026-08-03 问「会不会是搜索渠道的问题」——查证属实）
+    case bocha
 
     var displayName: String {
         switch self {
         case .duckduckgo: return "DuckDuckGo（免费）"
-        case .tavily:     return "Tavily"
+        case .tavily:     return "Tavily（英文强）"
         case .brave:      return "Brave Search"
+        case .bocha:      return "博查（中文强）"
         }
     }
     /// 是否需要 API Key（DuckDuckGo 免费、无需）
     var needsKey: Bool { self != .duckduckgo }
+
+    /// 中文索引强不强。自动分流按这个分两派：中文问题优先中文强的那家
+    var strongInChinese: Bool { self == .bocha }
+
+    /// 查询里有没有中文（含日韩）。有＝中文问题。
+    ///
+    /// **判据是「有没有」，不是「占多少」**——比例法被真实用例证伪了：
+    /// 逐字符量下来，「macOS NSWindow orderFrontRegardless 用法」中文只占 5.7%
+    ///（一个英文标识符顶几十个字符），「SwiftUI LazyVStack 为什么会卡顿」占 26%，
+    /// 而它们都是铁打的中文问题。阈值从 50% 一路降到 20% 仍然漏判，
+    /// 说明比例这个维度本身就不对。
+    ///
+    /// 反向也成立：英文问题里根本不会冒出汉字。所以「出现即判定」既准又稳。
+    /// 判错的代价还不对称——中文问题误送海外索引＝拿不到中文垂直站；
+    /// 英文问题误送国内索引顶多结果稍逊。纯函数，可测
+    static func isChineseQuery(_ text: String) -> Bool {
+        text.unicodeScalars.contains(where: isCJK)
+    }
+
+    private static func isCJK(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x4E00...0x9FFF,     // 中日韩统一表意文字
+             0x3400...0x4DBF,     // 扩展 A
+             0x3040...0x30FF,     // 日文假名
+             0xAC00...0xD7AF:     // 韩文
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 /// 客户端联网搜索：API 普遍不带联网能力，通用做法是先搜索再把结果注入提示词。
@@ -77,6 +111,7 @@ enum WebSearch {
         switch engine {
         case .tavily:     return try await tavily(query: query, key: key, timeRange: timeRange, news: news)
         case .brave:      return try await brave(query: query, key: key)
+        case .bocha:      return try await bocha(query: query, key: key, timeRange: timeRange)
         case .duckduckgo: return try await duckDuckGo(query: query)
         }
     }
@@ -244,7 +279,79 @@ enum WebSearch {
         return results
     }
 
-    /// 给前几条补抓页面正文（Brave / DDG 只给一两行摘要，光靠它模型没料可用）。
+    /// 博查 Web Search：国内索引 + AI 摘要。
+    ///
+    /// 契约（2026-08-03 查证）：POST https://api.bochaai.com/v1/web-search，
+    /// Bearer 认证，body {query, freshness, summary, count}；
+    /// 返回 data.webPages.value[]，每条 {name, url, siteName, snippet, summary, datePublished}。
+    /// summary 是它自己生成的 AI 摘要（比 snippet 长且冲着查询来），当相关片段用；
+    /// 正文仍由我们自己抓（与 Brave/DDG 同一条路）
+    private static func bocha(query: String, key: String,
+                              timeRange: String?) async throws -> [SearchResult] {
+        let token = key.trimmingCharacters(in: .whitespaces)
+        guard !token.isEmpty else {
+            throw NSError(domain: "ProNotch", code: -8,
+                          userInfo: [NSLocalizedDescriptionKey: "请先在设置里填写博查 API Key"])
+        }
+        var request = URLRequest(url: URL(string: "https://api.bochaai.com/v1/web-search")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "query": query,
+            "freshness": bochaFreshness(timeRange),
+            "summary": true,              // 要 AI 摘要：比一行 snippet 有料得多
+            "count": resultsPerQuery,
+        ])
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            let detail = String(data: data, encoding: .utf8) ?? ""
+            throw NSError(domain: "ProNotch", code: http.statusCode,
+                          userInfo: [NSLocalizedDescriptionKey:
+                              "博查 HTTP \(http.statusCode) \(detail.prefix(150))"])
+        }
+        // 结果层级两种写法都认：外面裹不裹 data 各家网关不一，认死一种会白丢结果
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw NSError(domain: "ProNotch", code: -9,
+                          userInfo: [NSLocalizedDescriptionKey: "博查返回格式异常"])
+        }
+        let root = (object["data"] as? [String: Any]) ?? object
+        guard let pages = root["webPages"] as? [String: Any],
+              let list = pages["value"] as? [[String: Any]] else {
+            throw NSError(domain: "ProNotch", code: -9,
+                          userInfo: [NSLocalizedDescriptionKey: "博查返回格式异常"])
+        }
+        var results: [SearchResult] = list.prefix(resultsPerQuery).compactMap { item in
+            guard let url = item["url"] as? String, !url.isEmpty else { return nil }
+            let title = (item["name"] as? String) ?? (item["siteName"] as? String) ?? url
+            // summary（AI 摘要）优先，没有才退 snippet——两者都是冲着查询来的相关片段
+            let summary = (item["summary"] as? String) ?? ""
+            let snippet = (item["snippet"] as? String) ?? ""
+            return SearchResult(title: stripHTML(title), url: url,
+                                highlights: stripHTML(summary.isEmpty ? snippet : summary),
+                                published: item["datePublished"] as? String)
+        }
+        guard !results.isEmpty else {
+            throw NSError(domain: "ProNotch", code: -10,
+                          userInfo: [NSLocalizedDescriptionKey: "博查未返回结果"])
+        }
+        await fillBodies(&results)
+        return results
+    }
+
+    /// 规划器给的 day/week/month/year 翻成博查的 freshness 词表（纯函数，可测）
+    static func bochaFreshness(_ timeRange: String?) -> String {
+        switch timeRange {
+        case "day":   return "oneDay"
+        case "week":  return "oneWeek"
+        case "month": return "oneMonth"
+        case "year":  return "oneYear"
+        default:      return "noLimit"
+        }
+    }
+
+    /// 给前几条补抓页面正文（Brave / DDG / 博查只给摘要，光靠它模型没料可用）。
     /// 抓失败不影响该条——相关片段仍在，只是少了正文
     private static func fillBodies(_ results: inout [SearchResult]) async {
         let count = min(4, results.count)
