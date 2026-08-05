@@ -163,24 +163,19 @@ struct SettingsView: View {
                 slotRow("左侧显示", selection: $settings.leftSlot)
                 CardDivider()
                 slotRow("右侧显示", selection: $settings.rightSlot)
-                // 时区行只在真选了时钟时出现：没用到的设置不该占着版面
-                if settings.leftSlot == .clock || settings.rightSlot == .clock {
-                    CardDivider()
-                    clockZoneRow
-                }
             }
-            Text("收起状态的刘海两侧常驻显示所选内容；两侧都关闭时，刘海恢复原始宽度。\n天气需要定位权限（系统设置 → 隐私与安全性 → 定位服务）。")
+            Text("收起状态的刘海两侧常驻显示所选内容；两侧都关闭时，刘海恢复原始宽度。\n天气需要定位权限（系统设置 → 隐私与安全性 → 定位服务）；时钟的时区在「功能组件 → 时钟」里设。")
                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 2)
         }
     }
 
-    /// 时钟槽位的时区选择（大梁老师 2026-08-04）。
-    /// 只给常用城市，不列系统那一百多个——侧栏时钟是「瞄一眼对方几点」，翻长列表反而慢
+    /// 侧栏时钟显示哪个时区（只给常用城市，不列系统那一百多个——
+    /// 侧栏时钟是「瞄一眼对方几点」，翻长列表反而慢）
     private var clockZoneRow: some View {
         HStack {
-            Text("时钟时区").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+            Text("侧栏显示时区").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
             Spacer()
             Picker("", selection: $settings.clockZone) {
                 ForEach(ClockZone.allCases) { zone in
@@ -189,6 +184,42 @@ struct SettingsView: View {
             }
             .labelsHidden()
             .frame(width: 150)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
+    }
+
+    /// 时钟卡上并排显示哪几个城市。勾选式多选，顺序即卡上的排列顺序
+    private var clockCardZonesRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("卡片显示城市").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+            // 网格铺开：12 个城市三列排下，比下拉多选好点
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading),
+                                     count: 3), spacing: 6) {
+                ForEach(ClockZone.allCases) { zone in
+                    let on = settings.clockCardZones.contains(zone)
+                    Button {
+                        // 点选即增删；已选的再点移除。保持点击顺序＝卡上顺序
+                        if on {
+                            settings.clockCardZones.removeAll { $0 == zone }
+                        } else {
+                            settings.clockCardZones.append(zone)
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                                .font(.system(size: 11))
+                                .foregroundColor(on ? .accentColor : .white.opacity(0.3))
+                            Text(zone.title)
+                                .font(.system(size: 12))
+                                .foregroundColor(.white.opacity(on ? 0.9 : 0.55))
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
         }
         .padding(.horizontal, 14).padding(.vertical, 9)
     }
@@ -202,6 +233,19 @@ struct SettingsView: View {
             SettingsCard {
                 toggleRow("在组件页显示内存卡", isOn: $settings.memoryWidgetEnabled)
             }
+
+            sectionLabel("时钟")
+            SettingsCard {
+                toggleRow("在组件页显示时钟卡", isOn: $settings.clockWidgetEnabled)
+                CardDivider()
+                clockCardZonesRow
+                CardDivider()
+                clockZoneRow
+            }
+            Text("时钟卡在组件页并排显示所选城市的时间、昼夜与日期差；侧栏时区单独设，供刘海两侧功能区的「时间」用。")
+                .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 2)
 
             sectionLabel("天气")
             SettingsCard {

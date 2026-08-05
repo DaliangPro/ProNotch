@@ -9,7 +9,7 @@ extension MemorySnapshot {
     }
 }
 
-/// 组件页：整机内存 + 实时天气两张卡（与额度页同设计语言，后续新组件的家）
+/// 组件页：整机内存 + 实时天气 + 世界时钟（与额度页同设计语言，后续新组件的家）
 struct WidgetsView: View {
     @EnvironmentObject var memory: MemoryStore
     @EnvironmentObject var weather: WeatherStore
@@ -17,8 +17,10 @@ struct WidgetsView: View {
     @EnvironmentObject var settings: SettingsStore
     /// 看着页面时数据自己动：内存与排行 3 秒一刷；天气走 store 内置 15 分钟节流
     private let ticker = Timer.publish(every: 3, on: .main, in: .common).autoconnect()
-    /// 出场动画开关：两卡错落浮入（额度页同款节奏）
+    /// 出场动画开关：各卡错落浮入（额度页同款节奏）
     @State private var entrancePlayed = false
+    /// 时钟卡当前时刻。跟着页面既有的 3 秒心跳走，不单开定时器
+    @State private var now = Date()
 
     var body: some View {
         HStack(spacing: 12) {
@@ -36,13 +38,23 @@ struct WidgetsView: View {
                     .opacity(entrancePlayed ? 1 : 0)
                     .animation(.easeOut(duration: 0.3).delay(0.07), value: entrancePlayed)
             }
+            if settings.clockWidgetEnabled {
+                WorldClockCard(now: now, zones: settings.clockCardZones,
+                               entrancePlayed: entrancePlayed)
+                    .opacity(entrancePlayed ? 1 : 0)
+                    .animation(.easeOut(duration: 0.3).delay(0.14), value: entrancePlayed)
+            }
         }
         .padding(.vertical, 14)
         .padding(.horizontal, ExpandedContentView.pageHInset)   // 左右留白对齐全局基准线
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .onAppear { refreshVisible() }
+        .onAppear {
+            now = Date()
+            refreshVisible()
+        }
         .onReceive(ticker) { _ in
             guard vm.isExpanded, vm.activeTab == .widgets else { return }
+            now = Date()
             refreshVisible()
         }
         .pageEntrance($entrancePlayed)
@@ -326,3 +338,113 @@ private struct WeatherCard: View {
         .frame(maxWidth: .infinity)
     }
 }
+
+
+/// 世界时钟卡（大梁老师 2026-08-05 定：时钟属于功能组件，与内存/天气同级）。
+///
+/// 侧栏那个槽位只显一个时区的 HH:mm；这张卡是它的完整形态——
+/// 几个城市并排，各自的钟点、日期差、白天黑夜一眼看全。
+/// 无数据源、无网络、无采样：时刻由页面心跳传进来，纯计算
+private struct WorldClockCard: View {
+    let now: Date
+    let zones: [ClockZone]
+    var entrancePlayed = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(spacing: 6) {
+                Image(systemName: "globe")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.85))
+                Text("世界时钟")
+                    .font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                Spacer()
+            }
+            if zones.isEmpty {
+                Spacer()
+                Text("在设置 → 功能组件 → 时钟里添加城市")
+                    .font(.system(size: 11.5)).foregroundColor(.white.opacity(0.45))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                Spacer()
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(Array(zones.enumerated()), id: \.offset) { i, zone in
+                        if i > 0 { CardRule() }
+                        row(zone)
+                            .entranceBit(entrancePlayed, delay: 0.12 + Double(i) * 0.045)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .modifier(WidgetCardChrome())
+    }
+
+    private func row(_ zone: ClockZone) -> some View {
+        let tz = zone.timeZone
+        return HStack(spacing: 8) {
+            // 昼夜标：跨时区最要紧的一眼信息——那边现在是不是该睡了
+            Image(systemName: Self.isDaytime(now, tz) ? "sun.max.fill" : "moon.fill")
+                .font(.system(size: 10))
+                .foregroundColor(Self.isDaytime(now, tz)
+                                 ? Color(hex: "#FF9F0A").opacity(0.85)
+                                 : .white.opacity(0.35))
+                .frame(width: 14)
+            Text(zone.title)
+                .font(.system(size: 12))
+                .foregroundColor(.white.opacity(0.75))
+                .lineLimit(1)
+            Spacer(minLength: 6)
+            // 与本地的日期差：跨时区常差一天，不标出来最容易约错时间
+            if let delta = Self.dayDeltaText(now, tz) {
+                Text(delta)
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.white.opacity(0.4))
+            }
+            Text(ClockFormatter.text(for: now, zone: tz))
+                .font(.system(size: 15, weight: .semibold, design: .rounded).monospacedDigit())
+                .foregroundColor(.white.opacity(0.92))
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 30)
+    }
+
+    /// 6:00–17:59 算白天。粗口径够用——这一栏是给「现在方便不方便找他」一个提示，
+    /// 不是天文意义的日出日落
+    static func isDaytime(_ date: Date, _ zone: TimeZone) -> Bool {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        let hour = calendar.component(.hour, from: date)
+        return (6...17).contains(hour)
+    }
+
+    /// 相对本地的日期差：明天 / 昨天；同一天返回 nil（不显示）。
+    ///
+    /// 两个日历日期必须放进**同一个时区**再相减。
+    /// 曾经各用各的时区还原成 Date 再算时间差——那样得到的是「两地零点之间的绝对间隔」，
+    /// 不是日期差：本地 8/5 与东京 8/5 明明同一天，却因两个零点相差 16 小时被判成「昨天」
+    /// （离屏渲染当场看见，2026-08-05）
+    static func dayDeltaText(_ date: Date, _ zone: TimeZone) -> String? {
+        var here = Calendar(identifier: .gregorian)
+        here.timeZone = .current
+        var there = Calendar(identifier: .gregorian)
+        there.timeZone = zone
+        let a = here.dateComponents([.year, .month, .day], from: date)
+        let b = there.dateComponents([.year, .month, .day], from: date)
+        // 中立日历：把两边的「年月日」当纯日期还原，差多少天就是多少天（跨月跨年同样正确）
+        var neutral = Calendar(identifier: .gregorian)
+        neutral.timeZone = TimeZone(identifier: "UTC") ?? .current
+        guard let d1 = neutral.date(from: a), let d2 = neutral.date(from: b),
+              let days = neutral.dateComponents([.day], from: d1, to: d2).day else { return nil }
+        switch days {
+        case 0:  return nil
+        case 1:  return "明天"
+        case -1: return "昨天"
+        default: return days > 0 ? "+\(days) 天" : "\(days) 天"
+        }
+    }
+}
+
+

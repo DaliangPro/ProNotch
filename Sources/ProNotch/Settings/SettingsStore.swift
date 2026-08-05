@@ -101,6 +101,24 @@ final class SettingsStore: ObservableObject {
     }
     /// 展开面板「组件」页是否显示天气卡（默认开）。同为「内部开关」，与预警（弹出式）、
     /// 收起态槽位各自独立
+    /// 时钟卡显不显示在组件页。时钟是功能组件的一员（大梁老师 2026-08-05 纠正：
+    /// 我起初只把它做成侧栏槽位、时区设置还塞在侧栏区——那是设计错了。
+    /// 内存/天气的形态才是标准：组件页有卡、可选进侧栏、设置自成一区）
+    @Published var clockWidgetEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(clockWidgetEnabled, forKey: PrefKey.clockWidgetEnabled)
+            NotificationCenter.default.post(name: .proNotchWidgetVisibilityChanged, object: nil)
+        }
+    }
+
+    /// 组件页时钟卡上并排显示哪几个城市（侧栏只显一个，见 clockZone）。
+    /// 有序数组而非集合：卡上的排列顺序就是这个顺序，用户能自己排
+    @Published var clockCardZones: [ClockZone] {
+        didSet {
+            UserDefaults.standard.set(clockCardZones.map(\.rawValue), forKey: PrefKey.clockCardZones)
+        }
+    }
+
     @Published var weatherWidgetEnabled: Bool {
         didSet {
             UserDefaults.standard.set(weatherWidgetEnabled, forKey: PrefKey.weatherWidgetEnabled)
@@ -114,7 +132,8 @@ final class SettingsStore: ObservableObject {
         let d = UserDefaults.standard
         let mem = d.object(forKey: PrefKey.memoryWidgetEnabled) as? Bool ?? true
         let wea = d.object(forKey: PrefKey.weatherWidgetEnabled) as? Bool ?? true
-        return mem || wea
+        let clk = d.object(forKey: PrefKey.clockWidgetEnabled) as? Bool ?? false
+        return mem || wea || clk
     }
 
     // MARK: - 音量 / 亮度 HUD
@@ -368,6 +387,11 @@ final class SettingsStore: ObservableObject {
         leftSlot = NotchSlot(rawValue: UserDefaults.standard.string(forKey: PrefKey.notchLeftSlot) ?? "") ?? .memory
         rightSlot = NotchSlot(rawValue: UserDefaults.standard.string(forKey: PrefKey.notchRightSlot) ?? "") ?? .weather
         clockZone = ClockZone.from(UserDefaults.standard.string(forKey: PrefKey.clockZone))
+        // 时钟卡默认关：老用户升级上来组件页不该凭空多一张卡
+        clockWidgetEnabled = UserDefaults.standard.object(forKey: PrefKey.clockWidgetEnabled) as? Bool ?? false
+        let savedCardZones = UserDefaults.standard.stringArray(forKey: PrefKey.clockCardZones)
+        clockCardZones = savedCardZones.map { $0.compactMap(ClockZone.init(rawValue:)) }
+            ?? ClockZone.defaultCardZones
         glowEnabled = UserDefaults.standard.bool(forKey: PrefKey.glowEnabled)
         agentWaitNoticeEnabled = UserDefaults.standard.bool(forKey: PrefKey.agentWaitNoticeEnabled)
         glowClaudeColorHex = UserDefaults.standard.string(forKey: PrefKey.glowClaudeColorHex) ?? PrefDefault.glowClaudeColor

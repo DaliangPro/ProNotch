@@ -70,6 +70,10 @@ enum ClockZone: String, CaseIterable, Identifiable {
         return zone
     }
 
+    /// 组件页时钟卡的默认城市：本地 + 三个跨时区常见协作地。
+    /// 不放满 12 个——卡上一屏放得下四五个，默认给个能用的起点，其余由用户加
+    static let defaultCardZones: [ClockZone] = [.system, .newYork, .london, .tokyo]
+
     /// 存进 UserDefaults 的字符串反解；认不出就回默认值（老档案、手改配置都走这条）
     static func from(_ raw: String?) -> ClockZone {
         guard let raw, let zone = ClockZone(rawValue: raw) else { return .system }

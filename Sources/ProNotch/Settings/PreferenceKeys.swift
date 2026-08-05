@@ -18,6 +18,8 @@ enum PrefKey {
     static let notchLeftSlot = "notchLeftSlot"
     static let notchRightSlot = "notchRightSlot"
     static let clockZone = "clockZone"
+    static let clockWidgetEnabled = "clockWidgetEnabled"
+    static let clockCardZones = "clockCardZones"
 
     // MARK: - 组件页卡片
     static let memoryWidgetEnabled = "memoryWidgetEnabled"
