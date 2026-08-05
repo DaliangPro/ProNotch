@@ -163,12 +163,34 @@ struct SettingsView: View {
                 slotRow("左侧显示", selection: $settings.leftSlot)
                 CardDivider()
                 slotRow("右侧显示", selection: $settings.rightSlot)
+                // 时区行只在真选了时钟时出现：没用到的设置不该占着版面
+                if settings.leftSlot == .clock || settings.rightSlot == .clock {
+                    CardDivider()
+                    clockZoneRow
+                }
             }
             Text("收起状态的刘海两侧常驻显示所选内容；两侧都关闭时，刘海恢复原始宽度。\n天气需要定位权限（系统设置 → 隐私与安全性 → 定位服务）。")
                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 2)
         }
+    }
+
+    /// 时钟槽位的时区选择（大梁老师 2026-08-04）。
+    /// 只给常用城市，不列系统那一百多个——侧栏时钟是「瞄一眼对方几点」，翻长列表反而慢
+    private var clockZoneRow: some View {
+        HStack {
+            Text("时钟时区").font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
+            Spacer()
+            Picker("", selection: $settings.clockZone) {
+                ForEach(ClockZone.allCases) { zone in
+                    Text(zone.title).tag(zone)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 150)
+        }
+        .padding(.horizontal, 14).padding(.vertical, 9)
     }
 
     // MARK: - 功能组件

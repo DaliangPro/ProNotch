@@ -17,6 +17,7 @@ enum PrefKey {
     static let notchScreenMode = "notchScreenMode"
     static let notchLeftSlot = "notchLeftSlot"
     static let notchRightSlot = "notchRightSlot"
+    static let clockZone = "clockZone"
 
     // MARK: - 组件页卡片
     static let memoryWidgetEnabled = "memoryWidgetEnabled"

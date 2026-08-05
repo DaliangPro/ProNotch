@@ -2,13 +2,14 @@ import SwiftUI
 
 /// 收起态功能区可选内容（大梁老师定的自由功能区，新组件在此扩展）
 enum NotchSlot: String, CaseIterable {
-    case none, memory, weather, agentClaude, agentCodex
+    case none, memory, weather, clock, agentClaude, agentCodex
 
     var title: String {
         switch self {
         case .none: return "关闭"
         case .memory: return "内存占用"
         case .weather: return "实时天气"
+        case .clock: return "时间"
         case .agentClaude: return "Claude Code"
         case .agentCodex: return "Codex"
         }
@@ -47,6 +48,9 @@ enum NotchSlot: String, CaseIterable {
     /// 外侧自然让开圆角直壁与可见留白，指示灯稳稳落在黑条里。左右两侧同取此值，pill 恒对称。
     static let fixedSideWidth: CGFloat = 56
 
+    /// 时钟内容宽。13pt 等宽数字下「08:02」实测 37.3pt，取 40 留余量
+    static let clockWidth: CGFloat = 40
+
     /// 该槽位内容**自身**所需宽度（内容 + 摄像头侧内边距 + 让开圆角直壁 `cornerInset` + 可见留白 `dotEdgeGap`）。
     /// 不参与布局——布局一律用 `fixedSideWidth`；仅供自检：必须 ≤ `fixedSideWidth`，
     /// 否则内容会顶出直壁被裁（尤其右槽最外侧的指示灯）。
@@ -57,6 +61,10 @@ enum NotchSlot: String, CaseIterable {
         // 内存环外径 21：描边收在框内，不再向外多探（见 `CollapsedSlotsView.memorySlot`）
         case .memory: return 21 + Self.leadingPad + trailingAir
         case .weather: return Self.fixedSideWidth                     // 最宽内容，正好等于固定框
+        // 13pt 等宽数字下「08:02」实测 37.3pt（NSFont 量的，别凭字符数估——
+        // 我按 5×7 估了 36，差 1.3pt 就把时间折成了两行，离屏渲染当场看见）。
+        // 取 40 留出余量，仍在固定框可用宽 42 之内
+        case .clock: return Self.clockWidth + Self.leadingPad + trailingAir
         case .agentClaude: return ClawdSlotView.contentWidth + Self.leadingPad + trailingAir
         case .agentCodex: return CodexPetSlotView.contentWidth + Self.leadingPad + trailingAir
         }
@@ -89,6 +97,9 @@ struct CollapsedSlotsView: View {
     @EnvironmentObject var agentActivity: AgentActivityStore
     /// 收起态低频心跳：10 秒刷内存（微秒级 syscall）；天气走 store 内置 15 分钟节流
     private let ticker = Timer.publish(every: 10, on: .main, in: .common).autoconnect()
+    /// 时钟当前时刻。由既有的 10 秒心跳推进——分钟级显示，10 秒粒度绰绰有余，
+    /// 不为它单开一个每秒定时器（收起态要安静）
+    @State private var now = Date()
     /// 两侧内容的真实宽度（见 `outwardGap`）
     @State private var leftContentWidth: CGFloat = 0
     @State private var rightContentWidth: CGFloat = 0
@@ -144,9 +155,14 @@ struct CollapsedSlotsView: View {
                 .frame(maxHeight: .infinity)
         }
         .frame(width: slotsSpan, height: vm.notchRect.height)
-        .onAppear { refreshActive() }
+        .onAppear {
+            now = Date()
+            refreshActive()
+        }
         .onReceive(ticker) { _ in
             guard !vm.isExpanded else { return }
+            // 时钟每拍都推：展开时不推也没事，收起那一刻 onAppear 会补齐
+            now = Date()
             refreshActive()
         }
     }
@@ -164,6 +180,7 @@ struct CollapsedSlotsView: View {
         case .none: Color.clear
         case .memory: memorySlot
         case .weather: weatherSlot
+        case .clock: clockSlot
         // 展开时整块淡出，此时再跑动画是白烧 CPU——动画只在收起且真在工作时才有
         case .agentClaude:
             ClawdSlotView(working: agentActivity.working.contains(.claude) && !vm.isExpanded)
@@ -204,6 +221,17 @@ struct CollapsedSlotsView: View {
             }
         }
         .frame(width: 21, height: 21)
+    }
+
+    /// 侧栏时钟（大梁老师 2026-08-04）：只显 `HH:mm`，时区在设置里选。
+    ///
+    /// 不显时区缩写是他拍板的——单侧仅 56pt，加缩写就得压字号。
+    /// 等宽数字（`.monospacedDigit`）：不加的话分钟从 1 跳到 11 整串会左右抖
+    private var clockSlot: some View {
+        Text(ClockFormatter.text(for: now, zone: settings.clockZone.timeZone))
+            .font(.system(size: 13, weight: .medium, design: .rounded).monospacedDigit())
+            .foregroundColor(.white.opacity(0.92))
+            .frame(width: NotchSlot.clockWidth)
     }
 
     /// 天气图标 + 当前气温；未定位/未授权时安静显示占位。

@@ -59,6 +59,11 @@ final class SettingsStore: ObservableObject {
                 name: .proNotchSlotSettingsChanged, object: nil)
         }
     }
+    /// 时钟槽位显示哪个时区（大梁老师 2026-08-04）。默认跟随系统
+    @Published var clockZone: ClockZone {
+        didSet { UserDefaults.standard.set(clockZone.rawValue, forKey: PrefKey.clockZone) }
+    }
+
     /// 任一侧开启即认为功能区激活（收起态黑条加宽保持左右对称，
     /// 只开一侧时另一侧留黑——形状必须以物理刘海为中心，不能不对称）
     var sideSlotsActive: Bool { leftSlot != .none || rightSlot != .none }
@@ -362,6 +367,7 @@ final class SettingsStore: ObservableObject {
             .map { Set($0.compactMap(AgentKind.init(rawValue:))) } ?? Set(AgentKind.allCases)
         leftSlot = NotchSlot(rawValue: UserDefaults.standard.string(forKey: PrefKey.notchLeftSlot) ?? "") ?? .memory
         rightSlot = NotchSlot(rawValue: UserDefaults.standard.string(forKey: PrefKey.notchRightSlot) ?? "") ?? .weather
+        clockZone = ClockZone.from(UserDefaults.standard.string(forKey: PrefKey.clockZone))
         glowEnabled = UserDefaults.standard.bool(forKey: PrefKey.glowEnabled)
         agentWaitNoticeEnabled = UserDefaults.standard.bool(forKey: PrefKey.agentWaitNoticeEnabled)
         glowClaudeColorHex = UserDefaults.standard.string(forKey: PrefKey.glowClaudeColorHex) ?? PrefDefault.glowClaudeColor
