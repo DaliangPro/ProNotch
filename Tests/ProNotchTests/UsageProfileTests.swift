@@ -88,9 +88,22 @@ final class UsageProfileTests: XCTestCase {
         XCTAssertEqual(short, long, accuracy: 0.01, "长模型名应被截断，不该让这块变高")
     }
 
-    /// 柱状图是归一化的：吃 1M 和吃 1B，图形高度必须一样，只有数字变
-    func test柱状图高度不随绝对值变化() {
+    /// 曲线是归一化的：吃 1M 和吃 1B，图形高度必须一样，只有数字变
+    func test曲线高度不随绝对值变化() {
         XCTAssertEqual(blockHeight(profile(scale: 1)), blockHeight(profile(scale: 1_000_000)), accuracy: 0.01)
+    }
+
+    /// 峰值数字贴着波峰放。峰值落在第一天或最后一天时，数字会有一半探到图外被裁掉
+    func test峰值数字不探出曲线区() {
+        let w: CGFloat = 288, label: CGFloat = 44
+        XCTAssertEqual(UsageProfileBlock.peakLabelX(at: 0, width: w, labelWidth: label), label / 2,
+                       accuracy: 0.01, "峰值在第一天时数字要往里收")
+        XCTAssertEqual(UsageProfileBlock.peakLabelX(at: w, width: w, labelWidth: label), w - label / 2,
+                       accuracy: 0.01, "峰值在今天时数字要往里收")
+        XCTAssertEqual(UsageProfileBlock.peakLabelX(at: 144, width: w, labelWidth: label), 144,
+                       accuracy: 0.01, "中间的峰值不该被挪动")
+        // 面板再窄也不能算出负数坐标
+        XCTAssertGreaterThanOrEqual(UsageProfileBlock.peakLabelX(at: 0, width: 20, labelWidth: label), 0)
     }
 
     // MARK: - 工具
