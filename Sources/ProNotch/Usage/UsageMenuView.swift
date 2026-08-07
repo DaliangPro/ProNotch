@@ -124,8 +124,6 @@ struct UsageMenuView: View {
                     }
                 }
             }
-            // 放在额度窗口之外：额度接口报错时，本地扫出来的用量照样有效
-            if let q = s.quota { UsageProfileBlock(profile: q.profile, tint: s.tint) }
             Divider()
             // 每家自己的菜单栏露出开关（大梁老师定的位置：就在这家的页面里）——
             // 关掉只影响收起后的菜单栏标题，这个面板里这家照常显示
@@ -227,111 +225,6 @@ struct UsageMenuView: View {
         if s < 3600 { return "\(max(1, s / 60)) 分钟" }
         if s < 86400 { return "\(s / 3600)h \(s % 3600 / 60)m" }
         return "\(s / 86400)d \(s % 86400 / 3600)h"
-    }
-}
-
-/// 用量画像：百分比只答「还能用多久」，这块答「吃了多少、哪天吃的、谁吃的」
-/// （大梁老师 2026-08-07 对着别家菜单栏面板提的：模型选项卡里的数据更丰富）。
-///
-/// 全部来自本机会话记录扫描，因此窗口固定 7 天——与额度扫描窗口同宽，不额外增加扫描量
-/// （扩到 30 天＝扫描量与常驻内存四倍，得不偿失）。
-struct UsageProfileBlock: View {
-    let profile: SessionUsage.Profile
-    let tint: Color
-    /// 曲线区总高
-    static let trendHeight: CGFloat = 46
-    /// 顶部留给峰值数字的净空；曲线的可用高度是 trendHeight 减掉它
-    static let labelRoom: CGFloat = 14
-
-    var body: some View {
-        if profile.total > 0 {
-            let days = SessionUsage.Profile.windowDays
-            let series = profile.series(days: days)
-            VStack(alignment: .leading, spacing: 8) {
-                // 两端对齐，和下面那行「最常用 … 峰值」共用同一条栅格
-                HStack(alignment: .top, spacing: 0) {
-                    stat("今日", SessionUsage.Profile.formatTokens(profile.today), .leading)
-                    stat("近 \(days) 天", SessionUsage.Profile.formatTokens(profile.total), .trailing)
-                }
-                trend(series)
-                if let m = profile.topModel {
-                    HStack(spacing: 6) {
-                        Text("最常用").font(.system(size: 11)).foregroundColor(.secondary)
-                        Text(SessionUsage.Profile.shortModel(m))
-                            .font(.system(size: 11, weight: .medium)).foregroundColor(tint)
-                            .lineLimit(1).truncationMode(.middle)
-                        Spacer(minLength: 0)
-                    }
-                }
-            }
-            .help("统计自本机会话记录（近 \(SessionUsage.Profile.windowDays) 天）")
-        }
-    }
-
-    private func stat(_ label: String, _ value: String, _ side: HorizontalAlignment) -> some View {
-        VStack(alignment: side, spacing: 1) {
-            Text(label).font(.system(size: 10.5)).foregroundColor(.secondary)
-            Text(value).font(.system(size: 15, weight: .semibold, design: .rounded))
-        }
-        .frame(maxWidth: .infinity, alignment: side == .leading ? .leading : .trailing)
-    }
-
-    /// 近 7 天用量曲线：折线 + 淡面积，峰值数字直接落在波峰上，末端实心点是今天。
-    ///
-    /// 为什么不是柱状图（大梁老师 2026-08-07 拍板，五种形态离屏实测后选的这版）：
-    /// 7 个点是折线的舒适区、柱状图的尴尬区——柱子要二十来根才连得成轮廓，
-    /// 七根只是七个孤立方块；且用量是长尾的（一天 12M、其余 1～4M），
-    /// 柱状图会把小的那几天压趴成看不见的线，折线有线宽，再小的日子也在曲线上有位置。
-    /// 峰值标在图上比单列一行文字多传一个信息：哪天爆的
-    private func trend(_ series: [(day: String, tokens: Int)]) -> some View {
-        let peak = max(series.map(\.tokens).max() ?? 0, 1)
-        let peakIdx = series.firstIndex { $0.tokens == peak } ?? series.count - 1
-        return ZStack {
-            GeometryReader { geo in
-                let w = geo.size.width, h = geo.size.height
-                let step = series.count > 1 ? w / CGFloat(series.count - 1) : 0
-                let pts = series.enumerated().map { i, d in
-                    CGPoint(x: CGFloat(i) * step,
-                            y: h - 2 - (h - Self.labelRoom - 4) * CGFloat(d.tokens) / CGFloat(peak))
-                }
-                // 面积：只为给曲线一个「量」的重量感，不承担读数
-                Path { p in
-                    p.move(to: CGPoint(x: 0, y: h))
-                    pts.forEach { p.addLine(to: $0) }
-                    p.addLine(to: CGPoint(x: w, y: h))
-                    p.closeSubpath()
-                }
-                .fill(LinearGradient(colors: [tint.opacity(0.32), tint.opacity(0.02)],
-                                     startPoint: .top, endPoint: .bottom))
-                Path { p in
-                    p.move(to: pts[0])
-                    pts.dropFirst().forEach { p.addLine(to: $0) }
-                }
-                .stroke(tint, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                // 峰值不另画点：数字悬在波峰上方已经指得很清楚，
-                // 再加个圈就和「今天」那个点长得一样，反倒像有两个特殊日子
-                Text(SessionUsage.Profile.formatTokens(peak))
-                    .font(.system(size: 9.5, weight: .medium)).foregroundColor(.secondary)
-                    .fixedSize()
-                    .position(x: Self.peakLabelX(at: pts[peakIdx].x, width: w),
-                              y: max(pts[peakIdx].y - 9, 5))
-                Circle().fill(tint).frame(width: 6, height: 6).position(pts[pts.count - 1])
-            }
-            // 悬停靶：不画刻度点也要能逐日看明细，等宽七格铺在曲线上
-            HStack(spacing: 0) {
-                ForEach(Array(series.enumerated()), id: \.offset) { _, d in
-                    Color.clear.contentShape(Rectangle())
-                        .help("\(d.day.suffix(5)) · \(SessionUsage.Profile.formatTokens(d.tokens))")
-                }
-            }
-        }
-        .frame(height: Self.trendHeight)
-    }
-
-    /// 峰值数字贴着波峰放，但不许探出图外——峰值落在第一天或最后一天时就会
-    static func peakLabelX(at px: CGFloat, width: CGFloat, labelWidth: CGFloat = 44) -> CGFloat {
-        let half = min(labelWidth / 2, width / 2)
-        return min(max(px, half), width - half)
     }
 }
 

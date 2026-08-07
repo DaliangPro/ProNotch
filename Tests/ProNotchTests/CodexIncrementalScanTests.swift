@@ -98,58 +98,6 @@ final class CodexIncrementalScanTests: XCTestCase {
         XCTAssertEqual(SessionUsage.codexFileInfo(url).buckets[day], 5, "截短改写后应按新内容重算")
     }
 
-    // MARK: - 模型桶（「最常用模型」的来源）
-
-    /// rollout 把 model 写在 turn_context 行、消耗写在 token_count 行，两者不同行，
-    /// 落账靠「当前生效的模型」这个跨行状态
-    private func turnContext(_ model: String) -> String {
-        "{\"timestamp\":\"\(today)T08:00:00.000Z\",\"type\":\"turn_context\"," +
-        "\"payload\":{\"model\":\"\(model)\",\"cwd\":\"/tmp/x\"}}"
-    }
-
-    func test消耗算在当前生效的模型头上() throws {
-        let url = try write([turnContext("gpt-5.6-sol"), event(day: today, output: 10),
-                             turnContext("gpt-5.6-mini"), event(day: today, output: 20)]
-                                .joined(separator: "\n") + "\n", to: "rollout-model.jsonl")
-        let info = SessionUsage.codexFileInfo(url)
-        XCTAssertEqual(info.models, ["gpt-5.6-sol": 10, "gpt-5.6-mini": 20], "换挡后的消耗要算给新模型")
-        XCTAssertEqual(info.buckets[today], 30, "天桶不受模型换挡影响")
-    }
-
-    /// 首个 turn_context 之前的消耗归不到任何模型，但天桶不能少——
-    /// 宁可模型桶偏少，也不能把它挂到某个猜出来的模型上
-    func test没有模型信息时只进天桶() throws {
-        let url = try write(event(day: today, output: 9) + "\n", to: "rollout-nomodel.jsonl")
-        let info = SessionUsage.codexFileInfo(url)
-        XCTAssertTrue(info.models.isEmpty)
-        XCTAssertEqual(info.buckets[today], 9)
-    }
-
-    /// 核心：续扫可能从文件中段接着读，一条 turn_context 都碰不到——
-    /// 「当前模型」必须随缓存带过去，否则续扫出来的消耗全部无主
-    func test续扫的模型桶等于全扫() throws {
-        let full = try write("", to: "rollout-model-full.jsonl")
-        let inc = try write("", to: "rollout-model-inc.jsonl")
-        let ctx = turnContext("gpt-5.6-sol")
-        let a = event(day: today, output: 10), b = event(day: today, output: 20)
-        let c = event(day: today, output: 40)
-        let half = String(b.prefix(b.count / 2))
-
-        try Data((ctx + "\n" + a + "\n" + half).utf8).write(to: inc)
-        XCTAssertEqual(SessionUsage.codexFileInfo(inc).models, ["gpt-5.6-sol": 10])
-
-        let fh = try FileHandle(forWritingTo: inc)
-        try fh.seekToEnd()
-        try fh.write(contentsOf: Data((String(b.dropFirst(half.count)) + "\n" + c + "\n").utf8))
-        try fh.close()
-
-        let incResult = SessionUsage.codexFileInfo(inc)      // 续扫：起点已在 turn_context 之后
-        try Data((ctx + "\n" + a + "\n" + b + "\n" + c + "\n").utf8).write(to: full)
-        let fullResult = SessionUsage.codexFileInfo(full)    // 全扫
-        XCTAssertEqual(incResult.models, fullResult.models, "续扫与全扫的模型桶必须一个数")
-        XCTAssertEqual(incResult.models, ["gpt-5.6-sol": 70], "10+20+40，残行补全后恰好算一次")
-    }
-
     /// 大小写进 8MB 分块边界也不许丢行：造一条横跨块边界的记录
     func test跨分块边界的行不丢() throws {
         let day = today
