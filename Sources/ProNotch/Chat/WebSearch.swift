@@ -147,8 +147,10 @@ enum WebSearch {
         let plan = Array(queries.prefix(maxQueries)).filter { !$0.query.isEmpty }
         guard !plan.isEmpty else { return [] }
         if plan.count == 1 {
-            return try await search(query: plan[0].query, engine: plan[0].engine, key: plan[0].key,
-                                    timeRange: timeRange, news: news)
+            var single = try await search(query: plan[0].query, engine: plan[0].engine,
+                                          key: plan[0].key, timeRange: timeRange, news: news)
+            await fillBodies(&single)
+            return single
         }
         var buckets = [Int: [SearchResult]]()
         var failures = [Error]()
@@ -171,7 +173,9 @@ enum WebSearch {
             if let first = failures.first { throw first }
             return []
         }
-        return interleave(buckets, order: plan.indices)
+        var merged = interleave(buckets, order: plan.indices)
+        await fillBodies(&merged)
+        return merged
     }
 
     /// URL 归一化，只为去重：去掉 scheme 与末尾斜杠——http/https、带不带斜杠都算同一页。
@@ -281,7 +285,7 @@ enum WebSearch {
             throw NSError(domain: "ProNotch", code: -6,
                           userInfo: [NSLocalizedDescriptionKey: "Brave 返回格式异常"])
         }
-        var results: [SearchResult] = list.prefix(resultsPerQuery).compactMap { item in
+        let results: [SearchResult] = list.prefix(resultsPerQuery).compactMap { item in
             guard let title = item["title"] as? String,
                   let url = item["url"] as? String else { return nil }
             // 搜索引擎的摘要本就是冲着查询词来的，算作相关片段；正文另抓
@@ -293,7 +297,7 @@ enum WebSearch {
             throw NSError(domain: "ProNotch", code: -7,
                           userInfo: [NSLocalizedDescriptionKey: "Brave 未返回结果"])
         }
-        await fillBodies(&results)
+        // 正文不在这儿抓：等多条查询合并去重、定下最终名单再统一抓（见 fillBodies）
         return results
     }
 
@@ -340,7 +344,7 @@ enum WebSearch {
             throw NSError(domain: "ProNotch", code: -9,
                           userInfo: [NSLocalizedDescriptionKey: "博查返回格式异常"])
         }
-        var results: [SearchResult] = list.prefix(resultsPerQuery).compactMap { item in
+        let results: [SearchResult] = list.prefix(resultsPerQuery).compactMap { item in
             guard let url = item["url"] as? String, !url.isEmpty else { return nil }
             let title = (item["name"] as? String) ?? (item["siteName"] as? String) ?? url
             // summary（AI 摘要）优先，没有才退 snippet——两者都是冲着查询来的相关片段
@@ -354,7 +358,6 @@ enum WebSearch {
             throw NSError(domain: "ProNotch", code: -10,
                           userInfo: [NSLocalizedDescriptionKey: "博查未返回结果"])
         }
-        await fillBodies(&results)
         return results
     }
 
@@ -369,13 +372,21 @@ enum WebSearch {
         }
     }
 
-    /// 给前几条补抓页面正文（Brave / DDG / 博查只给摘要，光靠它模型没料可用）。
+    /// 给会进提示词的那几条补抓页面正文（Brave / DDG / 博查只给摘要，光靠它模型没料可用）。
+    ///
+    /// **抓在合并去重之后**（2026-08-07 改）。原来是每条查询搜完就地抓前 4 条，
+    /// 两头都不对：3 条查询＝12 次抓取，而最终只有 `maxDocuments` 条能进提示词，
+    /// 抓来一堆用不上的；反过来，某条查询里排第 5、交错合并后却入选的，
+    /// 到手只有一句摘要——**该抓的没抓，抓了的用不上**。
+    /// 按最终名单抓之后，次数更少（封顶 8 次）、覆盖反而更全。
+    ///
+    /// 已有正文的跳过：Tavily 自带 raw_content，再抓一遍既慢又可能抓得更差。
     /// 抓失败不影响该条——相关片段仍在，只是少了正文
-    private static func fillBodies(_ results: inout [SearchResult]) async {
-        let count = min(4, results.count)
+    static func fillBodies(_ results: inout [SearchResult]) async {
+        let count = min(maxDocuments, results.count)
         var fetched = [Int: String]()
         await withTaskGroup(of: (Int, String?).self) { group in
-            for index in 0..<count {
+            for index in 0..<count where results[index].body.isEmpty {
                 let url = results[index].url
                 group.addTask { (index, await fetchPageText(url: url)) }
             }
@@ -419,8 +430,6 @@ enum WebSearch {
                           userInfo: [NSLocalizedDescriptionKey:
                               "DuckDuckGo 未解析到结果（可能被拦截或改版），建议在设置中配置 Tavily Key"])
         }
-
-        await fillBodies(&results)
         return results
     }
 

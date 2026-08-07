@@ -114,8 +114,11 @@ final class NotchWindowController {
         }
         Task { @MainActor in
             do {
-                let results = try await WebSearch.search(
+                var results = try await WebSearch.search(
                     query: "MacBook 刘海 notch 应用", engine: engine, key: key)
+                // 正文改成合并去重后统一抓（2026-08-07），`search` 自己不再抓了，
+                // 这条调试路径要量正文就得自己补上这一步
+                await WebSearch.fillBodies(&results)
                 // 相关片段与正文分开报：片段为 0 说明该引擎没给相关块，
                 // 正文为 0 说明抓取全失败——两种毛病的处置完全不同
                 let excerpts = results.reduce(0) { $0 + $1.highlights.count }

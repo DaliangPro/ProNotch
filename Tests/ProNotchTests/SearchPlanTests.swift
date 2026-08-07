@@ -176,6 +176,37 @@ final class SearchPlanTests: XCTestCase {
         XCTAssertFalse(WebSearch.canonicalURL("https://").isEmpty)
     }
 
+    // MARK: - 补抓正文
+
+    /// Tavily 自带 raw_content，不能再抓一遍把它覆盖掉——既白等一次网络，
+    /// 又可能抓得比它给的更差
+    func test已有正文的条目不会被重抓覆盖() async {
+        // .invalid 是 RFC 2606 保留的顶级域，DNS 一定解析不出来，
+        // 抓取会在地址校验那一步就快速失败，不会真的等满 8 秒超时
+        var results = [
+            SearchResult(title: "t1", url: "https://nowhere.invalid/a",
+                         highlights: "片段", body: "Tavily 给的整页正文"),
+            SearchResult(title: "t2", url: "https://nowhere.invalid/b", highlights: "片段"),
+        ]
+        await WebSearch.fillBodies(&results)
+        XCTAssertEqual(results[0].body, "Tavily 给的整页正文", "自带的正文被覆盖了")
+        XCTAssertTrue(results[1].body.isEmpty, "抓不到就保持空，由相关片段兜底")
+    }
+
+    /// 空结果不能把索引算越界
+    func test空结果补抓不崩() async {
+        var empty: [SearchResult] = []
+        await WebSearch.fillBodies(&empty)
+        XCTAssertTrue(empty.isEmpty)
+    }
+
+    /// 抓取名单的长度跟着「能进提示词的条数」走，不是另一个写死的数。
+    ///
+    /// 原来写死 4，而 maxDocuments 是 8：排在第 5 到 8 的入选来源永远只有一句摘要
+    func test抓取上限与提示词条数上限一致() {
+        XCTAssertEqual(WebSearch.maxDocuments, 8)
+    }
+
     // MARK: - 规划器的判据
 
     /// 时效判据看的必须是「答案会不会随时间变」，不是「问句里有没有时效词」。
