@@ -26,6 +26,9 @@ struct ServiceQuota: Sendable {
     var dataAt: Date?            // 数据时间（源文件里最后一条记录的时间）
     var error: String?           // 拿不到数据时的原因
     var topTasks: [TaskUsage] = []   // 近 7 天最耗额度的前 5 个任务（占总额度%）
+    /// 近 7 天用量画像：按天 token（趋势柱状图）+ 按模型 token（最常用模型）。
+    /// 百分比只答「还能用多久」，这三样答「吃了多少、哪天吃的、谁吃的」（大梁老师 2026-08-07）
+    var profile = SessionUsage.Profile()
 }
 
 /// 一轮刷新拉回来的全部额度数据（不可变快照，跨线程只传值）
@@ -74,10 +77,10 @@ struct ProductionUsageLoader: UsageLoading {
         let grokTop = SessionUsage.top(grokSessions,
             weekUsedPercent: gr?.secondary?.usedPercent ?? gr?.primary?.usedPercent, source: .grok)
         return UsageSnapshot(
-            codex: cx.map { q in var q = q; q.topTasks = codexTop; return q },
-            claude: cl.map { q in var q = q; q.topTasks = claudeTop; return q },
-            grok: gr.map { q in var q = q; q.topTasks = grokTop; return q },
-            kimi: km.map { q in var q = q; q.topTasks = kimiTop; return q },
+            codex: cx.map { q in var q = q; q.topTasks = codexTop; q.profile = .merge(codexSessions); return q },
+            claude: cl.map { q in var q = q; q.topTasks = claudeTop; q.profile = .merge(claudeSessions); return q },
+            grok: gr.map { q in var q = q; q.topTasks = grokTop; q.profile = .merge(grokSessions); return q },
+            kimi: km.map { q in var q = q; q.topTasks = kimiTop; q.profile = .merge(kimiSessions); return q },
             sessionTokens: Self.tokenTable([
                 (.claude, claudeSessions), (.codex, codexSessions),
                 (.kimi, kimiSessions), (.grok, grokSessions),

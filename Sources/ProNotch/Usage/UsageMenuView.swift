@@ -124,6 +124,8 @@ struct UsageMenuView: View {
                     }
                 }
             }
+            // 放在额度窗口之外：额度接口报错时，本地扫出来的用量照样有效
+            if let q = s.quota { UsageProfileBlock(profile: q.profile, tint: s.tint) }
             Divider()
             // 每家自己的菜单栏露出开关（大梁老师定的位置：就在这家的页面里）——
             // 关掉只影响收起后的菜单栏标题，这个面板里这家照常显示
@@ -225,6 +227,79 @@ struct UsageMenuView: View {
         if s < 3600 { return "\(max(1, s / 60)) 分钟" }
         if s < 86400 { return "\(s / 3600)h \(s % 3600 / 60)m" }
         return "\(s / 86400)d \(s % 86400 / 3600)h"
+    }
+}
+
+/// 用量画像：百分比只答「还能用多久」，这块答「吃了多少、哪天吃的、谁吃的」
+/// （大梁老师 2026-08-07 对着别家菜单栏面板提的：模型选项卡里的数据更丰富）。
+///
+/// 全部来自本机会话记录扫描，因此窗口固定 7 天——与额度扫描窗口同宽，不额外增加扫描量
+/// （扩到 30 天＝扫描量与常驻内存四倍，得不偿失）。
+struct UsageProfileBlock: View {
+    let profile: SessionUsage.Profile
+    let tint: Color
+    /// 柱子的最大高度；矮柱也保底 2pt，让「那天没跑」和「那天跑得少」都看得出来
+    static let barHeight: CGFloat = 36
+    /// 柱宽固定、列宽均分：7 根柱若各自撑满列宽（约 41pt）会宽过高，看着是一排方块不是趋势
+    static let barWidth: CGFloat = 16
+
+    var body: some View {
+        if profile.total > 0 {
+            let series = profile.series(days: 7)
+            VStack(alignment: .leading, spacing: 8) {
+                // 两端对齐，和下面那行「最常用 … 峰值」共用同一条栅格
+                HStack(alignment: .top, spacing: 0) {
+                    stat("今日", SessionUsage.Profile.formatTokens(profile.today), .leading)
+                    stat("近 7 天", SessionUsage.Profile.formatTokens(profile.total), .trailing)
+                }
+                bars(series)
+                HStack(spacing: 6) {
+                    if let m = profile.topModel {
+                        Text("最常用").font(.system(size: 11)).foregroundColor(.secondary)
+                        Text(SessionUsage.Profile.shortModel(m))
+                            .font(.system(size: 11, weight: .medium)).foregroundColor(tint)
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                    Spacer(minLength: 6)
+                    Text("峰值 \(SessionUsage.Profile.formatTokens(series.map(\.tokens).max() ?? 0))")
+                        .font(.system(size: 11)).foregroundColor(.secondary).fixedSize()
+                }
+            }
+            .help("统计自本机会话记录（近 7 天）")
+        }
+    }
+
+    private func stat(_ label: String, _ value: String, _ side: HorizontalAlignment) -> some View {
+        VStack(alignment: side, spacing: 1) {
+            Text(label).font(.system(size: 10.5)).foregroundColor(.secondary)
+            Text(value).font(.system(size: 15, weight: .semibold, design: .rounded))
+        }
+        .frame(maxWidth: .infinity, alignment: side == .leading ? .leading : .trailing)
+    }
+
+    /// 近 7 天每日 token 柱状图：最后一根是今天（实色），其余淡一档。
+    /// 每根柱都撑满整列高度做 hover 区，否则矮柱几乎悬不中
+    private func bars(_ series: [(day: String, tokens: Int)]) -> some View {
+        let peak = max(series.map(\.tokens).max() ?? 0, 1)
+        return HStack(alignment: .bottom, spacing: 0) {
+            ForEach(Array(series.enumerated()), id: \.offset) { i, d in
+                ZStack(alignment: .bottom) {
+                    Color.clear
+                    // 底座：没跑的那天只剩这条槽，七天的位置才始终数得出来
+                    Capsule().fill(Color.primary.opacity(0.13))
+                        .frame(width: Self.barWidth, height: 2)
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(i == series.count - 1 ? tint : tint.opacity(0.45))
+                        .frame(width: Self.barWidth,
+                               height: Self.barHeight * CGFloat(d.tokens) / CGFloat(peak))
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: Self.barHeight)
+                .contentShape(Rectangle())
+                .help("\(d.day.suffix(5)) · \(SessionUsage.Profile.formatTokens(d.tokens))")
+            }
+        }
+        .frame(height: Self.barHeight)
     }
 }
 

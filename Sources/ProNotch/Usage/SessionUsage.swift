@@ -15,7 +15,74 @@ enum SessionUsage {
     /// 近 7 天窗口（与周额度对齐）
     private static let window: TimeInterval = 7 * 86400
 
-    struct Scanned { let id: String; let tokens: Int; let url: URL; var claudeTitle: String? = nil }
+    struct Scanned {
+        let id: String; let tokens: Int; let url: URL; var claudeTitle: String? = nil
+        /// 按天 token（"2026-08-07" → token），供额度页的用量趋势柱状图
+        var daily: [String: Int] = [:]
+        /// 按模型 token（"gpt-5.6-sol" → token），供「最常用模型」
+        var byModel: [String: Int] = [:]
+    }
+
+    /// 一家 Agent 近 7 天的用量画像：把各会话的天桶/模型桶并起来。
+    /// 百分比只回答「还能用多久」，这里补上「吃了多少、哪天吃的、被哪个模型吃的」
+    struct Profile: Sendable, Equatable {
+        var daily: [String: Int] = [:]
+        var byModel: [String: Int] = [:]
+
+        var total: Int { daily.values.reduce(0, +) }
+        /// 今日（按本地日历）token
+        var today: Int { daily[Self.dayKey(Date())] ?? 0 }
+        /// 吃 token 最多的模型；并列时取名字靠前的，保证显示稳定不跳
+        var topModel: String? {
+            byModel.max { a, b in a.value != b.value ? a.value < b.value : a.key > b.key }?.key
+        }
+        /// 最近 `days` 天的桶，从早到晚补齐空档（没跑的日子是 0，不是缺一根柱子）
+        func series(days: Int, now: Date = Date()) -> [(day: String, tokens: Int)] {
+            (0..<days).reversed().map { back in
+                let key = Self.dayKey(now.addingTimeInterval(-Double(back) * 86400))
+                return (key, daily[key] ?? 0)
+            }
+        }
+
+        static func merge(_ items: [Scanned]) -> Profile {
+            var p = Profile()
+            for s in items {
+                for (d, t) in s.daily { p.daily[d, default: 0] += t }
+                for (m, t) in s.byModel { p.byModel[m, default: 0] += t }
+            }
+            return p
+        }
+
+        /// 天桶的键：transcript 里的时间戳是 UTC，这里统一按 UTC 取前 10 位，
+        /// 与各家 scan 落桶的口径一致（混用本地日历会让「今日」在时区偏移时错位）
+        static func dayKey(_ date: Date) -> String {
+            String(iso8601UTC.string(from: date).prefix(10))
+        }
+
+        /// 模型名的展示写法：claude-sonnet-4-5-20250929 → sonnet-4-5。
+        /// 只砍厂商前缀和日期后缀这两段固定噪音，其余原样保留
+        /// （gpt-5.6-sol、grok-4.5-build 这类本来就短，砍了反而认不出）
+        static func shortModel(_ raw: String) -> String {
+            var s = raw
+            if s.hasPrefix("claude-") { s.removeFirst("claude-".count) }
+            if let dash = s.lastIndex(of: "-") {
+                let tail = s[s.index(after: dash)...]
+                if tail.count == 8, tail.allSatisfy(\.isNumber) { s = String(s[s.startIndex..<dash]) }
+            }
+            // 砍到只剩一串数字就说明砍过头了（名字本身没别的信息），退回原样
+            return s.isEmpty || s.allSatisfy(\.isNumber) ? raw : s
+        }
+
+        /// token 数的人读写法：24500000 → 24.5M。四位数以上一律缩写，
+        /// 面板宽度只有 320pt，摆不下九位数字
+        static func formatTokens(_ n: Int) -> String {
+            let d = Double(n)
+            if d >= 1e9 { return String(format: "%.1fB", d / 1e9) }
+            if d >= 1e6 { return String(format: "%.1fM", d / 1e6) }
+            if d >= 1e3 { return String(format: "%.1fK", d / 1e3) }
+            return "\(n)"
+        }
+    }
 
     // MARK: - Claude：~/.claude/projects/*/*.jsonl 按文件累加有效 token
     //
@@ -30,6 +97,8 @@ enum SessionUsage {
         let day: String?
         let ts: Date?
         let tokens: Int
+        /// 这条消耗归哪个模型（transcript 里本来就带，原先读完只用来过滤前缀就扔了）
+        var model: String? = nil
     }
 
     /// 与 Codex 侧 CodexScanCache 同一个方子（那边的注释是正文，这边只记差异）：
@@ -56,12 +125,16 @@ enum SessionUsage {
         let cutoff = max(Date().addingTimeInterval(-window), since ?? .distantPast)
         let cutoffDay = String(iso8601UTC.string(from: cutoff).prefix(10))
         return claudeFileScans(root: root).compactMap { file in
-            let sum = file.entries.lazy
-                .filter { $0.day.map { $0 >= cutoffDay } ?? true }   // timestamp 缺失视为在窗内（沿旧口径）
-                .reduce(0) { $0 + $1.tokens }
+            var sum = 0, daily: [String: Int] = [:], byModel: [String: Int] = [:]
+            for e in file.entries where e.day.map({ $0 >= cutoffDay }) ?? true {   // timestamp 缺失视为在窗内（沿旧口径）
+                sum += e.tokens
+                if let d = e.day { daily[d, default: 0] += e.tokens }   // 无日期的条目进不了趋势图，但仍计入总量
+                if let m = e.model { byModel[m, default: 0] += e.tokens }
+            }
             guard sum > 0 else { return nil }
             return Scanned(id: file.url.deletingPathExtension().lastPathComponent, tokens: sum,
-                           url: file.url, claudeTitle: titleize(file.title))
+                           url: file.url, claudeTitle: titleize(file.title),
+                           daily: daily, byModel: byModel)
         }
     }
 
@@ -205,7 +278,8 @@ enum SessionUsage {
               let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
               (obj["type"] as? String) == "assistant",
               let msg = obj["message"] as? [String: Any],
-              (msg["model"] as? String)?.hasPrefix("claude-") == true,   // 只算官方模型，第三方中转不耗订阅
+              let model = msg["model"] as? String,
+              model.hasPrefix("claude-"),   // 只算官方模型，第三方中转不耗订阅
               let usage = msg["usage"] as? [String: Any] else { return }
         let tokens = ["input_tokens", "output_tokens", "cache_creation_input_tokens"]
             .compactMap { (usage[$0] as? NSNumber)?.intValue }.reduce(0, +)
@@ -213,7 +287,8 @@ enum SessionUsage {
         let tsStr = obj["timestamp"] as? String
         let day = tsStr.map { String($0.prefix(10)) }
         if let day, day < cutoffDay { return }   // 窗外老条目不入缓存（timestamp 缺失保留，沿旧口径）
-        entries.append(UsageEntry(day: day, ts: tsStr.flatMap { ISO8601Flex.parse($0) }, tokens: tokens))
+        entries.append(UsageEntry(day: day, ts: tsStr.flatMap { ISO8601Flex.parse($0) },
+                                  tokens: tokens, model: model))
     }
 
     /// 仅测试用：清掉 Claude 文件缓存
@@ -250,9 +325,17 @@ enum SessionUsage {
             let info = codexFileInfo(f)
             // 天桶按同一个 cutoff 过滤（天粒度，重置时刻所在的那天整天计入，误差 ≤1 天）
             let cutoffDay = String(iso8601UTC.string(from: cutoff).prefix(10))
-            let tokens = info.buckets.filter { $0.key >= cutoffDay }.values.reduce(0, +)
+            let daily = info.buckets.filter { $0.key >= cutoffDay }
+            let tokens = daily.values.reduce(0, +)
             guard tokens > 0 else { return }
-            raw.append((Scanned(id: f.deletingPathExtension().lastPathComponent, tokens: tokens, url: f), info.parent))
+            // 模型桶按全文件占比折算到窗内 token：模型桶不带日期（模型与日期在两类行上），
+            // 按天精确切分要把两类行的时序也存进缓存，代价不划算——只是选「最常用的那个」，比例足够
+            let all = info.buckets.values.reduce(0, +)
+            let byModel = all > 0
+                ? info.models.mapValues { Int((Double($0) * Double(tokens) / Double(all)).rounded()) }
+                : [:]
+            raw.append((Scanned(id: f.deletingPathExtension().lastPathComponent, tokens: tokens, url: f,
+                                daily: daily, byModel: byModel), info.parent))
             }   // autoreleasepool
         }
         // 子代理归并到根任务：Codex Desktop 多代理把并行子代理拆成独立 rollout 文件
@@ -266,20 +349,25 @@ enum SessionUsage {
             return u
         }
         var tokensByRoot: [String: Int] = [:]
+        var dailyByRoot: [String: [String: Int]] = [:]
+        var modelsByRoot: [String: [String: Int]] = [:]
         var repByRoot: [String: Scanned] = [:]   // 根任务的代表文件（优先根自己的，根不在窗口则用子代理的）
         for (s, _) in raw {
             let uuid = String(s.id.suffix(36))
             let r = rootUuid(uuid)
             tokensByRoot[r, default: 0] += s.tokens
+            for (d, t) in s.daily { dailyByRoot[r, default: [:]][d, default: 0] += t }
+            for (m, t) in s.byModel { modelsByRoot[r, default: [:]][m, default: 0] += t }
             if uuid == r { repByRoot[r] = s } else if repByRoot[r] == nil { repByRoot[r] = s }
         }
         return tokensByRoot.compactMap { r, tok in
             guard let rep = repByRoot[r] else { return nil }
+            let daily = dailyByRoot[r] ?? [:], models = modelsByRoot[r] ?? [:]
             if String(rep.id.suffix(36)) == r {
-                return Scanned(id: rep.id, tokens: tok, url: rep.url)
+                return Scanned(id: rep.id, tokens: tok, url: rep.url, daily: daily, byModel: models)
             }
             // 根文件本周没动、只有子代理在跑：合成 id（后 36 位 = 根 uuid，名字仍可查 index），cwd 同子代理
-            return Scanned(id: "agg-\(r)", tokens: tok, url: rep.url)
+            return Scanned(id: "agg-\(r)", tokens: tok, url: rep.url, daily: daily, byModel: models)
         }
     }
 
@@ -300,8 +388,13 @@ enum SessionUsage {
         let size: Int
         /// 完整行聚合＋末尾残行 ＝ 对外结果
         let resultTokens: [String: Int]
+        let resultModels: [String: Int]
         /// 只含完整行的聚合，续扫的种子
         let completeTokens: [String: Int]
+        let completeModels: [String: Int]
+        /// 完整行读到头时「当前生效的模型」——model 写在 turn_context 行、消耗写在 token_count 行，
+        /// 续扫从文件中段接着读时可能一条 turn_context 都碰不到，得把它带过去
+        let completeModel: String?
         /// 最后一个换行符之后的绝对偏移，续扫起点
         let scannedOffset: UInt64
         let parent: String?
@@ -309,9 +402,9 @@ enum SessionUsage {
     nonisolated(unsafe) private static var codexCache: [String: CodexScanCache] = [:]
     private static let codexCacheLock = NSLock()
 
-    /// 单文件信息：近 7 天天桶 + 父任务 id（缓存与续扫见 CodexScanCache；
+    /// 单文件信息：近 7 天天桶 + 模型桶 + 父任务 id（缓存与续扫见 CodexScanCache；
     /// 天粒度过滤误差 ≤1 天，估算够用。internal 是为了测试续扫等于全扫）
-    static func codexFileInfo(_ url: URL) -> (buckets: [String: Int], parent: String?) {
+    static func codexFileInfo(_ url: URL) -> (buckets: [String: Int], models: [String: Int], parent: String?) {
         // 不走 URL.resourceValues：它会把 stat 结果缓存在 URL 值里，同一个 URL 第二次
         // 问拿到的是旧数——续扫判据（mtime+size）必须每次都是新鲜的
         let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
@@ -321,7 +414,7 @@ enum SessionUsage {
         let cached = codexCache[url.path]
         codexCacheLock.unlock()
         if let cached, cached.mtime == mtime, cached.size == size {
-            return (cached.resultTokens, cached.parent)
+            return (cached.resultTokens, cached.resultModels, cached.parent)
         }
         // 变长且旧偏移仍在文件内 → 追加式续扫；否则全量
         let incremental = cached.flatMap { c -> CodexScanCache? in
@@ -329,21 +422,27 @@ enum SessionUsage {
         }
         guard let scan = scanCodexLines(url,
                                         from: incremental?.scannedOffset ?? 0,
-                                        seed: incremental?.completeTokens ?? [:]) else {
-            return (incremental?.resultTokens ?? [:], incremental?.parent)
+                                        seed: incremental?.completeTokens ?? [:],
+                                        seedModels: incremental?.completeModels ?? [:],
+                                        seedModel: incremental?.completeModel) else {
+            return (incremental?.resultTokens ?? [:], incremental?.resultModels ?? [:], incremental?.parent)
         }
-        var result = scan.complete
-        consumeTokenLine(scan.tail, into: &result)   // 活跃会话最新一笔常是无换行的末行
+        var result = scan.complete, resultModels = scan.completeModels, tailModel = scan.currentModel
+        // 活跃会话最新一笔常是无换行的末行
+        consumeCodexLine(scan.tail, model: &tailModel, into: &result, models: &resultModels)
         // parent 在首行、永不变：续扫沿用，全扫才读
         let parent = incremental.map(\.parent) ?? codexParentThreadId(url)
         codexCacheLock.lock()
         codexCache[url.path] = CodexScanCache(mtime: mtime, size: size,
                                               resultTokens: result,
+                                              resultModels: resultModels,
                                               completeTokens: scan.complete,
+                                              completeModels: scan.completeModels,
+                                              completeModel: scan.currentModel,
                                               scannedOffset: scan.offsetAfterLastNewline,
                                               parent: parent)
         codexCacheLock.unlock()
-        return (result, parent)
+        return (result, resultModels, parent)
     }
 
     /// 仅测试用：清掉 Codex 文件缓存，保证用例之间互不串味
@@ -368,6 +467,9 @@ enum SessionUsage {
     /// **由调用方决定**要不要算进结果——续扫的正确性全靠残行不进基底
     struct CodexLineScan {
         var complete: [String: Int]
+        var completeModels: [String: Int] = [:]
+        /// 完整行读到头时生效的模型（续扫种子，语义见 CodexScanCache.completeModel）
+        var currentModel: String?
         var offsetAfterLastNewline: UInt64
         var tail = Data()
     }
@@ -379,16 +481,21 @@ enum SessionUsage {
     /// Collection 抽象，每字节一次索引换算，200MB 一遍就是几十亿次；换成 libc
     /// 的指针原语后同样一遍是内存带宽级别。只有含 token_count 的行才拷出来解析 JSON
     static func scanCodexLines(_ url: URL, from startOffset: UInt64,
-                               seed: [String: Int]) -> CodexLineScan? {
+                               seed: [String: Int],
+                               seedModels: [String: Int] = [:],
+                               seedModel: String? = nil) -> CodexLineScan? {
         guard let fh = try? FileHandle(forReadingFrom: url) else { return nil }
         defer { try? fh.close() }
         if startOffset > 0 {
             guard (try? fh.seek(toOffset: startOffset)) != nil else { return nil }
         }
-        var scan = CodexLineScan(complete: seed, offsetAfterLastNewline: startOffset)
+        var scan = CodexLineScan(complete: seed, completeModels: seedModels,
+                                 currentModel: seedModel, offsetAfterLastNewline: startOffset)
         var filePos = startOffset
         var remainder = Data()
         let needle = [UInt8]("token_count".utf8)
+        // 模型写在另一类行（turn_context）里，得一起粗筛出来，否则 token 落桶时不知道算谁的
+        let modelNeedle = [UInt8]("turn_context".utf8)
         while let chunk = try? fh.read(upToCount: 8 * 1024 * 1024), !chunk.isEmpty {
             filePos += UInt64(chunk.count)
             var data = remainder
@@ -397,18 +504,25 @@ enum SessionUsage {
             data.withUnsafeBytes { (buf: UnsafeRawBufferPointer) in
                 guard let base = buf.baseAddress else { return }
                 needle.withUnsafeBufferPointer { np in
-                    guard let npBase = np.baseAddress else { return }
-                    var lineStart = 0
-                    while lineStart < buf.count,
-                          let hit = memchr(base + lineStart, 0x0A, buf.count - lineStart) {
-                        let nl = UnsafeRawPointer(hit) - base
-                        if nl > lineStart,
-                           memmem(base + lineStart, nl - lineStart, npBase, np.count) != nil {
-                            consumeTokenLine(data.subdata(in: lineStart..<nl), into: &scan.complete)
+                    modelNeedle.withUnsafeBufferPointer { mp in
+                        guard let npBase = np.baseAddress, let mpBase = mp.baseAddress else { return }
+                        var lineStart = 0
+                        while lineStart < buf.count,
+                              let hit = memchr(base + lineStart, 0x0A, buf.count - lineStart) {
+                            let nl = UnsafeRawPointer(hit) - base
+                            if nl > lineStart {
+                                let len = nl - lineStart
+                                if memmem(base + lineStart, len, npBase, np.count) != nil
+                                    || memmem(base + lineStart, len, mpBase, mp.count) != nil {
+                                    consumeCodexLine(data.subdata(in: lineStart..<nl),
+                                                     model: &scan.currentModel,
+                                                     into: &scan.complete, models: &scan.completeModels)
+                                }
+                            }
+                            lineStart = nl + 1
                         }
-                        lineStart = nl + 1
+                        consumed = lineStart
                     }
-                    consumed = lineStart
                 }
             }
             remainder = data.subdata(in: consumed..<data.count)
@@ -418,9 +532,22 @@ enum SessionUsage {
         return scan
     }
 
-    /// 单行落桶。粗筛（含 token_count 才解析）在这里再核一次，残行也能直接喂
-    private static func consumeTokenLine(_ line: Data, into buckets: inout [String: Int]) {
-        guard !line.isEmpty, line.range(of: Data("token_count".utf8)) != nil,
+    /// 单行落桶。两类行都从这儿过：turn_context 更新「当前模型」，token_count 落天桶+模型桶。
+    /// 粗筛在指针环里做过了，这里再核一次关键词；残行也能直接喂
+    private static func consumeCodexLine(_ line: Data, model: inout String?,
+                                         into buckets: inout [String: Int],
+                                         models: inout [String: Int]) {
+        guard !line.isEmpty else { return }
+        // 模型换挡：rollout 里 model 只写在 turn_context，之后的每笔消耗都算它的
+        if line.range(of: Data("turn_context".utf8)) != nil,
+           let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
+           obj["type"] as? String == "turn_context",
+           let payload = obj["payload"] as? [String: Any],
+           let m = payload["model"] as? String, !m.isEmpty {
+            model = m
+            return
+        }
+        guard line.range(of: Data("token_count".utf8)) != nil,
               let obj = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
               let last = findDict(key: "last_token_usage", in: obj) else { return }
         let input = (last["input_tokens"] as? NSNumber)?.intValue ?? 0
@@ -429,6 +556,7 @@ enum SessionUsage {
         let eff = max(0, input - cachedIn) + output
         guard eff > 0, let ts = obj["timestamp"] as? String, ts.count >= 10 else { return }
         buckets[String(ts.prefix(10)), default: 0] += eff
+        if let m = model { models[m, default: 0] += eff }   // 首个 turn_context 之前的消耗归不了模型，只计入天桶
     }
 
     /// 递归找指定 key 的字典（包裹层级随 Codex 版本变化，不写死路径；找特定 key，不受字典遍历顺序影响）
@@ -460,37 +588,55 @@ enum SessionUsage {
         // 同一任务的并行子代理不该在榜上占成多行（与 Codex 侧 parent_thread_id 归并同一诉求，
         // 这里天然同目录，不必上溯）
         var tokensBySession: [String: Int] = [:]
+        var dailyBySession: [String: [String: Int]] = [:]
+        var modelsBySession: [String: [String: Int]] = [:]
         var urlBySession: [String: URL] = [:]
         for case let url as URL in en where url.lastPathComponent == "wire.jsonl" {
             guard let m = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
                   m > cutoff,
                   let sid = url.pathComponents.last(where: { $0.hasPrefix("session_") }) else { continue }
-            let sum = kimiFileTokens(url, cutoff: cutoff)
-            guard sum > 0 else { continue }
-            tokensBySession[sid, default: 0] += sum
+            let f = kimiFileTokens(url, cutoff: cutoff)
+            guard f.sum > 0 else { continue }
+            tokensBySession[sid, default: 0] += f.sum
+            for (d, t) in f.daily { dailyBySession[sid, default: [:]][d, default: 0] += t }
+            for (mm, t) in f.byModel { modelsBySession[sid, default: [:]][mm, default: 0] += t }
             // 代表文件优先取主代理的（拿标题/项目名时更靠谱）
             if urlBySession[sid] == nil || url.pathComponents.contains("main") { urlBySession[sid] = url }
         }
         return tokensBySession.compactMap { sid, tok in
-            urlBySession[sid].map { Scanned(id: sid, tokens: tok, url: $0) }
+            urlBySession[sid].map {
+                Scanned(id: sid, tokens: tok, url: $0,
+                        daily: dailyBySession[sid] ?? [:], byModel: modelsBySession[sid] ?? [:])
+            }
         }
     }
 
-    private static func kimiFileTokens(_ url: URL, cutoff: Date) -> Int {
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return 0 }
-        var sum = 0
+    private static func kimiFileTokens(_ url: URL, cutoff: Date) -> (sum: Int, daily: [String: Int], byModel: [String: Int]) {
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return (0, [:], [:]) }
+        var sum = 0, daily: [String: Int] = [:], byModel: [String: Int] = [:]
         for line in text.split(separator: "\n") where line.contains("usage.record") {
             guard let obj = try? JSONSerialization.jsonObject(with: Data(line.utf8)) as? [String: Any],
                   obj["type"] as? String == "usage.record",
                   let u = obj["usage"] as? [String: Any] else { continue }
             // time 为毫秒时间戳；缺失视为在窗内（沿 Claude 侧口径）
-            if let ms = (obj["time"] as? NSNumber)?.doubleValue,
-               Date(timeIntervalSince1970: ms / 1000) < cutoff { continue }
+            var day: String?
+            if let ms = (obj["time"] as? NSNumber)?.doubleValue {
+                let at = Date(timeIntervalSince1970: ms / 1000)
+                if at < cutoff { continue }
+                day = Profile.dayKey(at)
+            }
             let inOther = (u["inputOther"] as? NSNumber)?.intValue ?? 0
             let out = (u["output"] as? NSNumber)?.intValue ?? 0
-            sum += inOther + out
+            let eff = inOther + out
+            guard eff > 0 else { continue }
+            sum += eff
+            if let day { daily[day, default: 0] += eff }
+            // model 与消耗写在同一条记录里（形如 "kimi-code/k3"），去掉厂商前缀只留模型名
+            if let m = obj["model"] as? String, !m.isEmpty {
+                byModel[String(m.split(separator: "/").last ?? Substring(m)), default: 0] += eff
+            }
         }
-        return sum
+        return (sum, daily, byModel)
     }
 
     // MARK: - Grok(~/.grok/sessions/<项目>/<会话 uuid>/updates.jsonl)
@@ -510,31 +656,35 @@ enum SessionUsage {
         let fm = FileManager.default
         let cutoff = Date().addingTimeInterval(-window)
         guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]) else { return [] }
-        var best: [String: (tokens: Int, url: URL)] = [:]
+        var best: [String: (scan: GrokFileScan, url: URL)] = [:]
         for case let url as URL in en where url.lastPathComponent == "updates.jsonl" {
             guard let rv = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]),
                   let m = rv.contentModificationDate, m > cutoff else { continue }
             let sid = url.deletingLastPathComponent().lastPathComponent
-            let sum = grokFileTokens(url, mtime: m, size: rv.fileSize ?? 0, cutoff: cutoff)
-            guard sum > 0, best[sid]?.tokens ?? -1 < sum else { continue }
-            best[sid] = (sum, url)
+            let scan = grokFileTokens(url, mtime: m, size: rv.fileSize ?? 0, cutoff: cutoff)
+            guard scan.sum > 0, best[sid]?.scan.sum ?? -1 < scan.sum else { continue }
+            best[sid] = (scan, url)
         }
-        return best.map { Scanned(id: $0.key, tokens: $0.value.tokens, url: $0.value.url) }
+        return best.map {
+            Scanned(id: $0.key, tokens: $0.value.scan.sum, url: $0.value.url,
+                    daily: $0.value.scan.daily, byModel: $0.value.scan.byModel)
+        }
     }
 
-    private struct GrokScanCache { let mtime: Date; let size: Int; let tokens: Int }
+    struct GrokFileScan { var sum = 0; var daily: [String: Int] = [:]; var byModel: [String: Int] = [:] }
+    private struct GrokScanCache { let mtime: Date; let size: Int; let scan: GrokFileScan }
     nonisolated(unsafe) private static var grokCache: [String: GrokScanCache] = [:]
     private static let grokCacheLock = NSLock()
 
     /// 流式扫描单个 updates.jsonl（照 Codex 侧同款：分块读 + 只对含关键词的行做 JSON 解析），
     /// 结果按 mtime+size 缓存——历史会话写完就不再变，每轮真正要重读的只有活跃那一两个
-    private static func grokFileTokens(_ url: URL, mtime: Date, size: Int, cutoff: Date) -> Int {
+    private static func grokFileTokens(_ url: URL, mtime: Date, size: Int, cutoff: Date) -> GrokFileScan {
         grokCacheLock.lock()
         let cached = grokCache[url.path]
         grokCacheLock.unlock()
-        if let cached, cached.mtime == mtime, cached.size == size { return cached.tokens }
+        if let cached, cached.mtime == mtime, cached.size == size { return cached.scan }
 
-        var sum = 0
+        var out = GrokFileScan()
         if let fh = try? FileHandle(forReadingFrom: url) {
             defer { try? fh.close() }
             let needle = Data("turn_completed".utf8)
@@ -547,12 +697,29 @@ enum SessionUsage {
                       update["sessionUpdate"] as? String == "turn_completed",
                       let u = update["usage"] as? [String: Any] else { return }
                 // 外层 timestamp 为秒级；缺失视为在窗内
-                if let ts = (obj["timestamp"] as? NSNumber)?.doubleValue,
-                   Date(timeIntervalSince1970: ts) < cutoff { return }
+                var day: String?
+                if let ts = (obj["timestamp"] as? NSNumber)?.doubleValue {
+                    let at = Date(timeIntervalSince1970: ts)
+                    if at < cutoff { return }
+                    day = Profile.dayKey(at)
+                }
                 let input = (u["inputTokens"] as? NSNumber)?.intValue ?? 0
                 let cachedRead = (u["cachedReadTokens"] as? NSNumber)?.intValue ?? 0
-                let out = (u["outputTokens"] as? NSNumber)?.intValue ?? 0
-                sum += max(0, input - cachedRead) + out
+                let output = (u["outputTokens"] as? NSNumber)?.intValue ?? 0
+                let eff = max(0, input - cachedRead) + output
+                guard eff > 0 else { return }
+                out.sum += eff
+                if let day { out.daily[day, default: 0] += eff }
+                // Grok 自己就按模型拆好了（usage.modelUsage）；同口径重算一遍各模型的有效 token
+                if let byModel = u["modelUsage"] as? [String: [String: Any]] {
+                    for (name, mu) in byModel {
+                        let i = (mu["inputTokens"] as? NSNumber)?.intValue ?? 0
+                        let c = (mu["cachedReadTokens"] as? NSNumber)?.intValue ?? 0
+                        let o = (mu["outputTokens"] as? NSNumber)?.intValue ?? 0
+                        let e = max(0, i - c) + o
+                        if e > 0 { out.byModel[name, default: 0] += e }
+                    }
+                }
             }
             while let chunk = try? fh.read(upToCount: 8 * 1024 * 1024), !chunk.isEmpty {
                 autoreleasepool {
@@ -568,9 +735,9 @@ enum SessionUsage {
             consume(remainder)   // 末行没有换行结尾时，最后一条记录只在这里——漏掉的正是最新那笔
         }
         grokCacheLock.lock()
-        grokCache[url.path] = GrokScanCache(mtime: mtime, size: size, tokens: sum)
+        grokCache[url.path] = GrokScanCache(mtime: mtime, size: size, scan: out)
         grokCacheLock.unlock()
-        return sum
+        return out
     }
 
     // MARK: - 缓存释放
