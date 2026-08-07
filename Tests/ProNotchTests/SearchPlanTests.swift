@@ -175,4 +175,36 @@ final class SearchPlanTests: XCTestCase {
         // 全是斜杠时不能归一成空串，否则两个不同站点会撞成一个
         XCTAssertFalse(WebSearch.canonicalURL("https://").isEmpty)
     }
+
+    // MARK: - 规划器的判据
+
+    /// 时效判据看的必须是「答案会不会随时间变」，不是「问句里有没有时效词」。
+    ///
+    /// 由来（大梁老师 2026-08-07 的实例）：「千问办公和 QoderWork 有什么区别」
+    /// 一个时效词都没有，读上去像稳定的对比题，可那产品 2026-08-03 才公测——
+    /// 答案全在四天前的新闻里。按旧判据填 null、全时段搜，新页面根本排不上来
+    func test时效判据按答案是否会变而非问句措辞() {
+        let prompt = ChatStore.plannerSystemPrompt()
+        XCTAssertTrue(prompt.contains("答案会不会随时间变"))
+        XCTAssertFalse(prompt.contains("问题涉及时效（最新/近期/今年/现在）时填"),
+                       "旧的措辞判据必须换掉")
+        XCTAssertTrue(prompt.contains("拿不准就填 year"),
+                      "得给个够宽的默认档，限太紧会把背景资料一起滤掉")
+    }
+
+    /// 「我不认识这个名字」是规划器手上最强的时效证据——
+    /// 它的知识本身有截止日期，没听说过多半就是训练之后才出现的
+    func test不认识的名字要判定为需要联网() {
+        let prompt = ChatStore.plannerSystemPrompt()
+        XCTAssertTrue(prompt.contains("出现你不认识的名字就填 true"))
+        XCTAssertTrue(prompt.contains("凭印象答一定是错的"))
+    }
+
+    /// 原有判据不能在改时效的时候被顺手删掉
+    func test规划器仍然保留原有判据() {
+        let prompt = ChatStore.plannerSystemPrompt()
+        XCTAssertTrue(prompt.contains("拿不准就填 true"))
+        XCTAssertTrue(prompt.contains("把上面那段改短"), "基于已有内容的加工不该联网")
+        XCTAssertTrue(prompt.contains("只输出 JSON 本身，不要围栏、不要解释"))
+    }
 }
