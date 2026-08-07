@@ -876,15 +876,13 @@ final class ChatStore: ObservableObject {
                     return
                 }
                 isSearching = true
-                // 按问题语言挑渠道：海外索引对中文网页、论坛、公众号覆盖天然弱，
-                // 中文索引反过来对英文资料弱——同一个问题交给擅长的那家
-                let picked = Self.pickEngine(for: question, config: config)
-                if picked.engine != config.searchEngine {
-                    AppLog.chat.info("按问题语言改走 \(picked.engine.rawValue, privacy: .public)")
-                }
+                // 按语言挑渠道：海外索引对中文网页、论坛、公众号覆盖天然弱，
+                // 中文索引反过来对英文资料弱——交给擅长的那家。
+                // **逐条判**，不看整句问题（见 Self.route 的注释）
+                let routed = Self.route(plan.queries, config: config)
+                AppLog.chat.info("检索渠道：\(Self.routeSummary(routed), privacy: .public)")
                 let results = try await WebSearch.searchMany(
-                    queries: plan.queries, engine: picked.engine, key: picked.key,
-                    timeRange: plan.timeRange, news: plan.news)
+                    routed, timeRange: plan.timeRange, news: plan.news)
                 if !results.isEmpty {
                     payload[payload.count - 1]["content"] = Self.replacingText(
                         in: payload[payload.count - 1]["content"],
@@ -1109,6 +1107,28 @@ final class ChatStore: ObservableObject {
             return (config.searchEngine, config.searchKey)
         }
         return (alt, config.alternateKey)
+    }
+
+    /// 给每条查询各挑各的渠道（纯函数，可测）。
+    ///
+    /// 从「整句问题判一次」改成「逐条判」（大梁老师 2026-08-07 的实例）：
+    /// 「千问办公和 QoderWork 有什么区别」整句含中文 → 整轮锁死走博查，
+    /// 而拆出来的 `QoderWork` 是纯英文产品名，本该走英文强的那家。
+    /// 技术与产品话题里，一句中文问句带几个英文名字是常态，按整句判必然一刀切错
+    nonisolated static func route(_ queries: [String],
+                                  config: ChatRequestConfig) -> [WebSearch.PlannedQuery] {
+        queries.map { query in
+            let picked = pickEngine(for: query, config: config)
+            return WebSearch.PlannedQuery(query: query, engine: picked.engine, key: picked.key)
+        }
+    }
+
+    /// 这一轮实际用到的渠道，写进日志用。只报渠道名，不带查询词——
+    /// 查询词是用户问的内容，不该落进系统日志
+    nonisolated static func routeSummary(_ routed: [WebSearch.PlannedQuery]) -> String {
+        var seen = Set<String>()
+        let names = routed.map(\.engine.rawValue).filter { seen.insert($0).inserted }
+        return names.isEmpty ? "无" : names.joined(separator: "+")
     }
 
     /// 一轮检索的计划：**要不要搜**、查几条、限不限时间、走不走新闻源

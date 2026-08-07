@@ -116,7 +116,25 @@ enum WebSearch {
         }
     }
 
-    /// 多条查询并行搜、按 URL 去重、交错合并。
+    /// 一条查询 + 它该走哪个渠道。
+    ///
+    /// 渠道**按每条查询各判各的**，不跟着整句问题走（2026-08-07 改）：
+    /// 大梁老师问「千问办公和 QoderWork 有什么区别」，整句含中文会被判成中文问题、
+    /// 整轮锁死走国内索引，可拆出来的 `QoderWork` 是纯英文产品名，
+    /// 本该交给英文强的那家。一句话里两种语言的名字凑一起，在技术与产品话题里是常态
+    struct PlannedQuery: Equatable {
+        let query: String
+        let engine: SearchEngine
+        let key: String
+
+        init(query: String, engine: SearchEngine, key: String) {
+            self.query = query
+            self.engine = engine
+            self.key = key
+        }
+    }
+
+    /// 多条查询并行搜、按 URL 去重、交错合并。每条走各自的渠道。
     ///
     /// Tavily 官方对复杂问题的建议就是拆子查询分别发，而不是把多个话题塞进一条查询词。
     /// 合并用**交错**而不是简单拼接：每条查询的头名依次排在前面，
@@ -124,12 +142,12 @@ enum WebSearch {
     ///
     /// 单条查询失败不拖垮整轮（某个子查询限流也还有别的结果可用）；
     /// 全部失败才抛出——把第一条的错误交回去，让用户看到真实原因
-    static func searchMany(queries: [String], engine: SearchEngine, key: String,
+    static func searchMany(_ queries: [PlannedQuery],
                            timeRange: String? = nil, news: Bool = false) async throws -> [SearchResult] {
-        let plan = Array(queries.prefix(maxQueries)).filter { !$0.isEmpty }
+        let plan = Array(queries.prefix(maxQueries)).filter { !$0.query.isEmpty }
         guard !plan.isEmpty else { return [] }
         if plan.count == 1 {
-            return try await search(query: plan[0], engine: engine, key: key,
+            return try await search(query: plan[0].query, engine: plan[0].engine, key: plan[0].key,
                                     timeRange: timeRange, news: news)
         }
         var buckets = [Int: [SearchResult]]()
@@ -137,7 +155,7 @@ enum WebSearch {
         await withTaskGroup(of: (Int, Result<[SearchResult], Error>).self) { group in
             for (i, q) in plan.enumerated() {
                 group.addTask {
-                    do { return (i, .success(try await search(query: q, engine: engine, key: key,
+                    do { return (i, .success(try await search(query: q.query, engine: q.engine, key: q.key,
                                                              timeRange: timeRange, news: news))) }
                     catch { return (i, .failure(error)) }
                 }

@@ -75,6 +75,47 @@ final class SearchEngineRoutingTests: XCTestCase {
         XCTAssertEqual(ChatStore.pickEngine(for: "小红书起号", config: c).engine, .tavily)
     }
 
+    // MARK: - 逐条分流
+
+    /// 分流按**每条查询**判，不跟着整句问题走。
+    ///
+    /// 由来（大梁老师 2026-08-07 的实例）：「千问办公和 QoderWork 有什么区别」
+    /// 整句含中文，按整句判就整轮锁死走博查——可拆出来的 `QoderWork` 是纯英文产品名，
+    /// 本该走英文强的那家。技术与产品话题里一句中文带几个英文名是常态
+    func test同一轮里中英查询分头走() {
+        let c = config(engine: .bocha, key: "bo", alt: .tavily, altKey: "tav")
+        let routed = ChatStore.route(["千问办公", "QoderWork"], config: c)
+        XCTAssertEqual(routed.count, 2)
+        XCTAssertEqual(routed[0].engine, .bocha, "中文查询走国内索引")
+        XCTAssertEqual(routed[0].key, "bo")
+        XCTAssertEqual(routed[1].engine, .tavily, "纯英文产品名走英文强的那家")
+        XCTAssertEqual(routed[1].key, "tav")
+    }
+
+    /// 查询词原样带过去，分流不许顺手改词
+    func test分流不改动查询词() {
+        let c = config(engine: .bocha, key: "bo", alt: .tavily, altKey: "tav")
+        XCTAssertEqual(ChatStore.route(["千问办公 公测", "QoderWork 是什么"], config: c).map(\.query),
+                       ["千问办公 公测", "QoderWork 是什么"])
+    }
+
+    /// 没配备用引擎时逐条判也得到同一家——单渠道旧行为不变
+    func test无备用引擎时逐条判也不改道() {
+        let c = config(engine: .bocha, key: "bo")
+        let routed = ChatStore.route(["千问办公", "QoderWork"], config: c)
+        XCTAssertEqual(Set(routed.map(\.engine)), [.bocha])
+    }
+
+    /// 日志只报渠道名、去重、不带查询词——查询词是用户问的内容，不该落进系统日志
+    func test渠道摘要去重且不含查询词() {
+        let c = config(engine: .bocha, key: "bo", alt: .tavily, altKey: "tav")
+        let summary = ChatStore.routeSummary(
+            ChatStore.route(["千问办公", "钉钉集成", "QoderWork"], config: c))
+        XCTAssertEqual(summary, "bocha+tavily")
+        XCTAssertFalse(summary.contains("千问办公"))
+        XCTAssertEqual(ChatStore.routeSummary([]), "无")
+    }
+
     // MARK: - 博查时效词表
 
     func test时效词表映射() {
