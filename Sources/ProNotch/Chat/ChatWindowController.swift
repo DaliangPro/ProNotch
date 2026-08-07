@@ -51,8 +51,6 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
     /// 620 是输入块 + 三个胶囊不换行的下限，380 是「输入块 + 三四行回答」的下限
     static let minWindowSize = NSSize(width: 620, height: 380)
 
-    /// 钉在桌面（窗口置顶）。开＝浮在所有 App 之上，关＝像普通窗口一样被压到后面。
-    /// 默认开：这扇窗本来就是「切去浏览器核对一眼还看得见」才有用
     /// 内容列宽度是否处于「冻结」中。
     ///
     /// 由来（大梁老师 2026-07-31）：卡死修完后（消息列表已全量渲染），
@@ -62,6 +60,8 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
     /// 结束后放开，一次断行到位。ChatView 读它来决定钉不钉
     @Published var contentFrozen = false
 
+    /// 钉在桌面（窗口置顶）。开＝浮在所有 App 之上，关＝像普通窗口一样被压到后面。
+    /// 默认开：这扇窗本来就是「切去浏览器核对一眼还看得见」才有用
     @Published var pinned = true {
         didSet { panel?.level = pinned ? .floating : .normal }
     }
@@ -410,7 +410,10 @@ struct ChatWindowChrome: View {
                 ScrollView(showsIndicators: false) {
                     LazyVStack(alignment: .leading, spacing: 2) {
                         ForEach(store.conversations) { conversation in
-                            historyRow(conversation)
+                            HistoryRow(conversation: conversation,
+                                       current: conversation.id == store.currentID,
+                                       select: { store.selectConversation(conversation.id) },
+                                       delete: { store.deleteConversation(conversation.id) })
                         }
                     }
                     .padding(.horizontal, 6)
@@ -431,28 +434,6 @@ struct ChatWindowChrome: View {
         // 这里刻意不挂 .animation(value:)——挂在大子树上的隐式动画吃过大亏
         //（atBottom 振荡卡死，2026-07-31），教训是动画永远只圈住要动的那一小片
         .transition(.move(edge: .trailing))
-    }
-
-    private func historyRow(_ conversation: ChatConversation) -> some View {
-        let current = conversation.id == store.currentID
-        return Button {
-            store.selectConversation(conversation.id)
-        } label: {
-            HStack(spacing: 6) {
-                Text(conversation.title.isEmpty ? "未命名对话" : conversation.title)
-                    .font(.system(size: 12.5))
-                    .foregroundStyle(current ? .white : .white.opacity(0.72))
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-            }
-            .padding(.horizontal, 8).padding(.vertical, 7)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(current ? ChatWindowPalette.surface2 : .clear))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("切换到对话：\(conversation.title.isEmpty ? "未命名对话" : conversation.title)")
     }
 
     var body: some View {
@@ -570,5 +551,55 @@ struct ChatWindowChrome: View {
         .buttonStyle(.plain)
         // 自绘气泡而非 .help：这是非激活面板，系统 tooltip 在这儿不弹（与刘海同一处理）
         .notchTip(tip, edge: .below)
+    }
+}
+
+/// 历史侧栏的一行：标题 + 悬停出删除。
+///
+/// 删除键原来只有刘海侧栏有（ChatView.ConversationRow），独立窗这边一直只能切不能删——
+/// 而这儿才是历史的主入口，攒下来的对话只进不出（大梁老师 2026-08-07）。
+/// 外层用 onTapGesture 而不是 Button：Button 套 Button 时内层的点击会被外层先吃掉
+private struct HistoryRow: View {
+    let conversation: ChatConversation
+    let current: Bool
+    let select: () -> Void
+    let delete: () -> Void
+    @State private var hovering = false
+
+    private var title: String {
+        conversation.title.isEmpty ? "未命名对话" : conversation.title
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.system(size: 12.5))
+                .foregroundStyle(current ? .white : .white.opacity(0.72))
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            // 常驻会让每一行都挂个叉、整列显得吵；悬停才出，位置固定不挤标题
+            if hovering {
+                Button(action: delete) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.white.opacity(0.45))
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("删除对话：\(title)")
+                .notchTip("删除这条对话", edge: .below)
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(current ? ChatWindowPalette.surface2
+                          : (hovering ? Color.white.opacity(0.05) : .clear)))
+        .contentShape(Rectangle())
+        .onTapGesture(perform: select)
+        .onHover { hovering = $0 }
+        .accessibilityElement(children: .contain)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel("切换到对话：\(title)")
     }
 }
