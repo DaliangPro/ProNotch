@@ -78,6 +78,14 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private static func boxContains(_ b: Box, _ pt: NSPoint, inset: CGFloat = 0) -> Bool {
         b.rect.insetBy(dx: inset, dy: inset).contains(rotatePoint(pt, around: b.center, by: -b.rotation))
     }
+    /// 这个框在当前工具下是否允许选中/拖动。
+    ///
+    /// 由来（大梁老师 2026-08-07）：高亮框整块都可命中，于是在高亮范围里用别的工具框选时，
+    /// 鼠标稍微靠边就把高亮范围拖走了。规则改成——高亮框只在高亮工具下解锁，
+    /// 切到任何别的工具即锁定，回到高亮工具才能再调范围。普通框选不受影响
+    static func boxUnlocked(isHighlight: Bool, isHighlightTool: Bool) -> Bool {
+        !isHighlight || isHighlightTool
+    }
     /// 备注：框 + 引导线 + 文字气泡（框/线可调色）
     private struct Marker { var box: NSRect; var textRect: NSRect; var text: String; var colorHex = "#FFFFFF" }
     /// 流程：序号角标 + 引导线 + 文字气泡（角标/线可调色）
@@ -1435,7 +1443,10 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         if let i = steps.lastIndex(where: { !$0.text.isEmpty && $0.textRect.contains(pt) }) { return .step(i) }
         if let i = steps.lastIndex(where: { hypot($0.center.x - pt.x, $0.center.y - pt.y) <= badgeRadius + 2 }) { return .step(i) }
         if let i = arrows.lastIndex(where: { Self.pointSegDistance(pt, $0.start, $0.end) <= max(10, $0.lineWidth + 6) }) { return .arrow(i) }
-        if let i = boxes.lastIndex(where: { Self.boxContains($0, pt) }) { return .box(i) }
+        // 高亮框在非高亮工具下锁定：连选中都不给，免得下一次拖拽把范围带跑
+        if let i = boxes.lastIndex(where: {
+            Self.boxContains($0, pt) && Self.boxUnlocked(isHighlight: $0.highlight, isHighlightTool: tool == .highlight)
+        }) { return .box(i) }
         if let i = shapes.lastIndex(where: { Self.shapeContains($0, pt) }) { return .shape(i) }
         return nil
     }
@@ -1508,6 +1519,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         switch selected {
         case .box(let i)? where boxes.indices.contains(i):
             let b = boxes[i]
+            // 高亮框锁定期间：手柄/框身一律不响应（切走工具时选中态也已清掉，这里是双保险）
+            guard Self.boxUnlocked(isHighlight: b.highlight, isHighlightTool: tool == .highlight) else { break }
             // 旋转手柄优先（圆钮 10pt 命中带）
             let knob = Self.boxRotateHandle(b)
             if hypot(pt.x - knob.x, pt.y - knob.y) <= 10 { return (.boxRotate(center: b.center), false) }
@@ -2109,6 +2122,12 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         commitEditing()
         activeMarker = nil; markerGrab = nil
         tool = (tool == t) ? .none : t
+        // 离开高亮工具即锁定高亮范围：选中态一并收掉，
+        // 否则虚线环还在、删除 × 还能点，看着像还能改（大梁老师 2026-08-07）
+        if case .box(let i)? = selected, boxes.indices.contains(i),
+           !Self.boxUnlocked(isHighlight: boxes[i].highlight, isHighlightTool: tool == .highlight) {
+            selected = nil
+        }
         if let sel = selection { showToolbar(for: sel) }
         needsDisplay = true
     }
