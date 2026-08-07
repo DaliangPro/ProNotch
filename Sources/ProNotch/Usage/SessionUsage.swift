@@ -311,11 +311,16 @@ enum SessionUsage {
     /// 把真正花额度的会话稀释掉（大梁老师 2026-08-03「Codex 严重不准」的病根：
     /// OpenAI 的 Pro Lite 只有一个 7 天窗，7/31 22:26 才重置，而 token 侧从 7/27 起算）。
     /// 不传则维持 7 天口径（额度端点没通时的退路）
-    static var defaultCodexRoot: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/sessions")
+    /// Codex 的会话根目录。`archived_sessions` 也得算——Codex 会把会话归档到那儿，
+    /// 消耗是真实发生过的（实测近 7 天 39 个文件、7.9M token 一直被漏掉，
+    /// 大梁老师 2026-08-07「我感觉仍然是不对的」）
+    static var defaultCodexRoots: [URL] {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return [home.appendingPathComponent(".codex/sessions"),
+                home.appendingPathComponent(".codex/archived_sessions")]
     }
 
-    static func scanCodex(root: URL = defaultCodexRoot, since: Date? = nil) -> [Scanned] {
+    static func scanCodex(roots: [URL] = defaultCodexRoots, since: Date? = nil) -> [Scanned] {
         // 按 mtime 全量枚举，不能按日期目录扫最近几天：Codex 把 rollout 文件放在
         // 「会话开始日」的目录里持续追加数月——主力长会话（实测 05/31 目录 200MB 今天还在写）
         // 按日期目录扫必漏，Top 5 就只剩边角小会话
@@ -323,7 +328,9 @@ enum SessionUsage {
         // 窗口起点取「额度重置点」与「7 天前」中较晚者：既贴额度语义，又不放大扫描范围
         let cutoff = max(Date().addingTimeInterval(-window), since ?? .distantPast)
         var raw: [(scanned: Scanned, parent: String?)] = []
-        guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else { return [] }
+        // 某个根不存在就跳过这一个（新机器上没有 archived_sessions），不能让整轮扫描空手而归
+        for root in roots {
+        guard let en = fm.enumerator(at: root, includingPropertiesForKeys: [.contentModificationDateKey]) else { continue }
         // 每个文件一个池（return 即跳过该文件）：头尾分块读也有 MB 级临时串，逐文件释放
         for case let f as URL in en where f.pathExtension == "jsonl" {
             autoreleasepool {
@@ -346,6 +353,7 @@ enum SessionUsage {
                                 daily: daily, byModel: byModel), info.parent))
             }   // autoreleasepool
         }
+        }   // for root
         // 子代理归并到根任务：Codex Desktop 多代理把并行子代理拆成独立 rollout 文件
         // （session_meta 带 parent_thread_id）。不归并则一个任务的消耗被拆成 N 行无名子代理——
         // 实测「课程2.0」主线程 13.8M + 三个子代理各 8M，屏显却是一行 2% + 三行无名 1%

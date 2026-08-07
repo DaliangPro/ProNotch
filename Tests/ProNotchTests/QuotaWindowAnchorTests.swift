@@ -37,12 +37,12 @@ final class QuotaWindowAnchorTests: XCTestCase {
             .write(to: dir.appendingPathComponent("rollout-new.jsonl"))
 
         // 不锚定：两个都在 7 天窗内
-        let unanchored = SessionUsage.scanCodex(root: dir)
+        let unanchored = SessionUsage.scanCodex(roots: [dir])
         XCTAssertEqual(unanchored.count, 2)
 
         // 锚定到 2 天前（模拟额度窗口重置点）：老会话不再入账
         SessionUsage._resetCodexCacheForTests()
-        let anchored = SessionUsage.scanCodex(root: dir,
+        let anchored = SessionUsage.scanCodex(roots: [dir],
                                               since: Date().addingTimeInterval(-2 * 86400))
         XCTAssertEqual(anchored.count, 1, "重置前的老会话不该来分当前额度")
         XCTAssertEqual(anchored.first?.tokens, 300)
@@ -52,7 +52,7 @@ final class QuotaWindowAnchorTests: XCTestCase {
     func test锚点不早于七天() throws {
         try Data((event(daysAgo: 6, output: 500) + "\n").utf8)
             .write(to: dir.appendingPathComponent("rollout-a.jsonl"))
-        let out = SessionUsage.scanCodex(root: dir,
+        let out = SessionUsage.scanCodex(roots: [dir],
                                          since: Date().addingTimeInterval(-30 * 86400))
         XCTAssertEqual(out.first?.tokens, 500, "六天前的会话仍在七天窗内，应照常入账")
     }
