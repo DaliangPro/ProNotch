@@ -891,7 +891,12 @@ final class ChatStore: ObservableObject {
                     // 只在真搜到东西时加：没联网的普通对话保持原样，不平白多一层人设
                     payload.insert(["role": "system", "content": Self.searchSystemPrompt()], at: 0)
                     setLastAssistantSources(results)
-                    AppLog.chat.info("联网搜索返回 \(results.count) 条结果")
+                    // 条数之外还要报**抓到几条正文**：搜到了但读不到，跟没搜到一样，
+                    // 而这两种毛病的处置完全不同。只报数量，查询词与页面内容不落日志
+                    let used = results.prefix(WebSearch.maxDocuments)
+                    let withBody = used.filter { !$0.body.isEmpty }.count
+                    let chars = used.reduce(0) { $0 + $1.body.count }
+                    AppLog.chat.info("联网搜索返回 \(results.count, privacy: .public) 条，取前 \(used.count, privacy: .public) 条，其中 \(withBody, privacy: .public) 条抓到正文，共 \(chars, privacy: .public) 字")
                 }
             } catch is CancellationError {
                 isSearching = false
