@@ -245,12 +245,13 @@ struct UsageProfileBlock: View {
 
     var body: some View {
         if profile.total > 0 {
-            let series = profile.series(days: 7)
+            let days = SessionUsage.Profile.windowDays
+            let series = profile.series(days: days)
             VStack(alignment: .leading, spacing: 8) {
                 // 两端对齐，和下面那行「最常用 … 峰值」共用同一条栅格
                 HStack(alignment: .top, spacing: 0) {
                     stat("今日", SessionUsage.Profile.formatTokens(profile.today), .leading)
-                    stat("近 7 天", SessionUsage.Profile.formatTokens(profile.total), .trailing)
+                    stat("近 \(days) 天", SessionUsage.Profile.formatTokens(profile.total), .trailing)
                 }
                 bars(series)
                 HStack(spacing: 6) {
@@ -265,7 +266,7 @@ struct UsageProfileBlock: View {
                         .font(.system(size: 11)).foregroundColor(.secondary).fixedSize()
                 }
             }
-            .help("统计自本机会话记录（近 7 天）")
+            .help("统计自本机会话记录（近 \(SessionUsage.Profile.windowDays) 天）")
         }
     }
 

@@ -26,6 +26,16 @@ final class UsageProfileTests: XCTestCase {
         XCTAssertEqual(p.byModel, ["k3": 32, "k2": 3])
     }
 
+    /// 「近 7 天」必须真的只算 7 天：扫描是按文件 mtime 放行的，一个 7 天内动过的
+    /// 长会话会把它几个月前的天桶一起带进来，全加起来就会比柱状图之和大一截
+    func test近7天合计不含窗口外的历史() {
+        var p = SessionUsage.Profile()
+        p.daily = [today: 10, yesterday: 5, "2020-01-01": 9_999]
+        XCTAssertEqual(p.total, 15, "窗口外的历史天桶不许计入「近 7 天」")
+        XCTAssertEqual(p.total, p.series(days: SessionUsage.Profile.windowDays).reduce(0) { $0 + $1.tokens },
+                       "数字必须等于柱状图上那几根之和，否则用户一加就发现对不上")
+    }
+
     /// 没跑的日子要是 0，不能是「缺一根柱子」——柱子少一根会让相邻两天看起来是连着的
     func test趋势序列补齐空档且末位是今天() {
         var p = SessionUsage.Profile()

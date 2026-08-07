@@ -29,7 +29,15 @@ enum SessionUsage {
         var daily: [String: Int] = [:]
         var byModel: [String: Int] = [:]
 
-        var total: Int { daily.values.reduce(0, +) }
+        /// 画像的窗口天数：与额度扫描窗口同宽。往前扩会画出假柱子——
+        /// 扫描按文件 mtime 过滤，7 天没动过的文件根本不读，更早的日子必然缺数
+        static let windowDays = 7
+
+        /// 窗口内合计。必须严格按 series 取，不能拿 daily 全和：
+        /// mtime 过滤放行的是「文件」不是「天」，一个 7 天内动过的长会话
+        /// 会把它几个月前的天桶一起带进来，那样「近 7 天」这个标签就是假的
+        /// （实测 Claude 全扫 48.5M，其中只有 41.9M 落在 7 天内）
+        var total: Int { series(days: Self.windowDays).reduce(0) { $0 + $1.tokens } }
         /// 今日（按本地日历）token
         var today: Int { daily[Self.dayKey(Date())] ?? 0 }
         /// 吃 token 最多的模型；并列时取名字靠前的，保证显示稳定不跳
