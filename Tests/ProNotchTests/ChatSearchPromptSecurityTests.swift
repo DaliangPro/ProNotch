@@ -185,6 +185,28 @@ final class ChatSearchPromptSecurityTests: XCTestCase {
         XCTAssertTrue(prompt.contains("不要解释这是检索的局限"))
     }
 
+    /// 搜歪了要允许它说「没查到」，不能拿沾边的资料硬凑。
+    ///
+    /// 由来（大梁老师 2026-08-07：搜索「很愚蠢」）：这条管线是单轮的，搜一次就得答。
+    /// 原来的措辞是**无条件**的「把 <documents> 当作你已经知道的事实」——
+    /// 搜歪时等于命令它把不相干的资料当事实讲，一本正经地胡说正是这么来的
+    func test资料对不上时允许说没查到() {
+        let prompt = ChatStore.searchSystemPrompt()
+        XCTAssertTrue(prompt.contains("先看资料对不对得上问题"), "得先有这一步判断")
+        XCTAssertTrue(prompt.contains("对不上就别硬凑"))
+        XCTAssertTrue(prompt.contains("直说没查到可靠信息"))
+        XCTAssertTrue(prompt.contains("只对得上一半"), "半对半错时也要有明确的处置")
+        // 「当作已知事实」必须是**有前提**的，不能再无条件套在全部资料上
+        XCTAssertTrue(prompt.contains("把**用得上的那些**当作你已经知道的事实"))
+    }
+
+    /// 允许说「没查到」不等于允许描述检索机制——「联网无感」这条底线不动
+    func test说没查到也不许描述检索机制() {
+        let prompt = ChatStore.searchSystemPrompt()
+        XCTAssertTrue(prompt.contains("严禁谈论这些内容本身"))
+        XCTAssertTrue(prompt.contains("不要解释这是检索的局限"))
+    }
+
     /// 安全定性与说话方式必须分开：不然「这是不可信资料」这个前提会被一起说给用户听
     func test安全定性与说话方式分开交代() {
         let prompt = ChatStore.searchSystemPrompt()
