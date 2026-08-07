@@ -4,11 +4,14 @@ import SwiftUI
 /// 引用，行内加粗/斜体/代码/链接交给系统 AttributedString 解析。
 /// 无第三方依赖，流式输出时按块增量重排
 ///
-/// ## 为什么这里的正文不能划词选中
+/// ## 正文的划词选中走 `SelectableText`，别改回 `.textSelection`
 ///
-/// 这些 Text 上原本都挂着 `.textSelection(.enabled)`，2026-07-31 全部摘掉了——
-/// 它会把整个闪问窗口**卡死**。大梁老师报「拖动、拉宽窄、来回浏览，有几次就卡死」，
-/// 卡住时抓的采样（间隔十几秒两次，主线程都停在同一个布局事务里）指向同一条环：
+/// 这些块的正文一律由 `SelectableText`（AppKit 的 NSTextView）承载，
+/// 只有表格单元格还是 SwiftUI 的 `Text`——它在 Grid 里，尺寸协商另算一笔账。
+///
+/// **不能用 `.textSelection(.enabled)`**：它 2026-07-31 把整扇闪问窗卡死过。
+/// 大梁老师报「拖动、拉宽窄、来回浏览，有几次就卡死」，卡住时抓的采样
+/// （间隔十几秒两次，主线程都停在同一个布局事务里）指向同一条环：
 ///
 ///   SelectionOverlay.updateNSView（`.textSelection` 装的那层 AppKit 覆盖视图）
 ///     → FallbackAlignmentProvider 量基线 → -[NSControl setFont:]
@@ -18,9 +21,9 @@ import SwiftUI
 /// 最后一步**在布局过程里又把布局标脏**，`GraphHost.flushTransactions()` 于是永远收敛不了。
 /// 一条回答有七八个块就是七八套这种覆盖视图，块越多越容易踩上。
 ///
-/// 替代手段：整条消息右下角有「复制」，代码块自己带一个复制键。
-/// 想加回划词选中，得先拿到「SelectionOverlay 不再从布局里回写布局」的证据，
-/// 否则就是把这个卡死放回来
+/// `SelectableText` 绕开的正是这一条：尺寸只在 `sizeThatFits` 里**读**一次，
+/// 固有尺寸通道整个焊死（`invalidateIntrinsicContentSize` 空实现），环没有入口。
+/// 代码块仍用悬停复制键——那儿要的是整段拷走，不是划词
 enum MarkdownLite {
     /// 解析缓存。消息一旦定稿内容不再变；流式中的那条每个 token 都是新键，
     /// 命不中就走全解析、旧前缀由 countLimit 自然淘汰。NSCache 线程安全、内存紧张自动清
@@ -34,10 +37,11 @@ enum MarkdownLite {
         return c
     }()
 
-    /// 仅测试用：清空两层渲染缓存，量「冷/热」对比时用
+    /// 仅测试用：清空三层渲染缓存，量「冷/热」对比时用
     static func _resetRenderCachesForTests() {
         parseCache.removeAllObjects()
         inlineCache.removeAllObjects()
+        nsInlineCache.removeAllObjects()
     }
 
     static func parseCached(_ text: String) -> [Block] {
@@ -54,6 +58,12 @@ enum MarkdownLite {
     nonisolated(unsafe) private static let inlineCache: NSCache<NSString, AttrBox> = {
         let c = NSCache<NSString, AttrBox>()
         c.countLimit = 1024   // 一条消息约十来段内联，够存近百条消息的成品
+        return c
+    }()
+    /// AppKit 版成品（`inlineNS`）。NSAttributedString 本身是引用类型，不必再套盒
+    nonisolated(unsafe) private static let nsInlineCache: NSCache<NSString, NSAttributedString> = {
+        let c = NSCache<NSString, NSAttributedString>()
+        c.countLimit = 1024
         return c
     }()
 
@@ -369,6 +379,104 @@ enum MarkdownLite {
         }
         return attributed
     }
+
+    // MARK: - AppKit 版行内渲染（可选中的正文走这条）
+
+    /// 与 `inline` 同一套规则，产出 `NSAttributedString` 供 `SelectableText` 承载。
+    ///
+    /// 为什么要平行做一份，而不是 `NSAttributedString(inline(...))`：
+    /// 上面那份把样式写在 SwiftUI 专属的 `.font` / `.foregroundColor` 上，
+    /// 转成 NSAttributedString 时这两样**一个都不搬**——转完是一段没有字号没有颜色的裸文本。
+    /// 所以度量只能在这里按 AppKit 的键重新落一遍，规则与上面逐条对齐
+    static func inlineNS(_ text: String, size: CGFloat,
+                         weight: Font.Weight = .regular,
+                         emphasisWeight: Font.Weight = .semibold,
+                         base: Color = .white.opacity(0.82),
+                         emphasis: Color = .white,
+                         lineSpacing: CGFloat = 0,
+                         strikethrough: Bool = false) -> NSAttributedString {
+        let key = "\(size)|\(weight)|\(emphasisWeight)|\(String(describing: base))|\(String(describing: emphasis))|\(lineSpacing)|\(strikethrough)|\(text)" as NSString
+        if let hit = nsInlineCache.object(forKey: key) { return hit }
+        let result = inlineNSUncached(text, size: size, weight: weight,
+                                      emphasisWeight: emphasisWeight,
+                                      base: base, emphasis: emphasis,
+                                      lineSpacing: lineSpacing,
+                                      strikethrough: strikethrough)
+        nsInlineCache.setObject(result, forKey: key)
+        return result
+    }
+
+    private static func inlineNSUncached(_ text: String, size: CGFloat,
+                                         weight: Font.Weight,
+                                         emphasisWeight: Font.Weight,
+                                         base: Color, emphasis: Color,
+                                         lineSpacing: CGFloat,
+                                         strikethrough: Bool) -> NSAttributedString {
+        let parsed = (try? AttributedString(
+            markdown: text,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
+            ?? AttributedString(text)
+        let paragraph = AppKitTextStyle.paragraph(lineSpacing: lineSpacing)
+        let baseColor = NSColor(base)
+        let emphasisColor = NSColor(emphasis)
+        let out = NSMutableAttributedString()
+        for run in parsed.runs {
+            let piece = String(parsed[run.range].characters)
+            guard !piece.isEmpty else { continue }
+            let intent = run.inlinePresentationIntent ?? []
+            let isStrong = intent.contains(.stronglyEmphasized)
+            let isCode = intent.contains(.code)
+            var attrs: [NSAttributedString.Key: Any] = [
+                .paragraphStyle: paragraph,
+                // 加粗与行内代码都提到 emphasis 色：中文粗体本就含蓄，
+                // 不同时变亮等于没标（与 inline 同一条理由）
+                .foregroundColor: (isStrong || isCode) ? emphasisColor : baseColor,
+                .font: nsFont(size: isCode ? size - 0.5 : size,
+                              weight: isStrong ? emphasisWeight : weight,
+                              italic: intent.contains(.emphasized),
+                              mono: isCode),
+            ]
+            if strikethrough {
+                attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+                attrs[.strikethroughColor] = NSColor.white.withAlphaComponent(0.35)
+            }
+            // 链接交给 NSTextView 自己处理点击（只读+可选中时它原生就能点开）
+            if let url = run.link {
+                attrs[.link] = url
+                attrs[.foregroundColor] = NSColor.linkColor
+                attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            }
+            out.append(NSAttributedString(string: piece, attributes: attrs))
+        }
+        return out
+    }
+
+    /// 纯文本版：不解析 Markdown，用户自己问的那句走它。
+    ///
+    /// 提问一直是「所见即所得」（原来就是裸 `Text(content)`），
+    /// 走 `inlineNS` 会把他打的 `*星号*` `_下划线_` 悄悄吃掉变成斜体
+    static func plainNS(_ text: String, size: CGFloat, weight: Font.Weight,
+                        color: Color, lineSpacing: CGFloat) -> NSAttributedString {
+        let key = "plain|\(size)|\(weight)|\(String(describing: color))|\(lineSpacing)|\(text)" as NSString
+        if let hit = nsInlineCache.object(forKey: key) { return hit }
+        let result = NSAttributedString(string: text, attributes: [
+            .font: nsFont(size: size, weight: weight, italic: false, mono: false),
+            .foregroundColor: NSColor(color),
+            .paragraphStyle: AppKitTextStyle.paragraph(lineSpacing: lineSpacing),
+        ])
+        nsInlineCache.setObject(result, forKey: key)
+        return result
+    }
+
+    private static func nsFont(size: CGFloat, weight: Font.Weight,
+                               italic: Bool, mono: Bool) -> NSFont {
+        let w = AppKitTextStyle.font(weight)
+        let plain = mono ? NSFont.monospacedSystemFont(ofSize: size, weight: w)
+                         : NSFont.systemFont(ofSize: size, weight: w)
+        guard italic else { return plain }
+        let descriptor = plain.fontDescriptor.withSymbolicTraits(.italic)
+        return NSFont(descriptor: descriptor, size: size) ?? plain
+    }
 }
 
 /// AI 回复的排版度量。**所有值都从正文字号推**，不再一处一个魔法数字。
@@ -489,21 +597,21 @@ struct MarkdownMessageView: View {
     private func blockView(_ block: MarkdownLite.Block) -> some View {
         switch block {
         case .paragraph(let text):
-            prose(Text(MarkdownLite.inline(text, size: fontSize,
-                                           weight: type.bodyWeight,
-                                           emphasisWeight: type.emphasisWeight,
-                                           base: type.bodyColor))
-                .lineSpacing(type.lineSpacing)
-                .fixedSize(horizontal: false, vertical: true))
+            prose(SelectableText(MarkdownLite.inlineNS(text, size: fontSize,
+                                                       weight: type.bodyWeight,
+                                                       emphasisWeight: type.emphasisWeight,
+                                                       base: type.bodyColor,
+                                                       lineSpacing: type.lineSpacing))
+                .modifier(FillWidth()))
         case .heading(let level, let text):
             // 字号必须**从正文推**，不能写死。原来是 15/14/13：窗口正文 14 的时候
             // H2 跟正文一样大、H3 比正文还小，等于没有标题——大梁老师说「一大坨字没重点」
             // 有一半是这么来的（2026-07-31）
-            prose(Text(MarkdownLite.inline(text, size: type.heading(level),
-                                           weight: type.headingWeight(level),
-                                           emphasisWeight: type.headingWeight(level),
-                                           base: .white, emphasis: .white))
-                .fixedSize(horizontal: false, vertical: true)
+            prose(SelectableText(MarkdownLite.inlineNS(text, size: type.heading(level),
+                                                      weight: type.headingWeight(level),
+                                                      emphasisWeight: type.headingWeight(level),
+                                                      base: .white, emphasis: .white))
+                .modifier(FillWidth())
                 // 上疏下密：标题与它统辖的正文成一组
                 .padding(.top, type.headingTop)
                 .padding(.bottom, type.headingBottom))
@@ -522,12 +630,12 @@ struct MarkdownMessageView: View {
                 Rectangle()
                     .fill(Color.white.opacity(0.25))
                     .frame(width: 2)
-                Text(MarkdownLite.inline(text, size: fontSize,
-                                         weight: type.secondaryWeight,
-                                         base: .white.opacity(0.55),
-                                         emphasis: .white.opacity(0.85)))
-                    .lineSpacing(type.lineSpacing)
-                    .fixedSize(horizontal: false, vertical: true)
+                SelectableText(MarkdownLite.inlineNS(text, size: fontSize,
+                                                     weight: type.secondaryWeight,
+                                                     base: .white.opacity(0.55),
+                                                     emphasis: .white.opacity(0.85),
+                                                     lineSpacing: type.lineSpacing))
+                    .modifier(FillWidth())
             }
                 .fixedSize(horizontal: false, vertical: true))
         case .table(let header, let rows, let aligns):
@@ -535,16 +643,20 @@ struct MarkdownMessageView: View {
         case .tasks(let items):
             prose(VStack(alignment: .leading, spacing: type.listItemSpacing) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                    // 顶对齐而不是基线对齐：正文换成 AppKit 承载后没有基线可对，
+                    // SwiftUI 会拿视图底边当基线，勾选框会掉到多行文字的最后一行去
+                    HStack(alignment: .top, spacing: 7) {
                         Image(systemName: item.done ? "checkmark.square.fill" : "square")
                             .font(.system(size: fontSize - 1))
                             .foregroundColor(.white.opacity(item.done ? 0.75 : 0.4))
-                        Text(MarkdownLite.inline(item.text, size: fontSize,
-                                                 weight: type.secondaryWeight,
-                                                 emphasisWeight: type.emphasisWeight,
-                                                 base: .white.opacity(item.done ? 0.45 : 0.82)))
-                            .strikethrough(item.done, color: .white.opacity(0.35))
-                            .fixedSize(horizontal: false, vertical: true)
+                        SelectableText(MarkdownLite.inlineNS(
+                            item.text, size: fontSize,
+                            weight: type.secondaryWeight,
+                            emphasisWeight: type.emphasisWeight,
+                            base: .white.opacity(item.done ? 0.45 : 0.82),
+                            lineSpacing: type.lineSpacing,
+                            strikethrough: item.done))
+                            .modifier(FillWidth())
                     }
                 }
             })
@@ -622,10 +734,12 @@ struct MarkdownMessageView: View {
                     Text(marker(index))
                         .font(.system(size: fontSize, weight: type.secondaryWeight))
                         .foregroundColor(.white.opacity(0.35))
-                    Text(MarkdownLite.inline(item, size: fontSize,
-                                             weight: type.bodyWeight,
-                                             emphasisWeight: type.emphasisWeight,
-                                             base: type.bodyColor))
+                    SelectableText(MarkdownLite.inlineNS(item, size: fontSize,
+                                                        weight: type.bodyWeight,
+                                                        emphasisWeight: type.emphasisWeight,
+                                                        base: type.bodyColor,
+                                                        lineSpacing: type.lineSpacing))
+                        .modifier(FillWidth())
                 }
             }
         }
@@ -635,9 +749,10 @@ struct MarkdownMessageView: View {
 
 /// 代码块：悬停右上角出「复制」。
 ///
-/// 由来（2026-07-31）：正文的划词选中被整体摘掉了（见文件顶部），
-/// 但代码是最需要单独拷走的一块——整条消息的「复制」会把前后解释也带上。
-/// 这里用按钮而不是让它可选中，正是因为可选中就是那条卡死环的入口
+/// 由来（2026-07-31）：代码是最需要单独拷走的一块——
+/// 整条消息的「复制」会把前后解释也带上。
+/// 正文后来改成了可划词选中（见文件顶部），代码块仍留这个键：
+/// 拷一段代码要的是「整块，一次拿走，不多不少」，划着选反而容易多切少切
 private struct CodeBlockView: View {
     let code: String
     let fontSize: CGFloat

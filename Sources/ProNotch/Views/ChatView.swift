@@ -1128,11 +1128,15 @@ private struct MessageBubble: View {
                                 actionRow
                             }
                         } else {
-                            Text(message.content)
-                                // 窗口比刘海宽敞得多，12pt 挤着没道理；语义色在毛玻璃上才有 vibrancy
-                                .font(.system(size: type.body, weight: type.bodyWeight))
-                                .foregroundStyle(windowStyle ? AnyShapeStyle(.primary)
-                                                             : AnyShapeStyle(Color.white.opacity(0.9)))
+                            // 自己问的那句也要能划词复制（大梁老师 2026-08-07）——
+                            // 改一改再问一遍是常事，不能只让人重打一遍。
+                            // 窗口比刘海宽敞得多，12pt 挤着没道理
+                            SelectableText(MarkdownLite.plainNS(
+                                message.content, size: type.body,
+                                weight: type.bodyWeight,
+                                color: windowStyle ? Color(nsColor: .labelColor)
+                                                   : .white.opacity(0.9),
+                                lineSpacing: type.lineSpacing))
                         }
                     }
                 }
