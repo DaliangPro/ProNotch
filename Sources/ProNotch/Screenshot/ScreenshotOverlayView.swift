@@ -86,10 +86,35 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     static func boxUnlocked(isHighlight: Bool, isHighlightTool: Bool) -> Bool {
         !isHighlight || isHighlightTool
     }
+    /// 把点夹进矩形（拉引线时末端不许跑出选区）
+    private static func clamp(_ p: NSPoint, in r: NSRect) -> NSPoint {
+        NSPoint(x: min(max(p.x, r.minX), r.maxX), y: min(max(p.y, r.minY), r.maxY))
+    }
+    /// 说明气泡是否已被拖离角标 → 是才画引导线。
+    ///
+    /// 由来（大梁老师 2026-08-07：序号「后面可以输入文字」）：新建时气泡就紧贴角标右侧，
+    /// 这时再从圆心往气泡左下角画一条线，只会在两者夹缝里露出一截斜杠。
+    /// 用「点到矩形的最近距离」判断：贴着（≈ 半径 + 间距）不画，拖远了才画
+    static func bubbleDetached(from center: NSPoint, _ rect: NSRect, badgeRadius: CGFloat) -> Bool {
+        let dx = max(rect.minX - center.x, center.x - rect.maxX, 0)
+        let dy = max(rect.minY - center.y, center.y - rect.maxY, 0)
+        return hypot(dx, dy) > badgeRadius + 15
+    }
+    /// 新序号说明框的落位：紧贴角标右侧、与角标垂直居中；右侧越界翻到左边，整体夹在选区内。
+    /// 「序号后面可以输入文字」＝挨着，不是斜上方另起一个气泡
+    static func stepBubbleRect(center: NSPoint, size: NSSize, in sel: NSRect, badgeRadius: CGFloat) -> NSRect {
+        let gap: CGFloat = 8, edge: CGFloat = 4
+        var x = center.x + badgeRadius + gap
+        if x + size.width > sel.maxX - edge { x = center.x - badgeRadius - gap - size.width }
+        x = max(sel.minX + edge, min(x, sel.maxX - size.width - edge))
+        let y = min(max(center.y - size.height / 2, sel.minY + edge), sel.maxY - size.height - edge)
+        return NSRect(x: x, y: y, width: size.width, height: size.height)
+    }
     /// 备注：框 + 引导线 + 文字气泡（框/线可调色）
     private struct Marker { var box: NSRect; var textRect: NSRect; var text: String; var colorHex = "#FFFFFF" }
-    /// 流程：序号角标 + 引导线 + 文字气泡（角标/线可调色）
-    private struct Step { var center: NSPoint; var number: String; var textRect: NSRect; var text: String; var colorHex = "#FFFFFF" }
+    /// 流程：序号角标 + 引导线 + 文字气泡（角标/线可调色）。
+    /// `anchor` ＝ 指针起点：拖出来的角标从这里牵一条线过去（直接单击生成的没有起点，为 nil）
+    private struct Step { var center: NSPoint; var anchor: NSPoint?; var number: String; var textRect: NSRect; var text: String; var colorHex = "#FFFFFF" }
     /// 当前正在编辑的目标
     private enum Editing { case markerText(Int), stepText(Int), stepNumber(Int), annoText(Int) }
     /// 纯文字标注：点击处直接输入，落定后按颜色/字号渲染在图上（无框无引导线）
@@ -214,6 +239,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var editing: Editing?
     private var pendingBubble: PendingBubble?   // 回车后拖动说明气泡（拖＝移动，单击＝重新编辑）
     private var pendingBadge: PendingBadge?      // 拖动流程角标（拖＝移动，单击＝编辑文字，双击＝改序号）
+    /// 正在拉的序号引线：按下点＝指向目标，松手处才落角标（拖拽期间只有线，没有序号）
+    private var stepDrag: (anchor: NSPoint, end: NSPoint)?
     private var activeMarker: Int?              // 双击备注框＝进入几何调整（拖框身移动、拖角缩放，文字保留）
     private var markerGrab: MarkerGrab?
     /// 选中的框选/箭头的拖拽调整：move=整体移动，boxResize=四角缩放(对角固定)，arrowEnd=拖箭头某一端
@@ -523,6 +550,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         for (i, s) in steps.enumerated() {
             drawStep(s, editingNumber: isEditing(.stepNumber(i)), editingText: isEditing(.stepText(i)))
         }
+        if let d = stepDrag { drawStepDrag(d) }   // 正在拉的引线（还没有序号）
         drawPenStrokes(dx: 0, dy: 0)   // 画笔：盖在最上层
         drawArrows(dx: 0, dy: 0)       // 箭头：与画笔同层
         drawTexts(dx: 0, dy: 0)        // 文字标注：与画笔同层
@@ -761,11 +789,18 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         let c = NSColor(Color(hex: s.colorHex))
         let numColor: NSColor = c.luma > 0.62 ? .black : .white   // 角标亮→黑字、暗→白字，保证序号可见
         let hasText = !s.text.isEmpty
-        // 引导线从圆心出发、先画，被圆盖住根部 → 视觉上从角标中心往外延伸
-        if editingText, let f = editingField {
-            leader(from: s.center, to: NSPoint(x: f.frame.minX, y: f.frame.minY), color: c)
-        } else if hasText {
-            leader(from: s.center, to: NSPoint(x: s.textRect.minX, y: s.textRect.minY), color: c)
+        // 指针线：从按下处牵到角标，先画、被圆盖住末端 → 视觉上是「这里 → 第几步」
+        if let a = s.anchor {
+            leader(from: a, to: s.center, color: c)
+            withShadow(blur: 3, alpha: 0.3) {   // 起点小圆点：给线一个针尖，指向哪儿一眼看得出
+                c.setFill()
+                NSBezierPath(ovalIn: NSRect(x: a.x - 3, y: a.y - 3, width: 6, height: 6)).fill()
+            }
+        }
+        // 说明气泡的引导线：只有被拖离角标才需要（默认紧贴在角标右边，画线只会露出一截斜杠）
+        let bubble: NSRect? = editingText ? editingField?.frame : (hasText ? s.textRect : nil)
+        if let b = bubble, Self.bubbleDetached(from: s.center, b, badgeRadius: r) {
+            leader(from: s.center, to: NSPoint(x: b.minX, y: b.minY), color: c)
         }
         withShadow(blur: 4, alpha: 0.35) {
             c.setFill()
@@ -779,6 +814,16 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             (s.number as NSString).draw(at: NSPoint(x: s.center.x - sz.width / 2, y: s.center.y - sz.height / 2), withAttributes: attrs)
         }
         if !editingText, hasText { drawTextBubble(s.text, in: s.textRect) }
+    }
+
+    /// 拉引线的预览：只画起点圆点 + 线，末端不画角标——大梁老师要的是「停止以后出现序号」
+    private func drawStepDrag(_ d: (anchor: NSPoint, end: NSPoint)) {
+        let c = NSColor(Color(hex: flowColorHex))
+        leader(from: d.anchor, to: d.end, color: c)
+        withShadow(blur: 3, alpha: 0.3) {
+            c.setFill()
+            NSBezierPath(ovalIn: NSRect(x: d.anchor.x - 3, y: d.anchor.y - 3, width: 6, height: 6)).fill()
+        }
     }
 
     private func leader(from a: NSPoint, to b: NSPoint, color: NSColor? = nil) {
@@ -1204,7 +1249,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                     pendingBadge = PendingBadge(index: i, grab: NSPoint(x: pt.x - steps[i].center.x, y: pt.y - steps[i].center.y), down: pt, moved: false)
                 }
             } else if event.clickCount == 1, (selection ?? .zero).contains(pt) {
-                addStep(at: pt)                                        // 单击空白 → 新角标
+                stepDrag = (anchor: pt, end: pt)                       // 空白按下 → 开始拉引线，松手才落角标
             }
         } else if phase == .editing, tool == .box || tool == .note || tool == .highlight {
             commitEditing()
@@ -1290,6 +1335,11 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             needsDisplay = true
             return
         }
+        if stepDrag != nil {
+            stepDrag?.end = Self.clamp(pt, in: selection ?? bounds)   // 拉引线：末端跟着鼠标、不出选区
+            needsDisplay = true
+            return
+        }
         if (tool == .box || tool == .note || tool == .highlight || (tool == .mosaic && mosaicMode == .box)), let o = boxOrigin {
             currentBox = Self.rect(o, pt).intersection(selection ?? .zero)
         } else if let o = dragOrigin {
@@ -1370,6 +1420,13 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             pendingBadge = nil
             if !pb.moved, steps.indices.contains(pb.index) { startStepTextEdit(pb.index) }   // 没拖＝单击 → 编辑文字
             needsDisplay = true
+            return
+        }
+        if let d = stepDrag {
+            stepDrag = nil
+            // 拉开了 → 角标落在松手处、线从按下处牵过来；没拉开＝原地单击 → 就地落一个角标
+            let dragged = hypot(d.end.x - d.anchor.x, d.end.y - d.anchor.y) > badgeRadius
+            addStep(at: d.end, anchor: dragged ? d.anchor : nil)
             return
         }
         if phase == .selecting, let sel = selection {
@@ -1659,7 +1716,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         guard let s = undoStack.popLast() else { return }
         boxes = s.boxes; markers = s.markers; steps = s.steps
         penStrokes = s.pen; arrows = s.arrows; texts = s.texts; mosaicStrokes = s.mosaicS; mosaicRects = s.mosaicR; shapes = s.shapes
-        selected = nil; activeMarker = nil; markerGrab = nil; pendingBubble = nil; pendingBadge = nil; currentStroke = nil; currentArrow = nil
+        selected = nil; activeMarker = nil; markerGrab = nil; pendingBubble = nil; pendingBadge = nil; currentStroke = nil; currentArrow = nil; stepDrag = nil
         window?.makeFirstResponder(self)
         needsDisplay = true
     }
@@ -1713,19 +1770,19 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         needsDisplay = true
     }
 
-    private func addStep(at center: NSPoint) {
+    /// 落一个序号角标。`anchor` 非空＝从那里牵一条指针线过来（拖出来的）
+    ///
+    /// 文字框紧贴角标右侧、与角标垂直居中——大梁老师要的是「序号后面可以输入文字」，
+    /// 不是再拉一条线去一个斜上方的气泡。右边放不下就翻到左侧
+    private func addStep(at center: NSPoint, anchor: NSPoint? = nil) {
         guard let sel = selection else { return }
         record()
-        let r = badgeRadius, gap: CGFloat = 16
         let size = bubbleSize("", maxWidth: bubbleMaxWidth)
-        // 角标右上角往右上 45° 偏移作为文字框左下角；换行时此处固定，引导线不动
-        var x = center.x + r / 2.0.squareRoot() + gap
-        let bottomY = center.y + r / 2.0.squareRoot() + gap
-        x = max(sel.minX + 4, min(x, sel.maxX - size.width - 4))
+        let rect = Self.stepBubbleRect(center: center, size: size, in: sel, badgeRadius: badgeRadius)
         // 序号顺延：取屏幕上现有序号的最大值 +1（被手动改过也以最大值为准）
         let next = (steps.compactMap { Int($0.number) }.max() ?? 0) + 1
-        steps.append(Step(center: center, number: "\(next)",
-                          textRect: NSRect(x: x, y: bottomY, width: size.width, height: size.height), text: "", colorHex: flowColorHex))
+        steps.append(Step(center: center, anchor: anchor, number: "\(next)",
+                          textRect: rect, text: "", colorHex: flowColorHex))
         startStepTextEdit(steps.count - 1)
         needsDisplay = true
     }
@@ -2247,7 +2304,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         }
         for s in steps {
             var c = s.center; c.x += dx; c.y += dy
-            drawStep(Step(center: c, number: s.number, textRect: s.textRect.offsetBy(dx: dx, dy: dy), text: s.text, colorHex: s.colorHex),
+            let a = s.anchor.map { NSPoint(x: $0.x + dx, y: $0.y + dy) }   // 指针起点同步平移，否则导出图里线会飞
+            drawStep(Step(center: c, anchor: a, number: s.number, textRect: s.textRect.offsetBy(dx: dx, dy: dy), text: s.text, colorHex: s.colorHex),
                      editingNumber: false, editingText: false)
         }
         drawPenStrokes(dx: dx, dy: dy)   // 画笔：最上层
