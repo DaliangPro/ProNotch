@@ -972,7 +972,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         for (i, t) in texts.enumerated() {
             if dx == 0, dy == 0, isEditing(.annoText(i)) { continue }
             guard !t.text.isEmpty else { continue }
-            withShadow(blur: 3, alpha: 0.45) {
+            withShadow(blur: TextAnnoLayout.shadowBlur(for: t.fontSize), alpha: TextAnnoLayout.shadowAlpha) {
                 // 量框与画字同一套参数（TextAnnoLayout），任何字号都不会把字挤没
                 TextAnnoLayout.draw(t.text, in: t.rect.offsetBy(dx: dx, dy: dy),
                                     fontSize: t.fontSize, color: NSColor(Color(hex: t.colorHex)))
@@ -1508,6 +1508,7 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             tv.placeholderAttrs = [.font: f, .foregroundColor: c.withAlphaComponent(0.45)]
             tv.textContainer?.containerSize = NSSize(width: TextAnnoLayout.maxWidth(for: t.fontSize) - TextAnnoLayout.padX * 2,
                                                      height: .greatestFiniteMagnitude)
+            tv.layer?.shadowRadius = TextAnnoLayout.shadowBlur(for: t.fontSize)   // 投影随字号，改完当场就是最终样子
             tv.frame = texts[i].rect
             tv.needsDisplay = true
         }
@@ -1778,9 +1779,9 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             tv.layer?.backgroundColor = NSColor.clear.cgColor
             // 与落定渲染同款投影：编辑态所见即所得，浅色截图上也读得清
             tv.layer?.shadowColor = NSColor.black.cgColor
-            tv.layer?.shadowOpacity = 0.45
-            tv.layer?.shadowRadius = 3
-            tv.layer?.shadowOffset = .zero
+            tv.layer?.shadowOpacity = Float(TextAnnoLayout.shadowAlpha)
+            tv.layer?.shadowRadius = TextAnnoLayout.shadowBlur(for: fontSize)
+            tv.layer?.shadowOffset = NSSize(width: 0, height: TextAnnoLayout.shadowOffsetY)
             tv.layer?.masksToBounds = false
         } else {
             tv.layer?.backgroundColor = (numeric ? Self.accent : Self.bubbleBG).cgColor

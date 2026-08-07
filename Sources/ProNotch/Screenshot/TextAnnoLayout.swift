@@ -26,6 +26,16 @@ enum TextAnnoLayout {
 
     static func font(_ size: CGFloat) -> NSFont { .systemFont(ofSize: size, weight: .semibold) }
 
+    /// 投影：只为「从任意截图背景上分离出来」，不参与造型。
+    ///
+    /// 由来（大梁老师 2026-08-07：「文字的阴影显得文字太脏了」）：原来固定 blur 3 / alpha 0.45，
+    /// 小字号时模糊半径已接近笔画本身的粗细，黑雾糊在红字外圈上——底越浅越脏。
+    /// 改成随字号缩放：14pt 只有 1.3 的虚边（干净），48pt 才到 4.3（大字仍托得住），
+    /// 同时把不透明度压到 0.22
+    static let shadowAlpha: CGFloat = 0.22
+    static let shadowOffsetY: CGFloat = -1
+    static func shadowBlur(for fontSize: CGFloat) -> CGFloat { max(fontSize, 1) * 0.09 }
+
     static func maxWidth(for fontSize: CGFloat) -> CGFloat {
         (baseMaxWidth * max(fontSize, 1) / baseFontSize).rounded()
     }
