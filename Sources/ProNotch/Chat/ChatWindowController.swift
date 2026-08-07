@@ -61,8 +61,11 @@ final class ChatWindowController: NSObject, ObservableObject, NSWindowDelegate {
     @Published var contentFrozen = false
 
     /// 钉在桌面（窗口置顶）。开＝浮在所有 App 之上，关＝像普通窗口一样被压到后面。
-    /// 默认开：这扇窗本来就是「切去浏览器核对一眼还看得见」才有用
-    @Published var pinned = true {
+    ///
+    /// 默认关（大梁老师 2026-08-07）：置顶是「切去浏览器核对一眼还看得见」时才要的，
+    /// 属于少数时刻。默认开则每次问完随手切走，这扇窗都还压在别的窗上面挡着，
+    /// 得多按一下才收得干净——把这一下从常态挪到需要它的那次
+    @Published var pinned = false {
         didSet { panel?.level = pinned ? .floating : .normal }
     }
 
