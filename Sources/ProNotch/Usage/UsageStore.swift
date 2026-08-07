@@ -68,6 +68,17 @@ struct ProductionUsageLoader: UsageLoading {
             ? SessionUsage.scanCodex(since: windowStart(cx)) : []
         let kimiSessions = enabled.contains(.kimi) ? SessionUsage.scanKimi() : []
         let grokSessions = enabled.contains(.grok) ? SessionUsage.scanGrok() : []
+        // 用量画像的窗口和额度榜的窗口不是一回事，必须分开扫。
+        // 额度榜锚的是「当前计费周期」（见上），而画像要的是完整近 7 天——
+        // 周期只剩 4 天时沿用它，更早的日子会被整片抹成 0：
+        // 实测 Codex 真实近 7 天 137.0M，按 4 天窗口只扫出 25.7M，08-01/08-02 全没了
+        //（大梁老师 2026-08-07「我的 Codex 近 7 天只用了这么点 token 吗」）。
+        // 这一遍里上一次扫过的文件会命中增量缓存零 IO，实际只多读周期之外那几个
+        let pStart = Self.profileScanStart()
+        let claudeProfile = enabled.contains(.claude)
+            ? SessionUsage.Profile.merge(SessionUsage.scanClaude(since: pStart)) : .init()
+        let codexProfile = enabled.contains(.codex)
+            ? SessionUsage.Profile.merge(SessionUsage.scanCodex(since: pStart)) : .init()
         let claudeTop = SessionUsage.top(claudeSessions,
             weekUsedPercent: cl?.secondary?.usedPercent ?? cl?.primary?.usedPercent, source: .claude)
         let codexTop = SessionUsage.top(codexSessions,
@@ -77,14 +88,21 @@ struct ProductionUsageLoader: UsageLoading {
         let grokTop = SessionUsage.top(grokSessions,
             weekUsedPercent: gr?.secondary?.usedPercent ?? gr?.primary?.usedPercent, source: .grok)
         return UsageSnapshot(
-            codex: cx.map { q in var q = q; q.topTasks = codexTop; q.profile = .merge(codexSessions); return q },
-            claude: cl.map { q in var q = q; q.topTasks = claudeTop; q.profile = .merge(claudeSessions); return q },
+            codex: cx.map { q in var q = q; q.topTasks = codexTop; q.profile = codexProfile; return q },
+            claude: cl.map { q in var q = q; q.topTasks = claudeTop; q.profile = claudeProfile; return q },
             grok: gr.map { q in var q = q; q.topTasks = grokTop; q.profile = .merge(grokSessions); return q },
             kimi: km.map { q in var q = q; q.topTasks = kimiTop; q.profile = .merge(kimiSessions); return q },
             sessionTokens: Self.tokenTable([
                 (.claude, claudeSessions), (.codex, codexSessions),
                 (.kimi, kimiSessions), (.grok, grokSessions),
             ]))
+    }
+
+    /// 用量画像的扫描起点：固定为画像窗口的头一天，与额度计费周期无关。
+    /// 别再拿 windowStart 顶替——那是给耗额度榜锚分子分母用的，
+    /// 计费周期短于 7 天时会把更早的日子整片扫没
+    static func profileScanStart(now: Date = Date()) -> Date {
+        now.addingTimeInterval(-Double(SessionUsage.Profile.windowDays) * 86400)
     }
 
     /// 归并四家的每会话 token。同一家内同键重复（Codex 子代理聚合后可能出现）取和，

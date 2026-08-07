@@ -73,6 +73,19 @@ final class UsageProfileTests: XCTestCase {
         XCTAssertEqual(SessionUsage.Profile.formatTokens(2_900_000_000), "2.9B")
     }
 
+    /// 画像的扫描窗口必须固定 7 天，不能跟着额度计费周期走。
+    ///
+    /// 由来（大梁老师 2026-08-07：「我的 Codex 近 7 天只用了这么点 token 吗」）：
+    /// 原来两者共用 windowStart（计费周期起点）。周期只剩 4 天时，更早动过的会话文件
+    /// 被 mtime 过滤挡在外面，最早那两三天整片显示成 0——
+    /// 实测 Codex 真实近 7 天 137.0M，按 4 天窗口只扫出 25.7M
+    func test画像扫描窗口固定7天与计费周期无关() {
+        let now = Date()
+        XCTAssertEqual(now.timeIntervalSince(ProductionUsageLoader.profileScanStart(now: now)),
+                       Double(SessionUsage.Profile.windowDays) * 86400, accuracy: 1,
+                       "画像的扫描起点必须正好是窗口的头一天")
+    }
+
     // MARK: - 版式（面板内容宽固定 288pt = 320 − 左右各 16）
 
     /// 一天都没跑的家不该在面板上留一块空白
