@@ -169,7 +169,10 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var wmColorHex = "#FFFFFF"
     private var wmOpacity: Double = 0.3
     private var wmDensity = 1                // 0 稀 / 1 中 / 2 密
-    private var noteColorHex = "#FFFFFF"  // 备注新建颜色（默认白）
+    /// 备注（框选 + 输入文字）新建颜色。默认红（大梁老师 2026-08-07），
+    /// 与框选/箭头/文字统一：白色在浅色截图上等于框了没框。取值即调色板首位
+    static let defaultNoteColorHex = "#FF453A"
+    private var noteColorHex = ScreenshotOverlayView.defaultNoteColorHex
     private var flowColorHex = "#FFFFFF"  // 流程新建颜色（默认白）
     // 马赛克
     private var mosaicStrokes: [MosaicStroke] = []
