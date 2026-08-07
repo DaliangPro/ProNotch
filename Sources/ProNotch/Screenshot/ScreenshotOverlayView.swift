@@ -964,12 +964,10 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         for (i, t) in texts.enumerated() {
             if dx == 0, dy == 0, isEditing(.annoText(i)) { continue }
             guard !t.text.isEmpty else { continue }
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.systemFont(ofSize: t.fontSize, weight: .semibold),
-                .foregroundColor: NSColor(Color(hex: t.colorHex))]
             withShadow(blur: 3, alpha: 0.45) {
-                // 与编辑输入框同套内边距，落定后文字位置与编辑时严丝合缝
-                (t.text as NSString).draw(in: t.rect.offsetBy(dx: dx, dy: dy).insetBy(dx: bubblePadX, dy: bubblePadY), withAttributes: attrs)
+                // 量框与画字同一套参数（TextAnnoLayout），任何字号都不会把字挤没
+                TextAnnoLayout.draw(t.text, in: t.rect.offsetBy(dx: dx, dy: dy),
+                                    fontSize: t.fontSize, color: NSColor(Color(hex: t.colorHex)))
             }
         }
     }
@@ -1152,12 +1150,11 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         if phase == .editing, tool == .text {
             commitEditing()
             if let i = texts.lastIndex(where: { $0.rect.contains(pt) }) {
-                selected = nil
-                startTextEdit(i)
+                startTextEdit(i)   // 选中态由 startTextEdit 接管（编辑中也能改字号/颜色）
             } else if (selection ?? .zero).insetBy(dx: -40, dy: -40).contains(pt) {   // 选区外围也可放字（导出会带上）
                 selected = nil
                 record()
-                let size = bubbleSize("", maxWidth: bubbleMaxWidth)
+                let size = TextAnnoLayout.size("", fontSize: textFontSize)
                 texts.append(TextAnno(rect: NSRect(x: pt.x, y: pt.y - size.height, width: size.width, height: size.height),
                                       text: "", colorHex: textColorHex, fontSize: textFontSize))
                 startTextEdit(texts.count - 1)
@@ -1490,12 +1487,19 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         guard case .text(let i)? = selected, texts.indices.contains(i) else { return }
         record(); change(&texts[i])
         let t = texts[i]
-        let attrs: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: t.fontSize, weight: .semibold)]
-        let bound = (t.text as NSString).boundingRect(
-            with: NSSize(width: bubbleMaxWidth - bubblePadX * 2, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading], attributes: attrs)
-        let size = NSSize(width: ceil(bound.width) + bubblePadX * 2, height: ceil(bound.height) + bubblePadY * 2)
+        let size = TextAnnoLayout.size(t.text, fontSize: t.fontSize)
         texts[i].rect = NSRect(x: t.rect.minX, y: t.rect.maxY - size.height, width: size.width, height: size.height)
+        // 正在编辑这条 → 输入框同步换字体/颜色/换行宽度，改完当场就是最终样子
+        if isEditing(.annoText(i)), let tv = editingField {
+            let c = NSColor(Color(hex: t.colorHex))
+            let f = TextAnnoLayout.font(t.fontSize)
+            tv.font = f; tv.textColor = c; tv.insertionPointColor = c
+            tv.placeholderAttrs = [.font: f, .foregroundColor: c.withAlphaComponent(0.45)]
+            tv.textContainer?.containerSize = NSSize(width: TextAnnoLayout.maxWidth(for: t.fontSize) - TextAnnoLayout.padX * 2,
+                                                     height: .greatestFiniteMagnitude)
+            tv.frame = texts[i].rect
+            tv.needsDisplay = true
+        }
         refreshToolbars()
     }
 
@@ -1714,14 +1718,20 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
 
     // MARK: - 文字编辑（统一）
 
+    /// `plainColor` 非空 ＝ 文字标注：不要黑底、直接按标注色出字
+    /// （大梁老师 2026-08-07「不要带黑色的背景框，直接出字」），尺寸/换行走 TextAnnoLayout
     @discardableResult
     private func makeField(_ frame: NSRect, value: String, placeholder: String, numeric: Bool,
-                           font: NSFont? = nil) -> AnnotationTextView {
-        var size = numeric ? frame.size : bubbleSize(value, maxWidth: bubbleMaxWidth)
+                           font: NSFont? = nil, plainColor: NSColor? = nil) -> AnnotationTextView {
+        let plain = plainColor != nil
+        let fontSize = font?.pointSize ?? textFont.pointSize
+        var size = numeric ? frame.size
+                 : (plain ? TextAnnoLayout.size(value, fontSize: fontSize)
+                          : bubbleSize(value, maxWidth: bubbleMaxWidth))
         let tv = AnnotationTextView(frame: NSRect(origin: frame.origin, size: size))   // 左下角锚点
         tv.font = font ?? (numeric ? numFont : textFont)   // 文字标注传自定字号，与落定渲染一致
-        tv.textColor = .white
-        tv.insertionPointColor = .white
+        tv.textColor = plainColor ?? .white
+        tv.insertionPointColor = plainColor ?? .white
         tv.drawsBackground = false
         tv.isRichText = false
         tv.smartInsertDeleteEnabled = false
@@ -1730,26 +1740,39 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         tv.alignment = numeric ? .center : .left          // 序号居中；说明左对齐
         tv.delegate = self
         tv.placeholder = placeholder
-        tv.placeholderAttrs = [.font: tv.font ?? textFont, .foregroundColor: NSColor.white.withAlphaComponent(0.4)]
+        tv.placeholderAttrs = [.font: tv.font ?? textFont,
+                               .foregroundColor: (plainColor ?? .white).withAlphaComponent(plain ? 0.45 : 0.4)]
         // 内边距与换行宽度：textContainerInset 是系统级留白，编辑态/多行都精确生效
-        let padX: CGFloat = numeric ? 5 : bubblePadX
+        let padX: CGFloat = numeric ? 5 : (plain ? TextAnnoLayout.padX : bubblePadX)
         let numLineH = ceil(numFont.ascender - numFont.descender)
-        let padY: CGFloat = numeric ? max(2, (size.height - numLineH) / 2) : bubblePadY
+        let padY: CGFloat = numeric ? max(2, (size.height - numLineH) / 2) : (plain ? TextAnnoLayout.padY : bubblePadY)
         tv.textContainerInset = NSSize(width: padX, height: padY)
         tv.textContainer?.lineFragmentPadding = 0
         tv.textContainer?.widthTracksTextView = false
-        tv.textContainer?.containerSize = NSSize(width: (numeric ? size.width : bubbleMaxWidth) - padX * 2,
-                                                 height: .greatestFiniteMagnitude)
+        // 换行宽度：文字标注随字号缩放，与落定渲染同一个换行点，不会编辑时不换、画出来换
+        let wrapWidth = numeric ? size.width : (plain ? TextAnnoLayout.maxWidth(for: fontSize) : bubbleMaxWidth)
+        tv.textContainer?.containerSize = NSSize(width: wrapWidth - padX * 2, height: .greatestFiniteMagnitude)
         tv.isHorizontallyResizable = false
         tv.isVerticallyResizable = false
-        // 已有文字：按实际排版尺寸收紧，底框贴住文字、不留多余空白（左下角锚点不动）
-        if !numeric, !value.isEmpty {
+        // 已有文字：按实际排版尺寸收紧，底框贴住文字、不留多余空白（左下角锚点不动）。
+        // 文字标注不走这条——它的尺寸由 TextAnnoLayout 统一量，二次收紧只会和落定渲染打架
+        if !numeric, !plain, !value.isEmpty {
             size = fittedSize(tv)
             tv.frame = NSRect(origin: frame.origin, size: size)
         }
         tv.wantsLayer = true
-        tv.layer?.backgroundColor = (numeric ? Self.accent : Self.bubbleBG).cgColor
-        tv.layer?.cornerRadius = numeric ? size.height / 2 : 8
+        if plain {
+            tv.layer?.backgroundColor = NSColor.clear.cgColor
+            // 与落定渲染同款投影：编辑态所见即所得，浅色截图上也读得清
+            tv.layer?.shadowColor = NSColor.black.cgColor
+            tv.layer?.shadowOpacity = 0.45
+            tv.layer?.shadowRadius = 3
+            tv.layer?.shadowOffset = .zero
+            tv.layer?.masksToBounds = false
+        } else {
+            tv.layer?.backgroundColor = (numeric ? Self.accent : Self.bubbleBG).cgColor
+            tv.layer?.cornerRadius = numeric ? size.height / 2 : 8
+        }
         addSubview(tv)
         editingField = tv
         window?.makeFirstResponder(tv)
@@ -1763,8 +1786,13 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     }
     private func startTextEdit(_ i: Int) {
         commitEditing()
-        makeField(texts[i].rect, value: texts[i].text, placeholder: "输入文字…", numeric: false,
-                  font: .systemFont(ofSize: texts[i].fontSize, weight: .semibold))
+        // 编辑期间也保持选中：子选项条绑到这条文字上，改颜色/字号立刻套用到它本身。
+        // 先重建面板再把焦点交给输入框，避免重建时把第一响应者抢走导致刚打开就收工
+        selected = .text(i)
+        refreshToolbars()
+        makeField(texts[i].rect, value: texts[i].text, placeholder: TextAnnoLayout.placeholder, numeric: false,
+                  font: TextAnnoLayout.font(texts[i].fontSize),
+                  plainColor: NSColor(Color(hex: texts[i].colorHex)))
         editing = .annoText(i)
     }
     private func startStepTextEdit(_ i: Int) {
@@ -1801,12 +1829,18 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             else {
                 if texts[i].text != v { record() }
                 texts[i].text = v
-                texts[i].rect = field.frame   // 采用输入框最终位置+尺寸
+                // 位置沿用输入框左上角，尺寸重新按渲染那套量——落定后的框与画出来的字严丝合缝
+                let size = TextAnnoLayout.size(v, fontSize: texts[i].fontSize)
+                texts[i].rect = NSRect(x: field.frame.minX, y: field.frame.maxY - size.height,
+                                       width: size.width, height: size.height)
+                selected = .text(i)   // 落定后保持选中：字号/颜色还能接着调（大梁老师 2026-08-07）
             }
         }
         }
         field.removeFromSuperview()
         window?.makeFirstResponder(self)
+        // 文字落定后仍选中 → 子选项条得换成这条文字的颜色/字号，否则改的还是工具默认值
+        if case .annoText = e, case .text? = selected { refreshToolbars() }
         needsDisplay = true
     }
 
@@ -1815,7 +1849,13 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         guard let tv = editingField, let e = editing else { return }
         tv.needsDisplay = true                 // 占位符随空/非空刷新
         if case .stepNumber = e { return }     // 序号短，固定框
-        let size = tv.string.isEmpty ? bubbleSize("", maxWidth: bubbleMaxWidth) : fittedSize(tv)
+        // 文字标注：量框与落定渲染共用 TextAnnoLayout，编辑时看到的换行/占位就是最终结果
+        let size: NSSize
+        if case .annoText(let i) = e, texts.indices.contains(i) {
+            size = TextAnnoLayout.size(tv.string, fontSize: texts[i].fontSize)
+        } else {
+            size = tv.string.isEmpty ? bubbleSize("", maxWidth: bubbleMaxWidth) : fittedSize(tv)
+        }
         guard tv.frame.size != size else { return }
         var origin = tv.frame.origin
         switch e {   // 备注/文字标注：左上角固定(向下长)；流程：左下角固定(向上长)
