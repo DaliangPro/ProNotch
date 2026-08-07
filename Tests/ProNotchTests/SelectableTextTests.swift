@@ -21,6 +21,21 @@ final class SelectableTextTests: XCTestCase {
         return host.fittingSize.height
     }
 
+    /// 排进指定宽度的容器后，实测每个 NSTextView 真正占了多宽。
+    /// `fittingSize` 问的是「理想多宽」，量不到「在受限容器里被分配了多宽」这件事
+    private func textWidths<V: View>(_ view: V, container: CGFloat) -> [CGFloat] {
+        let host = NSHostingView(rootView: view.frame(width: container))
+        host.frame = NSRect(x: 0, y: 0, width: container, height: 600)
+        host.layoutSubtreeIfNeeded()
+        var out: [CGFloat] = []
+        func walk(_ v: NSView) {
+            if v is NSTextView { out.append(v.frame.width) }
+            v.subviews.forEach(walk)
+        }
+        walk(host)
+        return out
+    }
+
     /// 一行放得下就一行，放不下才换行——高度得随给定宽度变
     func test高度随给定宽度换行() {
         let text = "折线有线宽，再小的日子也在曲线上有位置"
@@ -58,6 +73,39 @@ final class SelectableTextTests: XCTestCase {
         XCTAssertLessThan(filled, bare, "加了 FillWidth 才不会多断一行")
         XCTAssertEqual(filled, height(SelectableText(attr(text)).frame(width: 280)),
                        accuracy: 2, "满宽后应与单独限宽到同等可用宽度时一样高")
+    }
+
+    /// 我发出的那句是右侧气泡，宽度必须跟着内容收窄。
+    ///
+    /// 由来（大梁老师 2026-08-07：「气泡右边有非常大的留白」）：
+    /// `usedRect(for:)` 的**宽度**不可信——段落是 natural 对齐、占满容器，
+    /// 它把容器宽度原样报回来（`.unspecified` 时报出 1e7 是同一个毛病的另一面）。
+    /// 于是两个字的提问也报出整行宽，气泡撑满、文字后面空出一大片
+    func test短句不占满整行() {
+        let widths = textWidths(SelectableText(attr("好的")), container: 600)
+        XCTAssertEqual(widths.count, 1, "应当只有一个文本视图")
+        XCTAssertLessThan(widths[0], 200, "两个字的气泡不该撑满 600pt")
+        XCTAssertGreaterThan(widths[0], 0)
+    }
+
+    /// 收窄之后行数不能变多：宽度报的是「最宽那一行」，按它排版应当与按容器宽排一样高
+    func test收窄后不会多断一行() {
+        let text = "折线有线宽，再小的日子也在曲线上有位置"
+        let host = NSHostingView(rootView: SelectableText(attr(text)))
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 600)
+        host.layoutSubtreeIfNeeded()
+        XCTAssertEqual(host.fittingSize.height,
+                       height(SelectableText(attr(text)).frame(width: 600)),
+                       accuracy: 2, "收窄后高度应与按容器宽排版时一致")
+    }
+
+    /// 收窄不能把长正文也收掉：多行文本的最宽行本就贴着容器边，仍应基本铺满。
+    /// （报窄了会导致按更窄的宽度重排、多断出行来，底下的高度就不够用了）
+    func test长正文仍然铺满容器宽度() {
+        let long = String(repeating: "折线有线宽，再小的日子也在曲线上有位置。", count: 6)
+        let widths = textWidths(SelectableText(attr(long)).modifier(FillWidth()),
+                                container: 600)
+        XCTAssertGreaterThan(widths.first ?? 0, 550, "长正文应当基本铺满 600pt")
     }
 
     // MARK: - 属性映射

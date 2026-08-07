@@ -70,8 +70,19 @@ struct SelectableText: NSViewRepresentable {
         }
         container.size = CGSize(width: width, height: .greatestFiniteMagnitude)
         manager.ensureLayout(for: container)
+        // 高度可信，**宽度不可信**：整块的 usedRect 宽度同样会报回容器宽度
+        //（就是上面那个毛病在「宽度给定」这一侧的样子）。
+        // 大梁老师 2026-08-07 实测：两个字的提问气泡撑满 600pt，文字后面空出一大片。
+        // 真实内容宽度只能逐行去量——每个行片段的 usedRect 才是那一行实际写到哪儿
         let used = manager.usedRect(for: container)
-        return CGSize(width: min(ceil(used.width), width), height: ceil(used.height))
+        var content: CGFloat = 0
+        manager.enumerateLineFragments(
+            forGlyphRange: manager.glyphRange(for: container)
+        ) { _, lineUsed, _, _, _ in
+            content = max(content, lineUsed.maxX)
+        }
+        // 报的是「最宽那一行」，按它排版行数不会变，高度因此仍然对得上
+        return CGSize(width: min(ceil(content), width), height: ceil(used.height))
     }
 }
 
