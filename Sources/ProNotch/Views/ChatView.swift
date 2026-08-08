@@ -678,8 +678,7 @@ struct ChatView: View {
                 .focused($inputFocused)
                 .onSubmit { sendDraft() }
                 .onKeyPress(.return, phases: .down) { press in
-                    // ⌘回车 = 在光标处插入换行（走字段编辑器，与 ⌥回车同一原生路径）
-                    guard press.modifiers.contains(.command) else { return .ignored }
+                    guard Self.isNewlineShortcut(press.modifiers) else { return .ignored }
                     if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
                         editor.insertNewlineIgnoringFieldEditor(nil)
                         return .handled
@@ -760,10 +759,7 @@ struct ChatView: View {
                 .focused($inputFocused)
                 .onSubmit { sendDraft() }
                 .onKeyPress(.return, phases: .down) { press in
-                    // 换行：⌘回车与 ⇧回车都认（大梁老师 2026-07-31 定「两个都支持」）。
-                    // 系统自带的 ⌥回车也仍然有效
-                    guard press.modifiers.contains(.command)
-                            || press.modifiers.contains(.shift) else { return .ignored }
+                    guard Self.isNewlineShortcut(press.modifiers) else { return .ignored }
                     if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
                         editor.insertNewlineIgnoringFieldEditor(nil)
                         return .handled
@@ -899,6 +895,17 @@ struct ChatView: View {
         .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
             .fill(ChatWindowPalette.surface2))
         .padding(.top, 2)
+    }
+
+    /// 回车是换行还是发送：**⌘回车与 ⇧回车都换行**（大梁老师 2026-07-31 定「两个都支持」），
+    /// 其余情况落给 `onSubmit` 发送。系统自带的 ⌥回车走原生路径，根本不经过这儿。
+    ///
+    /// 判据只留这一份。原先刘海的 `inputBar` 与独立窗的 `windowComposer`
+    /// 各写各的 `onKeyPress`，于是「两个都支持」只落到了独立窗一处——
+    /// 刘海里按 ⇧回车不换行，直接把没写完的话发出去了。
+    /// 同一个决定要在两处分别落实，就一定会漏掉一处（大梁老师 2026-08-08）
+    static func isNewlineShortcut(_ modifiers: EventModifiers) -> Bool {
+        modifiers.contains(.command) || modifiers.contains(.shift)
     }
 
     private func sendDraft() {
