@@ -637,11 +637,9 @@ struct ChatView: View {
             }
             .buttonStyle(.plain)
             // 用自绘气泡而非 .help：刘海是非激活面板，系统 tooltip 在这儿根本不弹
-            .notchTip(store.webSearchEnabled
-                ? "联网搜索已开启：先搜索再回答（点击关闭）"
-                : "联网搜索已关闭：只用模型自身知识（点击开启）", edge: .aboveLeading)
-            // 深度思考随手开关：DeepSeek v4 这类混合模型默认先想一轮，闲聊问答用不上，
-            // 关掉明显更快。跟地球图标同一排——都是「这一问怎么答」的即时选择
+            .notchTip(ChatComposer.ToolToggle.webSearch.hint(on: store.webSearchEnabled),
+                      edge: .aboveLeading)
+            // 深度思考随手开关，跟地球图标同一排——都是「这一问怎么答」的即时选择
             Button {
                 store.thinkingEnabled.toggle()
             } label: {
@@ -649,26 +647,16 @@ struct ChatView: View {
                     .foregroundColor(store.thinkingEnabled ? .cyan : .white.opacity(0.35))
             }
             .buttonStyle(.plain)
-            .notchTip(store.thinkingEnabled
-                ? "深度思考已开启：模型先推理再作答，更准也更慢（点击关闭）"
-                : "深度思考已关闭：直接作答，更快（点击开启）", edge: .aboveLeading)
-            // 默认单行、随内容增长到最多 6 行：粘贴带换行的内容也能看全。
-            // 回车发送，⌘回车换行（IM 习惯；系统自带的 ⌥回车也保留）
+            .notchTip(ChatComposer.ToolToggle.thinking.hint(on: store.thinkingEnabled),
+                      edge: .aboveLeading)
             if let data = store.draftAttachment, let img = NSImage(data: data) {
-                // 待发送的截图附件：缩略图 + 移除；随下一条消息发给视觉模型
-                HStack(spacing: 6) {
-                    Image(nsImage: img).resizable().scaledToFit()
-                        .frame(height: 30)
-                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-                    Text("已附截图").font(.system(size: 10)).foregroundColor(.white.opacity(0.5))
-                    Button { store.draftAttachment = nil } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
-                    }.buttonStyle(.plain)
+                ChatComposer.AttachmentBar(image: img, compact: true) {
+                    store.draftAttachment = nil
                 }
             }
+            // 默认单行、随内容增长到最多 6 行：粘贴带换行的内容也能看全
             TextField("", text: $store.draftMessage,
-                      prompt: Text("输入问题，回车发送 · ⌘回车换行")
+                      prompt: Text(ChatComposer.notchPlaceholder)
                           .foregroundColor(.white.opacity(0.3)),
                       axis: .vertical)
                 .textFieldStyle(.plain)
@@ -678,7 +666,7 @@ struct ChatView: View {
                 .focused($inputFocused)
                 .onSubmit { sendDraft() }
                 .onKeyPress(.return, phases: .down) { press in
-                    guard Self.isNewlineShortcut(press.modifiers) else { return .ignored }
+                    guard ChatComposer.isNewlineShortcut(press.modifiers) else { return .ignored }
                     if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
                         editor.insertNewlineIgnoringFieldEditor(nil)
                         return .handled
@@ -699,34 +687,33 @@ struct ChatView: View {
                         .foregroundColor(.white.opacity(0.7))
                 }
                 .buttonStyle(.plain)
-                .help("停止")
+                // 系统 tooltip 在刘海这种非激活面板里不弹，跟旁边两个开关一样走自绘气泡
+                .notchTip("停止生成", edge: .aboveLeading)
+                .accessibilityLabel("停止生成")
             } else {
+                let sendable = ChatComposer.canSend(draft: store.draftMessage)
                 Button {
                     sendDraft()
                 } label: {
                     Image(systemName: "arrow.up.circle.fill")
                         .font(.system(size: 16))
-                        .foregroundColor(store.draftMessage.isEmpty
-                            ? .white.opacity(0.25) : .white.opacity(0.8))
+                        .foregroundColor(sendable ? .white.opacity(0.8) : .white.opacity(0.25))
                 }
                 .buttonStyle(.plain)
-                .disabled(store.draftMessage.isEmpty)
-                .help("发送")
+                .disabled(!sendable)
+                .notchTip("发送 Enter", edge: .aboveLeading)
+                .accessibilityLabel("发送")
             }
         }
-        .padding(.horizontal, host.inNotch ? 10 : 14)
-        .padding(.vertical, host.inNotch ? 6 : 9)
-        // 刘海里是贴着面板的方角输入框；独立窗口改成悬浮胶囊 + 阴影，与背景脱开——
-        // 无框布局里如果它也没有边界，就看不出「这儿能打字」
-        .background {
-            if host.inNotch {
-                RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.08))
-            } else {
-                Capsule().fill(Color(white: 0.115))
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.07), lineWidth: 0.5))
-                    .shadow(color: .black.opacity(0.35), radius: 12, y: 4)
-            }
-        }
+        // 这一份**只给刘海用**：独立窗走的是下面的 `windowComposer`
+        //（分支在 body 里，`if store.isConfigured, !host.inNotch` 先把独立窗吃掉了）。
+        // 原先这儿还留着 `host.inNotch ? 10 : 14` 和一整套 else 胶囊背景，
+        // 注释也写着「独立窗口改成悬浮胶囊」——那些分支永远不会执行，
+        // 描述的还是个不存在的事实。我这次排查就是被它带偏，
+        // 以为改这一份能改到独立窗（大梁老师 2026-08-08）
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.white.opacity(0.08)))
     }
 
     /// 独立窗口的输入区：一个块，**模型选择器就在里面**。
@@ -739,16 +726,13 @@ struct ChatView: View {
     /// 这扇窗的底是毛玻璃，透着桌面，只有语义色自带的 vibrancy 才保证文字始终清楚
     private var windowComposer: some View {
         VStack(alignment: .leading, spacing: 6) {
-            // 「截图问 AI」挂进来的待发附件。上面那句注释里早写了「附件」，
-            // 实现却一直只有刘海那份 `inputBar` 有——独立窗口这边漏了整段，
-            // 于是截图挂上了、也确实会随下一条消息发出去，但输入区一点提示都没有，
-            // 看着像功能没生效（大梁老师 2026-08-08：「为什么它不会把截图自动放进输入框」）。
-            // 而截图问 AI 打开的**正是**这扇窗，等于这条路上必然踩空
+            // 「截图问 AI」挂进来的待发附件（那条路打开的**正是**这扇窗）
             if let data = store.draftAttachment, let img = NSImage(data: data) {
-                windowAttachmentChip(img)
+                ChatComposer.AttachmentBar(image: img) { store.draftAttachment = nil }
+                    .padding(.top, 2)
             }
             TextField("", text: $store.draftMessage,
-                      prompt: Text("问点什么…").foregroundStyle(.tertiary),
+                      prompt: Text(ChatComposer.windowPlaceholder).foregroundStyle(.tertiary),
                       axis: .vertical)
                 .textFieldStyle(.plain)
                 .lineLimit(1...8)
@@ -759,7 +743,7 @@ struct ChatView: View {
                 .focused($inputFocused)
                 .onSubmit { sendDraft() }
                 .onKeyPress(.return, phases: .down) { press in
-                    guard Self.isNewlineShortcut(press.modifiers) else { return .ignored }
+                    guard ChatComposer.isNewlineShortcut(press.modifiers) else { return .ignored }
                     if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
                         editor.insertNewlineIgnoringFieldEditor(nil)
                         return .handled
@@ -774,11 +758,11 @@ struct ChatView: View {
                 // 同一个功能在两处不该长两个样
                 // 中文加回来，并且深度思考在前、联网在后（大梁老师 2026-07-31 两次调整：
                 // 先去字只留图标，再改回带字并互换位置）
-                windowToolChip("深度思考", on: store.thinkingEnabled,
+                windowToolChip(.thinking, on: store.thinkingEnabled,
                                action: { store.thinkingEnabled.toggle() }) {
                     ThinkingBubbleIcon(side: 15)
                 }
-                windowToolChip("联网", on: store.webSearchEnabled,
+                windowToolChip(.webSearch, on: store.webSearchEnabled,
                                action: { store.webSearchEnabled.toggle() }) {
                     Image(systemName: "globe").font(.system(size: 13))
                 }
@@ -794,17 +778,17 @@ struct ChatView: View {
                     .notchTip("停止生成 Esc", edge: .aboveLeading)
                     .accessibilityLabel("停止生成")
                 } else {
+                    let sendable = ChatComposer.canSend(draft: store.draftMessage)
                     Button { sendDraft() } label: {
                         Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(store.draftMessage.isEmpty ? AnyShapeStyle(.secondary)
-                                                                        : AnyShapeStyle(Color.black))
+                            .foregroundStyle(sendable ? AnyShapeStyle(Color.black)
+                                                      : AnyShapeStyle(.secondary))
                             .frame(width: 27, height: 27)
-                            .background(Circle().fill(store.draftMessage.isEmpty
-                                                      ? AnyShapeStyle(.quaternary)
-                                                      : AnyShapeStyle(.white)))
+                            .background(Circle().fill(sendable ? AnyShapeStyle(.white)
+                                                               : AnyShapeStyle(.quaternary)))
                     }
                     .buttonStyle(.plain)
-                    .disabled(store.draftMessage.isEmpty)
+                    .disabled(!sendable)
                     .notchTip("发送 Enter", edge: .aboveLeading)
                     .accessibilityLabel("发送")
                 }
@@ -852,60 +836,10 @@ struct ChatView: View {
     /// 系统强调色（跟「系统设置 → 外观 → 强调色」走）
     private static var accent: Color { Color(nsColor: .controlAccentColor) }
 
-    private func windowToolChip<Icon: View>(_ title: String, on: Bool,
+    private func windowToolChip<Icon: View>(_ spec: ChatComposer.ToolToggle, on: Bool,
                                             action: @escaping () -> Void,
                                             @ViewBuilder icon: @escaping () -> Icon) -> some View {
-        WindowToolChip(title: title, on: on, accent: Self.accent, action: action, icon: icon)
-    }
-
-    /// 待发截图的附件条：缩略图 + 说明 + 移除。
-    ///
-    /// 摆在输入框**上方**而不是收进底下那行控件：截图看不清就等于没附，
-    /// 而控件行里塞得下的高度（26）根本看不出图里是什么。
-    /// 嵌在输入框里就用 surface2——比输入框底 surface1 再亮一档，是「块中块」的层级
-    private func windowAttachmentChip(_ img: NSImage) -> some View {
-        HStack(spacing: 8) {
-            Image(nsImage: img)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: 54, height: 40)
-                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .strokeBorder(ChatWindowPalette.border, lineWidth: 0.5))
-            VStack(alignment: .leading, spacing: 1) {
-                Text("已附截图").font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.primary)
-                Text("随下一条消息一起发给模型").font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-            }
-            // 不放 Spacer：卡片收缩到内容宽度，× 紧跟文字。
-            // 铺满整宽的话它就成了一条横带子，× 被推到窗口最右边，
-            // 离「已附截图」十万八千里，看不出是在删这个东西
-            Button { store.draftAttachment = nil } label: {
-                Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 18, height: 18)
-                    .background(Circle().fill(.quaternary))
-            }
-            .buttonStyle(.plain)
-            .notchTip("移除截图", edge: .aboveLeading)
-            .accessibilityLabel("移除截图")
-        }
-        .padding(5)
-        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(ChatWindowPalette.surface2))
-        .padding(.top, 2)
-    }
-
-    /// 回车是换行还是发送：**⌘回车与 ⇧回车都换行**（大梁老师 2026-07-31 定「两个都支持」），
-    /// 其余情况落给 `onSubmit` 发送。系统自带的 ⌥回车走原生路径，根本不经过这儿。
-    ///
-    /// 判据只留这一份。原先刘海的 `inputBar` 与独立窗的 `windowComposer`
-    /// 各写各的 `onKeyPress`，于是「两个都支持」只落到了独立窗一处——
-    /// 刘海里按 ⇧回车不换行，直接把没写完的话发出去了。
-    /// 同一个决定要在两处分别落实，就一定会漏掉一处（大梁老师 2026-08-08）
-    static func isNewlineShortcut(_ modifiers: EventModifiers) -> Bool {
-        modifiers.contains(.command) || modifiers.contains(.shift)
+        WindowToolChip(spec: spec, on: on, accent: Self.accent, action: action, icon: icon)
     }
 
     private func sendDraft() {
@@ -1063,7 +997,10 @@ private extension View {
 /// 独立成 struct 是因为要自己记悬停态——原来写成方法拿不到 @State，
 /// 只能靠彩底加描边来表达开启，那圈描边正是大梁老师说的「光感效果不好」
 private struct WindowToolChip<Icon: View>: View {
-    let title: String
+    /// 名字与开关提示语都来自共享说明——原先这儿自己拼「XX已开启（点击关闭）」，
+    /// 等于什么都没解释，而刘海那边同一个开关的提示是写清楚了的
+    let spec: ChatComposer.ToolToggle
+    var title: String { spec.title }
     let on: Bool
     let accent: Color
     let action: () -> Void
@@ -1092,8 +1029,7 @@ private struct WindowToolChip<Icon: View>: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .notchTip(on ? "\(title)已开启（点击关闭）" : "\(title)已关闭（点击开启）",
-                  edge: .aboveLeading)
+        .notchTip(spec.hint(on: on), edge: .aboveLeading)
         .accessibilityLabel(title)
         .accessibilityValue(on ? "已开启" : "已关闭")
         .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
