@@ -178,6 +178,90 @@ enum WebSearch {
         return merged
     }
 
+    // MARK: - 覆盖度与复检
+
+    /// 中文疑问与修饰词。中文不用空格分词，只能从整串里剥——
+    /// 但**只剥词首词尾**：「屏幕对比度」当中的「对比」、「多功能刀」当中的「功能」
+    /// 都是名字的一部分，从中间剥了就造出一个搜不到的怪词，反而误判成漏。
+    /// 而这些词在中文查询里本来就长在两头（「千问办公是什么」「QoderWork官网」）
+    private static let cjkStopwords = [
+        "是什么", "有什么", "怎么样", "怎么", "如何", "哪个", "哪些", "多少钱", "多少",
+        "区别", "对比", "比较", "介绍", "详细", "资料", "评测", "测评", "官网", "官方",
+        "价格", "功能", "优缺点", "优点", "缺点", "最新", "近期", "目前", "现在",
+    ]
+
+    /// 英文停用词**只整词匹配，绝不当子串剥**。
+    /// 头一版把它们跟中文的一起当子串剥，`or` 正好长在 `QoderWork` 里，
+    /// 剥出个 `qoderwk`——从此这个名字在任何材料里都找不到，每轮都误判成漏
+    private static let latinStopwords: Set<String> = [
+        "what", "which", "who", "how", "why", "is", "are", "the", "an",
+        "vs", "versus", "and", "or", "of", "for", "in", "on", "to",
+        "review", "price", "official", "website", "latest", "difference", "compare",
+    ]
+
+    /// 一条查询里真正用于判覆盖的词（纯函数，可测）。
+    ///
+    /// 中文查询未必带空格——规划器给「千问办公是什么」是常事，
+    /// 整串拿去材料里找必然找不到，不剥就每轮都误判成「漏了」，白搜一轮
+    static func coverageTerms(of query: String) -> [String] {
+        let separators = CharacterSet.whitespacesAndNewlines
+            .union(.punctuationCharacters).union(.symbols)
+        return query.lowercased()
+            .components(separatedBy: separators)
+            .map(trimmingStopwords)
+            .filter { $0.count >= 2 && !latinStopwords.contains($0) && !cjkStopwords.contains($0) }
+    }
+
+    /// 反复从两头剥中文停用词，直到剥不动。整个词就是停用词时不剥（否则剥成空串，
+    /// 留给上面的过滤器整词丢掉）
+    private static func trimmingStopwords(_ token: String) -> String {
+        var t = token
+        var changed = true
+        while changed {
+            changed = false
+            for word in cjkStopwords where t.count > word.count {
+                if t.hasSuffix(word) { t.removeLast(word.count); changed = true }
+                if t.hasPrefix(word) { t.removeFirst(word.count); changed = true }
+            }
+        }
+        return t
+    }
+
+    /// 这一轮抓回的材料把哪几条查询整个漏掉了（纯函数，可测）。
+    ///
+    /// 由来（大梁老师 2026-08-07）：问「千问办公和 QoderWork 有什么区别」，
+    /// 管线各环都正常——8 条结果、6 条抓到正文、近 1.5 万字，
+    /// 可回来的全是 QoderWork 的页面，「千问办公」一个字都没有，
+    /// 模型于是拿名字相近的通义千问顶上了。这不是「搜不到」，是**召回偏斜**：
+    /// 一条子查询的材料把另一条挤没了，而管线是单轮的，看不见自己漏了半边。
+    ///
+    /// 判据刻意保守——一条查询的词**一个都没出现**才算漏。复检要花钱和时间，
+    /// 宁可漏报也别误报
+    static func uncoveredQueries(_ queries: [String], in results: [SearchResult]) -> [String] {
+        let haystack = results.prefix(maxDocuments)
+            .map { "\($0.title)\n\($0.highlights)\n\($0.body)" }
+            .joined(separator: "\n").lowercased()
+        return queries.filter { query in
+            let terms = coverageTerms(of: query)
+            // 剥完只剩停用词＝无从判断，别拿它触发复检
+            guard !terms.isEmpty else { return false }
+            return !terms.contains { haystack.contains($0) }
+        }
+    }
+
+    /// 把复检抓回的材料并进首轮结果。
+    ///
+    /// **交错**而不是接在后面：首轮若已凑够 `maxDocuments` 条，接在后面等于白搜——
+    /// 一截断，复检那几条永远进不了提示词，而它们恰恰是来补首轮漏洞的。
+    /// 复检排在交错的头一位，它是稀缺的那一方
+    static func mergeRecheck(_ original: [SearchResult], _ extra: [SearchResult]) async -> [SearchResult] {
+        guard !extra.isEmpty else { return original }
+        var merged = interleave([0: extra, 1: original], order: [0, 1])
+        // 名单变了得重抓：新挤进前 8 的那几条可能还只有摘要。已有正文的会跳过
+        await fillBodies(&merged)
+        return merged
+    }
+
     /// URL 归一化，只为去重：去掉 scheme 与末尾斜杠——http/https、带不带斜杠都算同一页。
     /// 不动大小写：路径在多数服务器上是区分大小写的，一并小写会把两个不同页面误判成一个
     static func canonicalURL(_ raw: String) -> String {
