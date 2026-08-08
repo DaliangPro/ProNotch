@@ -22,10 +22,13 @@ enum ChatComposer {
         modifiers.contains(.command) || modifiers.contains(.shift)
     }
 
-    /// 这条草稿能不能发出去。两边发送键的禁用态都读它——
-    /// 判据散在各处的话，将来改口径（比如「只挂了图没打字也允许发」）就得记得改全
-    static func canSend(draft: String) -> Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    /// 这条草稿能不能发出去。两边发送键的禁用态都读它——判据散在各处，改口径就得记得改全。
+    ///
+    /// **只挂了截图没打字也算能发**（大梁老师 2026-08-08）：
+    /// 「截图问 AI」的整条路就是为了少几步，挂上图之后多数时候想问的就是「这是什么」，
+    /// 逼人先打两个字才让点发送，等于把刚省下的那一步又还回去
+    static func canSend(draft: String, hasAttachment: Bool) -> Bool {
+        hasAttachment || !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     // MARK: - 文案

@@ -787,20 +787,26 @@ final class ChatStore: ObservableObject {
     }
 
     /// 消息 → OpenAI 载荷：带图的用「文本+image_url(data URI)」parts 数组（视觉模型格式），纯文本保持字符串
-    private static func payloadEntry(for m: ChatMessage) -> [String: Any] {
+    static func payloadEntry(for m: ChatMessage) -> [String: Any] {
         guard let data = m.imageData else {
             return ["role": m.role.rawValue, "content": m.content]
         }
-        return ["role": m.role.rawValue, "content": [
-            ["type": "text", "text": m.content],
-            ["type": "image_url",
-             "image_url": ["url": "data:image/jpeg;base64," + data.base64EncodedString()]],
-        ]]
+        var parts: [[String: Any]] = []
+        // 只发了图没打字时不放这个 part：空字符串的 text part 有的服务端直接判 400
+        if !m.content.isEmpty { parts.append(["type": "text", "text": m.content]) }
+        parts.append(["type": "image_url",
+                      "image_url": ["url": "data:image/jpeg;base64," + data.base64EncodedString()]])
+        return ["role": m.role.rawValue, "content": parts]
     }
 
-    /// 替换消息内容里的文本（联网搜索注入用）：parts 数组只改 text 部分，保留图片
-    private static func replacingText(in content: Any?, with text: String) -> Any {
+    /// 替换消息内容里的文本（联网搜索注入用）：parts 数组只改 text 部分，保留图片。
+    /// 原本没有 text part（只发了图）就在最前补一个——否则注入的材料会静默丢掉
+    static func replacingText(in content: Any?, with text: String) -> Any {
         guard var parts = content as? [[String: Any]] else { return text }
+        guard parts.contains(where: { ($0["type"] as? String) == "text" }) else {
+            parts.insert(["type": "text", "text": text], at: 0)
+            return parts
+        }
         for i in parts.indices where (parts[i]["type"] as? String) == "text" { parts[i]["text"] = text }
         return parts
     }
@@ -824,10 +830,13 @@ final class ChatStore: ObservableObject {
 
     func send(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !isStreaming, isConfigured else { return }
+        let attachment = draftAttachment
+        // 只挂了截图没打字也发得出去（大梁老师 2026-08-08）：那张图本身就是问题。
+        // 判据与 `ChatComposer.canSend` 必须一致——UI 那边放行、这里挡住，
+        // 表现就是按钮亮着却点不动
+        guard !trimmed.isEmpty || attachment != nil, !isStreaming, isConfigured else { return }
         errorText = nil
         noticeText = nil
-        let attachment = draftAttachment
         draftAttachment = nil
         ensureCurrentConversation()
         messages.append(ChatMessage(role: .user, content: trimmed, imageData: attachment))
@@ -841,10 +850,11 @@ final class ChatStore: ObservableObject {
             reasoningEnabled: thinkingEnabled,
             submittedAt: Date())))
         if let i = currentIndex {
-            // 首条用户消息当侧栏标题（压掉换行，取一行放得下的长度）
+            // 首条用户消息当侧栏标题（压掉换行，取一行放得下的长度）。
+            // 只发了图没打字就没有话可取——给个中性标签，不替他编一句问话
             if conversations[i].title.isEmpty {
                 let flat = trimmed.replacingOccurrences(of: "\n", with: " ")
-                conversations[i].title = String(flat.prefix(20))
+                conversations[i].title = flat.isEmpty ? "截图提问" : String(flat.prefix(20))
             }
             conversations[i].updatedAt = Date()
         }
@@ -862,7 +872,8 @@ final class ChatStore: ObservableObject {
     /// 完整一轮：可选联网搜索（查询改写 → 搜索 → 结果注入最后一条用户消息）→ 流式请求
     private func run(question: String, history: [[String: Any]], config: ChatRequestConfig) async {
         var payload = history
-        if webSearchEnabled {
+        // 只发了图没打字：没有可搜的词，规划、搜索这一整段都是空跑，直接交给模型看图
+        if webSearchEnabled, !question.isEmpty {
             do {
                 // 先规划：要不要联网、拆几条查询、限不限时间（规划失败则退回拿原话搜一次）。
                 // **这一段不显示「联网搜索中」**：此刻还没决定要不要搜，写成搜索中是假的。

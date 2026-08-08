@@ -691,7 +691,8 @@ struct ChatView: View {
                 .notchTip("停止生成", edge: .aboveLeading)
                 .accessibilityLabel("停止生成")
             } else {
-                let sendable = ChatComposer.canSend(draft: store.draftMessage)
+                let sendable = ChatComposer.canSend(
+                    draft: store.draftMessage, hasAttachment: store.draftAttachment != nil)
                 Button {
                     sendDraft()
                 } label: {
@@ -778,7 +779,8 @@ struct ChatView: View {
                     .notchTip("停止生成 Esc", edge: .aboveLeading)
                     .accessibilityLabel("停止生成")
                 } else {
-                    let sendable = ChatComposer.canSend(draft: store.draftMessage)
+                    let sendable = ChatComposer.canSend(
+                        draft: store.draftMessage, hasAttachment: store.draftAttachment != nil)
                     Button { sendDraft() } label: {
                         Image(systemName: "arrow.up").font(.system(size: 11, weight: .bold))
                             .foregroundStyle(sendable ? AnyShapeStyle(Color.black)
@@ -1117,10 +1119,12 @@ private struct MessageBubble: View {
                             if windowStyle, !streaming, !message.content.isEmpty {
                                 actionRow
                             }
-                        } else {
+                        } else if !message.content.isEmpty {
                             // 自己问的那句也要能划词复制（大梁老师 2026-08-07）——
                             // 改一改再问一遍是常事，不能只让人重打一遍。
-                            // 窗口比刘海宽敞得多，12pt 挤着没道理
+                            // 窗口比刘海宽敞得多，12pt 挤着没道理。
+                            // 只发了图没打字时整块跳过：空文本视图仍占一行行高，
+                            // 图底下会多出一条说不清的空隙
                             SelectableText(MarkdownLite.plainNS(
                                 message.content, size: type.body,
                                 weight: type.bodyWeight,
