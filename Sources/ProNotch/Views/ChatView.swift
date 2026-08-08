@@ -740,6 +740,14 @@ struct ChatView: View {
     /// 这扇窗的底是毛玻璃，透着桌面，只有语义色自带的 vibrancy 才保证文字始终清楚
     private var windowComposer: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // 「截图问 AI」挂进来的待发附件。上面那句注释里早写了「附件」，
+            // 实现却一直只有刘海那份 `inputBar` 有——独立窗口这边漏了整段，
+            // 于是截图挂上了、也确实会随下一条消息发出去，但输入区一点提示都没有，
+            // 看着像功能没生效（大梁老师 2026-08-08：「为什么它不会把截图自动放进输入框」）。
+            // 而截图问 AI 打开的**正是**这扇窗，等于这条路上必然踩空
+            if let data = store.draftAttachment, let img = NSImage(data: data) {
+                windowAttachmentChip(img)
+            }
             TextField("", text: $store.draftMessage,
                       prompt: Text("问点什么…").foregroundStyle(.tertiary),
                       axis: .vertical)
@@ -852,6 +860,45 @@ struct ChatView: View {
                                             action: @escaping () -> Void,
                                             @ViewBuilder icon: @escaping () -> Icon) -> some View {
         WindowToolChip(title: title, on: on, accent: Self.accent, action: action, icon: icon)
+    }
+
+    /// 待发截图的附件条：缩略图 + 说明 + 移除。
+    ///
+    /// 摆在输入框**上方**而不是收进底下那行控件：截图看不清就等于没附，
+    /// 而控件行里塞得下的高度（26）根本看不出图里是什么。
+    /// 嵌在输入框里就用 surface2——比输入框底 surface1 再亮一档，是「块中块」的层级
+    private func windowAttachmentChip(_ img: NSImage) -> some View {
+        HStack(spacing: 8) {
+            Image(nsImage: img)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 54, height: 40)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(ChatWindowPalette.border, lineWidth: 0.5))
+            VStack(alignment: .leading, spacing: 1) {
+                Text("已附截图").font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.primary)
+                Text("随下一条消息一起发给模型").font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+            // 不放 Spacer：卡片收缩到内容宽度，× 紧跟文字。
+            // 铺满整宽的话它就成了一条横带子，× 被推到窗口最右边，
+            // 离「已附截图」十万八千里，看不出是在删这个东西
+            Button { store.draftAttachment = nil } label: {
+                Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .background(Circle().fill(.quaternary))
+            }
+            .buttonStyle(.plain)
+            .notchTip("移除截图", edge: .aboveLeading)
+            .accessibilityLabel("移除截图")
+        }
+        .padding(5)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(ChatWindowPalette.surface2))
+        .padding(.top, 2)
     }
 
     private func sendDraft() {
