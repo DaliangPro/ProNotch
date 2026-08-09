@@ -124,9 +124,11 @@ final class HookDeliveryGuardTests: XCTestCase {
 
     // MARK: - 真实行为
 
-    /// 把脚本里的 open 换成落标记文件，用指定进程名跑一遍，回报「是否投递」与退出码
+    /// 把脚本里的 open 换成落标记文件，用指定进程名跑一遍，回报「是否投递」与退出码。
+    /// 默认载荷带 transcript_path——真 Claude Code 的每个 hook 事件都带它，
+    /// 夹具不带的话会被出身校验当成冒名丢掉，测的就不是投递守卫了
     private func deliver(scriptNamed name: String, watching process: String,
-                         payload: String = #"{"session_id":"abc123"}"#)
+                         payload: String = #"{"session_id":"abc123","transcript_path":"/Users/x/.claude/projects/p/abc123.jsonl"}"#)
     throws -> (delivered: Bool, status: Int32) {
         var script = try XCTUnwrap(try installedScripts()[name])
         // 同一个 name+process 会跑多次（只换载荷），标记文件名得各不相同，否则互相串味
@@ -153,7 +155,8 @@ final class HookDeliveryGuardTests: XCTestCase {
     /// 造一份 Claude Code 的 Stop 载荷。
     /// `tasks` 传 nil 表示整个 background_tasks 字段缺失（老版本 Claude Code 的样子）
     private func stopPayload(backgroundTasks tasks: String?, event: String? = "Stop") -> String {
-        var parts = [#""session_id":"abc123""#]
+        var parts = [#""session_id":"abc123""#,
+                     #""transcript_path":"/Users/x/.claude/projects/p/abc123.jsonl""#]
         if let event { parts.append(#""hook_event_name":"\#(event)""#) }
         if let tasks { parts.append(#""background_tasks":\#(tasks)"#) }
         return "{\(parts.joined(separator: ","))}"
@@ -255,7 +258,7 @@ final class HookDeliveryGuardTests: XCTestCase {
     func test带空格的JSON排版一样认得出() throws {
         let probe = try startProbe()
         defer { probe.process.terminate() }
-        let spaced = #"{ "session_id" : "abc" , "background_tasks" : [ { "id" : "t1" } ] }"#
+        let spaced = #"{ "session_id" : "abc" , "transcript_path" : "/Users/x/.claude/projects/p/abc.jsonl" , "background_tasks" : [ { "id" : "t1" } ] }"#
         let r = try deliver(scriptNamed: "claude", watching: probe.name, payload: spaced)
         XCTAssertFalse(r.delivered, "换一种 JSON 排版就认不出后台任务了")
     }
@@ -380,7 +383,7 @@ final class HookDeliveryGuardTests: XCTestCase {
     func test等你拍板URL带上通知类型() throws {
         let probe = try startProbe()
         defer { probe.process.terminate() }
-        let payload = #"{"session_id":"abc","notification_type":"permission_prompt","cwd":"/Users/x/ProNotch"}"#
+        let payload = #"{"session_id":"abc","transcript_path":"/Users/x/.claude/projects/p/abc.jsonl","notification_type":"permission_prompt","cwd":"/Users/x/ProNotch"}"#
         let url = try XCTUnwrap(try deliveredURL(scriptNamed: "wait", watching: probe.name,
                                                 payload: payload))
         XCTAssertTrue(url.contains("type=permission_prompt"), "少了类型，应用侧没法过滤：\(url)")
@@ -393,7 +396,7 @@ final class HookDeliveryGuardTests: XCTestCase {
     func test等你拍板项目名用base64url编码() throws {
         let probe = try startProbe()
         defer { probe.process.terminate() }
-        let payload = #"{"session_id":"abc","notification_type":"permission_prompt","cwd":"/Users/x/我的 项目"}"#
+        let payload = #"{"session_id":"abc","transcript_path":"/Users/x/.claude/projects/p/abc.jsonl","notification_type":"permission_prompt","cwd":"/Users/x/我的 项目"}"#
         let url = try XCTUnwrap(try deliveredURL(scriptNamed: "wait", watching: probe.name,
                                                 payload: payload))
         let encoded = try XCTUnwrap(url.components(separatedBy: "project=").last)
@@ -440,7 +443,7 @@ final class HookDeliveryGuardTests: XCTestCase {
     /// 回报的 `out` 就是 Claude Code 真正会读到的 stdout——这个功能全部的输出就这一段，
     /// 所以「答复能不能原样送到」只能这么验
     private func runPermission(watching process: String,
-                               payload: String = #"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+                               payload: String = #"{"tool_name":"Bash","tool_input":{"command":"ls"},"transcript_path":"/Users/x/.claude/projects/p/abc.jsonl"}"#,
                                respond: String) throws
     -> (status: Int32, out: String, url: String, request: String, leftovers: [String]) {
         var script = try XCTUnwrap(try installedScripts()["permission"])
@@ -495,7 +498,7 @@ final class HookDeliveryGuardTests: XCTestCase {
     func test请求写全整份载荷_答完不留残件() throws {
         let probe = try startProbe()
         defer { probe.process.terminate() }
-        let payload = #"{"tool_name":"Write","tool_input":{"file_path":"/tmp/a b.txt","content":"x"},"cwd":"/Users/x/我的 项目"}"#
+        let payload = #"{"tool_name":"Write","tool_input":{"file_path":"/tmp/a b.txt","content":"x"},"transcript_path":"/Users/x/.claude/projects/p/abc.jsonl","cwd":"/Users/x/我的 项目"}"#
         let r = try runPermission(watching: probe.name, payload: payload, respond: allowResponse())
         XCTAssertEqual(r.request, payload, "请求文件必须是原封不动的整份 JSON")
         XCTAssertTrue(r.leftovers.isEmpty, "交换目录留了残件：\(r.leftovers)")
@@ -506,7 +509,7 @@ final class HookDeliveryGuardTests: XCTestCase {
     func test拍板URL只带请求id() throws {
         let probe = try startProbe()
         defer { probe.process.terminate() }
-        let payload = #"{"tool_name":"Bash","tool_input":{"command":"echo 有空格 与中文"}}"#
+        let payload = #"{"tool_name":"Bash","tool_input":{"command":"echo 有空格 与中文"},"transcript_path":"/Users/x/.claude/projects/p/abc.jsonl"}"#
         let r = try runPermission(watching: probe.name, payload: payload, respond: allowResponse())
         XCTAssertTrue(r.url.hasPrefix("pronotch://permission?"), "走错 host：\(r.url)")
         XCTAssertTrue(r.url.contains("&req="), "少了请求 id，应用侧取不到那条请求")

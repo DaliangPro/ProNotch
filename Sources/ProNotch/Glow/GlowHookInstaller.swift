@@ -80,7 +80,9 @@ enum GlowHookInstaller {
     /// v8：四家各加挂一条 UserPromptSubmit 开工信号，供刘海收起态槽位显示工作状态
     /// v9：Claude / Kimi 加挂 Notification 事件，中途弹框等你拍板时刘海弹卡提醒
     /// v10：Claude 加挂 PermissionRequest 事件，授权直接在刘海卡上拍板（终端不再弹框）
-    private static let scriptFormat = 10
+    /// v11：claude 名下四份脚本验 transcript_path 出身——Grok Build 的 Claude 兼容层会实时
+    ///      执行 ~/.claude/settings.json 里的钩子，自家事件顶着 claude 名义发进来
+    private static let scriptFormat = 11
 
     /// 投递回调前先确认 ProNotch 还在运行。
     ///
@@ -165,6 +167,30 @@ enum GlowHookInstaller {
     esac
     """
 
+    /// 顶着 claude 名义进来的载荷必须自证出身，不然丢弃。
+    ///
+    /// 病灶：Grok Build 自带 Claude 兼容层（二进制里整个 claude_import 模块），会**实时执行**
+    /// `~/.claude/settings.json` 里的钩子。于是 Grok 收工时连我们装给 Claude 的脚本也被它
+    /// 调起，而 source 是装的时候写死的——ProNotch 收到的就是一条如假包换的 claude 完成
+    /// 事件，亮的是 Claude 的颜色；Grok 自家钩子随后又发一条真的，两条赛跑后到的定色，
+    /// 用户看到的就是「Grok 干完活，有时候亮的却是 Claude 的黄」。
+    ///
+    /// 判据：真 Claude Code 的每个 hook 事件都带 `transcript_path`，指向 ~/.claude/ 下的
+    /// 会话档案（官方 hooks 文档的通用字段，本机二进制 strings 有 10 处）；Grok 的载荷里
+    /// **一个都没有**（strings 0 处）。字段缺失或路径不含 /.claude/ 的一律丢弃——
+    /// 与 backgroundTasksGuard 的「缺失放行」正相反：那边缺失说明版本老，这边缺失就是冒名。
+    ///
+    /// 已知代价：用 CLAUDE_CONFIG_DIR 把配置目录挪出 ~/.claude 的用户会被误吞。可安装器
+    /// 本来就只往 ~/.claude/settings.json 写钩子，目录真挪走的话钩子压根不会被读到——
+    /// 两处赌的是同一个假设，不新增风险。
+    private static let claudeOriginGuard = """
+    tp=$(printf '%s' "$payload" | sed -n 's/.*"transcript_path"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
+    case "$tp" in
+      */.claude/*) ;;
+      *) exit 0 ;;
+    esac
+    """
+
     /// 「开始工作」信号脚本：四家共用，来源经 `$1` 传入。
     ///
     /// 挂在各家的 `UserPromptSubmit` 上——用户提交提问即开工，回合结束的 done 回调即收工，
@@ -180,6 +206,11 @@ enum GlowHookInstaller {
         # stdin 是终端就别 cat：各家在 UserPromptSubmit 上是否喂管道没有逐一实证过，
         # 真赶上没喂的，cat 会一直等到 hook 超时——每次提问卡上几秒，比不显示状态糟得多
         if [ -t 0 ]; then payload=""; else payload=$(cat); fi
+        # 顶着 claude 名义的要自证出身（详见安装器 claudeOriginGuard 注释）：
+        # Grok Build 的兼容层会替它执行 ~/.claude 的钩子，把自家开工顶成 claude 报进来
+        if [ "$src" = "claude" ]; then
+        \(claudeOriginGuard)
+        fi
         host=$(detect_host)
         # session_id 是 Claude / Kimi / Grok 的叫法，thread-id 是 Codex 的；抓不到就不带，
         # 应用侧会退化成「把这一家整个标记为工作中」
@@ -217,6 +248,10 @@ enum GlowHookInstaller {
         src="$1"
         [ -n "$src" ] || exit 0
         if [ -t 0 ]; then payload=""; else payload=$(cat); fi
+        # 顶着 claude 名义的要自证出身（详见安装器 claudeOriginGuard 注释）
+        if [ "$src" = "claude" ]; then
+        \(claudeOriginGuard)
+        fi
         host=$(detect_host)
         sid=$(printf '%s' "$payload" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
         ntype=$(printf '%s' "$payload" | sed -n 's/.*"notification_type"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
@@ -283,6 +318,11 @@ enum GlowHookInstaller {
         [ -t 0 ] && exit 0
         payload=$(cat)
         [ -n "$payload" ] || exit 0
+        # 顶着 claude 名义的要自证出身（详见安装器 claudeOriginGuard 注释）。
+        # 必须先于写请求文件：冒名的连孤儿都不该留，exit 0 不吐字＝让调用方走自己的弹框
+        if [ "$src" = "claude" ]; then
+        \(claudeOriginGuard)
+        fi
         # 没开着就别拦：这里必须先于写请求文件，否则会攒下一地没人取的孤儿
         /usr/bin/pgrep -x ProNotch >/dev/null 2>&1 || exit 0
         dir="\(dir)"
@@ -369,7 +409,7 @@ enum GlowHookInstaller {
     /// stdin JSON 型转发脚本（Claude / Kimi / Grok 三家同构）
     private static func stdinNotifyScript(source: String, token: String) -> String {
         var guards = [compactSnippet, backgroundTasksGuard]
-        if source == "claude" { guards.append(claudeEventGuard) }
+        if source == "claude" { guards.append(claudeEventGuard); guards.append(claudeOriginGuard) }
         return """
         #!/bin/bash
         # ProNotch · \(source) 完成提醒（自动生成，勿手改）· PRONOTCH_FMT=\(scriptFormat)
