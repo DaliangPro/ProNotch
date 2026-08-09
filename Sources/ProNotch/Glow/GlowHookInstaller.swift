@@ -82,7 +82,9 @@ enum GlowHookInstaller {
     /// v10：Claude 加挂 PermissionRequest 事件，授权直接在刘海卡上拍板（终端不再弹框）
     /// v11：claude 名下四份脚本验 transcript_path 出身——Grok Build 的 Claude 兼容层会实时
     ///      执行 ~/.claude/settings.json 里的钩子，自家事件顶着 claude 名义发进来
-    private static let scriptFormat = 11
+    /// v12：Codex 转发器查会话档案的 thread_source，子代理线程收工不再点灯——
+    ///      桌面端拆活给子 Agent 时每个子线程完成都发一模一样的 turn-complete
+    private static let scriptFormat = 12
 
     /// 投递回调前先确认 ProNotch 还在运行。
     ///
@@ -895,10 +897,20 @@ enum GlowHookInstaller {
               *)
                 host=$(detect_host)
                 tid=$(printf '%s' "$payload" | sed -n 's/.*"thread-id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
+                # 子代理线程收工不提醒：桌面端拆活给子 Agent 跑时，每个子线程完成都发一模一样的
+                # turn-complete，可对话窗的任务还没完。载荷里没有任何主/子标记（引擎二进制实证，
+                # notify 只带 thread-id/turn-id/cwd 等几个键），只能查线程自己的 rollout 档案：
+                # 头部 thread_source 字段 user=主对话、subagent=子代理（本机 633 份会话实证仅这两种）。
+                # 档案找不到、字段读不出一律当主对话放行——宁可多亮一次，不能吞正主的提醒
+                sub=0
+                if [ -n "$tid" ]; then
+                  set -- "$HOME/.codex/sessions"/*/*/*/rollout-*"$tid".jsonl
+                  [ -f "$1" ] && head -c 4000 "$1" 2>/dev/null | grep -q '"thread_source":"subagent"' && sub=1
+                fi
                 url="pronotch://done?source=codex&token=\(token)"
                 [ -n "$host" ] && url="$url&host=$host"
                 [ -n "$tid" ] && url="$url&session=$tid"
-                \(deliverGuard) ;;
+                if [ "$sub" = 0 ]; then \(deliverGuard); fi ;;
             esac ;;
         esac
         \(forwardExecBlock(previous: previous))
