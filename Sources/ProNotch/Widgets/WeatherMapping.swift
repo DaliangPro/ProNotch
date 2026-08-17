@@ -28,6 +28,10 @@ struct OpenMeteoResponse: Decodable {
     let current: Current
     let hourly: Hourly
     let daily: Daily
+    /// 目标城市相对 UTC 的偏移（`timezone=auto` 时接口一并返回）。
+    /// 逐时时间串用的是**城市当地时区**，拿本机时区的「现在」去比对会整体错位，
+    /// 必须靠它把参考时刻换算到同一个坐标系（缺列则退回本机时区）
+    var utc_offset_seconds: Int? = nil
 }
 
 /// Open-Meteo 响应 → `WeatherNow` 的纯映射。
@@ -66,6 +70,10 @@ enum WeatherMapping {
         let startIndex: Int
     }
 
+    /// 逐时预报往后取多少小时。卡上一屏只露 6 列，其余靠横滑——
+    /// 24 小时正好覆盖「今天剩下的时间 + 明早」，再多滑起来就没耐心了
+    static let hourlyWindow = 24
+
     static func map(_ resp: OpenMeteoResponse, city: String, at reference: Date) throws -> Mapped {
         // 必需列取公共最小长度：任何一列短了，多出来的部分一律不碰
         let hourCount = min(resp.hourly.time.count,
@@ -81,18 +89,26 @@ enum WeatherMapping {
         let codes = Array(resp.hourly.weather_code.prefix(hourCount))
         let temps = Array(resp.hourly.temperature_2m.prefix(hourCount))
 
-        // timezone=auto 返回本地时区时间串，字典序比较即可定位「当前整点」
+        // timezone=auto 返回的是**城市当地时区**的时间串，字典序比较即可定位「当前整点」。
+        // 参考时刻必须换算到同一时区再格式化：机器在 PDT、城市在东八区时两者差 15 小时，
+        // 拿本机时间串去比会让「第一个不早于现在的整点」直接落到数组开头，
+        // 逐时就从当地的 00 时排起（2026-08-16 实测：本机 8/16 21:13，深圳数据从 8/17 00:00 起）
         let fmt = DateFormatter()
         fmt.locale = Locale(identifier: "en_US_POSIX")
         fmt.dateFormat = "yyyy-MM-dd'T'HH:mm"
+        if let offset = resp.utc_offset_seconds, let tz = TimeZone(secondsFromGMT: offset) {
+            fmt.timeZone = tz
+        }
         let nowStr = fmt.string(from: reference)
         // 钳到公共范围内：firstIndex 找不到时退 0，找到末尾也不会越界
         let startIdx = min(max(0, (times.firstIndex { $0 >= nowStr } ?? 0) - 1), hourCount - 1)
 
         var hours: [HourForecast] = []
-        for i in startIdx..<min(startIdx + 6, hourCount) {
+        for i in startIdx..<min(startIdx + hourlyWindow, hourCount) {
             hours.append(HourForecast(hourLabel: times[i].suffix(5).prefix(2) + "时",
-                                      temp: temps[i], code: codes[i]))
+                                      temp: temps[i], code: codes[i],
+                                      // 解不出就退成参考时刻，只影响「过没过去」的判断，不至于整格丢失
+                                      hourStart: fmt.date(from: times[i]) ?? reference))
         }
 
         // 逐天：今天/明天 + 之后按周几；日期串转 zh_CN 周几

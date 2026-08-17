@@ -34,7 +34,7 @@ struct WidgetsView: View {
             }
             if settings.weatherWidgetEnabled {
                 WeatherCard(now: weather.now, error: weather.error,
-                            entrancePlayed: entrancePlayed)
+                            entrancePlayed: entrancePlayed, clock: now)
                     .opacity(entrancePlayed ? 1 : 0)
                     .animation(.easeOut(duration: 0.3).delay(0.07), value: entrancePlayed)
             }
@@ -207,6 +207,17 @@ private struct WeatherCard: View {
     let now: WeatherNow?
     let error: String?
     var entrancePlayed = true
+    /// 当前时刻，跟页面那颗 3 秒心跳走。逐时条据此丢掉已经过去的钟头，
+    /// 第一格永远是「现在」——不这样的话，起点只在每 15 分钟联网刷新时才前移
+    var clock = Date()
+
+    /// 还没过去的钟头。整点一到，过去的那格自己消失，后面的顶上来
+    private func upcoming(_ hours: [HourForecast]) -> [HourForecast] {
+        let thisHour = Calendar.current.dateInterval(of: .hour, for: clock)?.start ?? clock
+        let rest = hours.filter { $0.hourStart >= thisHour }
+        // 全过去了（数据太旧、还没轮到下一次刷新）就照原样显示，总比空一条强
+        return rest.isEmpty ? hours : rest
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -246,24 +257,37 @@ private struct WeatherCard: View {
                     }
                 }
                 .entranceBit(entrancePlayed, delay: 0.1)
-                // 逐时预报：未来 6 小时——紧贴焦点行的窄条，不吃纵向空间（大梁老师定）
-                HStack(spacing: 0) {
-                    ForEach(Array(w.hourly.enumerated()), id: \.element.id) { i, h in
-                        VStack(spacing: 3) {
-                            Text(h.hourLabel)
-                                .font(.system(size: 9))
-                                .foregroundColor(.white.opacity(0.45))
-                            Image(systemName: h.symbol)
-                                .symbolRenderingMode(.multicolor)
-                                .font(.system(size: 13))
-                            Text("\(Int(h.temp.rounded()))°")
-                                .font(.system(size: 10.5, weight: .semibold, design: .rounded))
-                                .foregroundColor(.white.opacity(0.85))
+                // 逐时预报：紧贴焦点行的窄条，不吃纵向空间（大梁老师定）。
+                // 一屏仍是 6 列（宽度按容器均分，与改横滑前的观感一致），
+                // 往后 24 小时靠横滑看；按列吸附，停下来不会卡在半列上
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 0) {
+                        ForEach(Array(upcoming(w.hourly).enumerated()), id: \.element.id) { i, h in
+                            VStack(spacing: 3) {
+                                Text(h.hourLabel)
+                                    .font(.system(size: 9))
+                                    .foregroundColor(.white.opacity(0.45))
+                                Image(systemName: h.symbol)
+                                    .symbolRenderingMode(.multicolor)
+                                    .font(.system(size: 13))
+                                Text("\(Int(h.temp.rounded()))°")
+                                    .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                                    .foregroundColor(.white.opacity(0.85))
+                            }
+                            .containerRelativeFrame(.horizontal, count: 6, spacing: 0)
+                            // 波浪只推头 6 列：后面的列出场时还在屏幕外，
+                            // 按 i 一路加下去只会让第一屏迟迟不齐
+                            .entranceBit(entrancePlayed, delay: 0.16 + Double(min(i, 5)) * 0.035)
                         }
-                        .frame(maxWidth: .infinity)
-                        .entranceBit(entrancePlayed, delay: 0.16 + Double(i) * 0.035)   // 6 列波浪推右
                     }
+                    .scrollTargetLayout()
                 }
+                .scrollTargetBehavior(.viewAligned)
+                // 高度必须钉死：横向 ScrollView 在纵向是贪心的，不给高度它会把
+                // 剩下的空间全吃掉，5 天预报直接被挤出卡片（离屏渲染实测）。
+                // 46 是这一列的自然高度（9pt 时刻 + 3 + 13pt 图标 + 3 + 10.5pt 温度），
+                // 卡里字号都是写死的，不随系统字号变，量准了就不会裁
+                .frame(height: 46)
                 CardRule()
                 // 5 天预报（大梁老师：与其留白不如填内容）：五行均分弹性区，
                 // 行高封顶 44 防天数少时拉太开

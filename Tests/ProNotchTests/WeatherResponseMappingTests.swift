@@ -25,7 +25,8 @@ final class WeatherResponseMappingTests: XCTestCase {
         dayMin: [Double]? = nil,
         dayCodes: [Int]?? = .some(nil),
         sunrise: [String]?? = .some(nil),
-        sunset: [String]?? = .some(nil)
+        sunset: [String]?? = .some(nil),
+        utcOffset: Int? = nil
     ) -> OpenMeteoResponse {
         OpenMeteoResponse(
             current: .init(temperature_2m: 30, apparent_temperature: 33,
@@ -41,7 +42,8 @@ final class WeatherResponseMappingTests: XCTestCase {
                          weather_code: dayCodes ?? nil,
                          precipitation_probability_max: nil,
                          sunrise: sunrise ?? nil,
-                         sunset: sunset ?? nil))
+                         sunset: sunset ?? nil),
+            utc_offset_seconds: utcOffset)
     }
 
     private let defaultHourTimes = [
@@ -66,13 +68,82 @@ final class WeatherResponseMappingTests: XCTestCase {
         XCTAssertEqual(mapped.now.sunset, "19:02")
         XCTAssertEqual(mapped.now.days.map(\.dayLabel).prefix(2), ["今天", "明天"])
         XCTAssertEqual(mapped.now.days.count, 3)
-        XCTAssertEqual(mapped.now.hourly.count, 6, "逐时固定给 6 小时")
+        // 数据只有 8 个时间点，够不到 24 小时的窗口，就取到末尾为止
+        XCTAssertEqual(mapped.now.hourly.count, 8 - mapped.startIndex, "数据不够时取到末尾")
         XCTAssertEqual(mapped.now.days.map(\.code), [1, 2, 3])
         // 逐时的温度必须是原数组里连续的一段，且起点就是 startIndex（时区随机器变，只校验对齐关系）
         let temps = [20.0, 21, 22, 23, 24, 25, 26, 27]
-        XCTAssertEqual(mapped.now.hourly.map(\.temp),
-                       Array(temps[mapped.startIndex..<(mapped.startIndex + 6)]))
+        XCTAssertEqual(mapped.now.hourly.map(\.temp), Array(temps[mapped.startIndex...]))
         XCTAssertTrue(mapped.now.hourly.allSatisfy { $0.hourLabel.hasSuffix("时") })
+    }
+
+    /// 卡上一屏只露 6 列，但要能横滑看到后面——数据得给够 24 小时，
+    /// 又不能一路给到 5 天（滑不到头，也没人有那个耐心）
+    func test逐时最多给到24小时() throws {
+        // 造 3 天整点（时间串必须单调递增，定位当前整点靠字典序）：
+        // 机器时区最远也就把起点推到 20 出头，72 个点保证窗口撑得满
+        let count = 72
+        let times = (0..<count).map {
+            String(format: "2026-07-%02dT%02d:00", 21 + $0 / 24, $0 % 24)
+        }
+        let mapped = try WeatherMapping.map(
+            response(hourTimes: times,
+                     hourTemps: (0..<count).map { 20 + Double($0) },
+                     hourCodes: Array(repeating: 1, count: count)),
+            city: "", at: reference)
+
+        XCTAssertEqual(mapped.now.hourly.count, WeatherMapping.hourlyWindow)
+        XCTAssertEqual(WeatherMapping.hourlyWindow, 24)
+        // 仍是从当前整点起连续的一段
+        XCTAssertEqual(mapped.now.hourly.first?.temp, 20 + Double(mapped.startIndex))
+    }
+
+    // MARK: - 时区
+
+    /// 人在西海岸、看的是深圳，逐时也得从**深圳的**当前整点排起。
+    ///
+    /// 病灶（2026-08-16 实测）：接口 `timezone=auto` 给的是城市当地时间串，
+    /// 而定位「当前整点」时拿 `DateFormatter` 默认（＝本机）时区格式化参考时刻。
+    /// 本机 PDT 显示 8/16 21:13，深圳数据从 8/17 00:00 起，一比之下没有哪个整点
+    /// 早于「现在」，起点直接落回数组开头——卡上就从当地 00 时排起，
+    /// 后面十几个小时全是已经过去的时段。
+    ///
+    /// 这条用例不依赖跑测试的机器在哪个时区：无论本机是 PDT 还是 UTC，
+    /// 错误实现都算不出 12，只有真按 `utc_offset_seconds` 换算才对得上。
+    func test城市时区与本机不同时_定位到城市当地的当前整点() throws {
+        let east8 = 8 * 3600
+        // 当地 8/17 全天 24 个整点
+        let times = (0..<24).map { String(format: "2026-08-17T%02d:00", $0) }
+        // UTC 04:13 ＝ 东八区 12:13，当地当前整点是 12:00，下标 12
+        let utcNoon = ISO8601DateFormatter().date(from: "2026-08-17T04:13:00Z")!
+
+        let mapped = try WeatherMapping.map(
+            response(hourTimes: times,
+                     hourTemps: (0..<24).map { 20 + Double($0) },
+                     hourCodes: Array(repeating: 1, count: 24),
+                     utcOffset: east8),
+            city: "深圳", at: utcNoon)
+
+        XCTAssertEqual(mapped.startIndex, 12, "没按城市时区换算，起点会落回当地 00 时")
+        XCTAssertEqual(mapped.now.hourly.first?.hourLabel, "12时")
+        // 第一格的绝对时刻就是当地 12:00（＝ UTC 04:00）
+        XCTAssertEqual(mapped.now.hourly.first?.hourStart,
+                       ISO8601DateFormatter().date(from: "2026-08-17T04:00:00Z"))
+    }
+
+    /// 接口没给偏移量（字段下线或代理改写）时退回本机时区，照常出数不崩
+    func test缺时区偏移时退回本机时区() throws {
+        let mapped = try WeatherMapping.map(response(), city: "", at: reference)
+        XCTAssertFalse(mapped.now.hourly.isEmpty)
+        XCTAssertTrue((0..<mapped.hourlyTimes.count).contains(mapped.startIndex))
+    }
+
+    /// 每格都带绝对时刻，界面才能按「过没过去」自己往前走
+    func test逐时每格都带得出整点时刻() throws {
+        let mapped = try WeatherMapping.map(response(utcOffset: 0), city: "", at: reference)
+        let stamps = mapped.now.hourly.map(\.hourStart)
+        XCTAssertEqual(Set(stamps).count, stamps.count, "整点时刻重复，ForEach 的 id 会撞")
+        XCTAssertEqual(stamps, stamps.sorted(), "整点必须递增")
     }
 
     // MARK: - 列长不齐

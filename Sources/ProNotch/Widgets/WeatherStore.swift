@@ -6,7 +6,10 @@ struct HourForecast: Identifiable {
     let hourLabel: String   // 「17时」
     let temp: Double
     let code: Int
-    var id: String { hourLabel }
+    /// 这一格对应的整点（绝对时刻）。有了它，卡片才能随时间自己往前走：
+    /// 渲染时把已经过去的小时滤掉，第一格始终是当前这个钟头，不必等下一次联网
+    let hourStart: Date
+    var id: Date { hourStart }
     var symbol: String { WeatherNow.symbol(for: code) }
 }
 
@@ -32,7 +35,7 @@ struct WeatherNow {
     let todayMin: Double
     let city: String             // 反地理编码城市名（可空串）
     let precipProb: Int          // 当前小时降水概率 %
-    let hourly: [HourForecast]   // 未来 6 小时
+    let hourly: [HourForecast]   // 未来 24 小时，卡上一屏露 6 列、其余横滑
     let days: [DayForecast]      // 今起 5 天
     let sunrise: String          // 「05:14」
     let sunset: String
@@ -216,14 +219,12 @@ final class WeatherStore: NSObject, ObservableObject {
         now = WeatherNow(
             temperature: 33, apparent: 36, humidity: 68, windSpeed: 12,
             code: 2, todayMax: 35, todayMin: 27, city: "杭州", precipProb: 12,
-            hourly: [
-                HourForecast(hourLabel: "17时", temp: 34, code: 2),
-                HourForecast(hourLabel: "18时", temp: 33, code: 2),
-                HourForecast(hourLabel: "19时", temp: 32, code: 3),
-                HourForecast(hourLabel: "20时", temp: 31, code: 3),
-                HourForecast(hourLabel: "21时", temp: 30, code: 61),
-                HourForecast(hourLabel: "22时", temp: 29, code: 3),
-            ],
+            // 演示数据的整点从「现在」起排，否则渲染期的过滤会把它们全当成过去的时段滤掉
+            hourly: [34.0, 33, 32, 31, 30, 29].enumerated().map { i, t in
+                HourForecast(hourLabel: "\(17 + i)时", temp: t,
+                             code: [2, 2, 3, 3, 61, 3][i],
+                             hourStart: Date().addingTimeInterval(Double(i) * 3600))
+            },
             days: [
                 DayForecast(dayLabel: "今天", code: 2, tMax: 35, tMin: 27, precipProb: 10),
                 DayForecast(dayLabel: "明天", code: 61, tMax: 33, tMin: 26, precipProb: 55),
