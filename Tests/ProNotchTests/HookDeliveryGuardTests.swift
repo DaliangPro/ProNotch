@@ -143,13 +143,34 @@ final class HookDeliveryGuardTests: XCTestCase {
         // Claude/Kimi/Grok 从 stdin 读 JSON；Codex 从 $1 读 payload；
         // 开工 / 等你拍板 / 拍板三个脚本多家共用，$1 是来源
         var args = [file.path]
+        var env: [String: String]? = nil
         switch name {
-        case "codex": args.append(#"{"type":"agent-turn-complete","thread-id":"t1"}"#)
+        case "codex":
+            args.append(#"{"type":"agent-turn-complete","thread-id":"t1"}"#)
+            env = ["CODEX_HOME": try codexHome(mainThread: "t1")]
         case "busy", "wait", "permission": args.append("claude")
         default: break
         }
-        let result = try run("/bin/bash", args, stdin: payload)
+        let result = try run("/bin/bash", args, stdin: payload, env: env)
         return (FileManager.default.fileExists(atPath: marker.path), result.status)
+    }
+
+    /// 造一个只放着一条主对话归档的 CODEX_HOME。
+    ///
+    /// 脚本 v13 起改成白名单：只有归档里 `thread_source` 为 `user` 的线程才点灯
+    /// （桌面端 0.148 每条消息都附带生成标题、写活动摘要的内部线程，它们不落归档）。
+    /// 这里要测的是「ProNotch 在不在跑」这道守卫，线程判据必须先放行，
+    /// 否则挡下投递的是白名单而不是守卫，测了个寂寞。
+    /// 不隔离 CODEX_HOME 也不行：真机 `~/.codex/sessions` 里全是真实归档，
+    /// 夹具那个 `t1` 在里面找不到，正好被当成内部线程拦掉。
+    private func codexHome(mainThread tid: String) throws -> String {
+        let home = tmp.appendingPathComponent("codex-home-\(tid)")
+        let dir = home.appendingPathComponent("sessions/2026/08/16")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let meta = #"{"type":"session_meta","payload":{"id":"\#(tid)","thread_source":"user"}}"# + "\n"
+        try meta.write(to: dir.appendingPathComponent("rollout-2026-08-16T10-00-00-\(tid).jsonl"),
+                       atomically: true, encoding: .utf8)
+        return home.path
     }
 
     /// 造一份 Claude Code 的 Stop 载荷。
@@ -575,10 +596,15 @@ final class HookDeliveryGuardTests: XCTestCase {
 
     // MARK: - 跑进程
 
-    private func run(_ tool: String, _ args: [String], stdin: String? = nil) throws -> (status: Int32, out: String) {
+    private func run(_ tool: String, _ args: [String], stdin: String? = nil,
+                     env: [String: String]? = nil) throws -> (status: Int32, out: String) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: tool)
         p.arguments = args
+        // 只覆盖点名的几个变量，其余继承——脚本要用 PATH、HOME 才跑得起来
+        if let env {
+            p.environment = ProcessInfo.processInfo.environment.merging(env) { _, new in new }
+        }
         let pipe = Pipe()
         p.standardOutput = pipe
         p.standardError = pipe
