@@ -84,7 +84,9 @@ enum GlowHookInstaller {
     ///      执行 ~/.claude/settings.json 里的钩子，自家事件顶着 claude 名义发进来
     /// v12：Codex 转发器查会话档案的 thread_source，子代理线程收工不再点灯——
     ///      桌面端拆活给子 Agent 时每个子线程完成都发一模一样的 turn-complete
-    private static let scriptFormat = 12
+    /// v13：Codex 判据从「黑名单挡子代理」改成「白名单只放主对话」——
+    ///      桌面端 0.148 换了内部任务的提示词，靠文案匹配的那道闸随版本更新失效
+    private static let scriptFormat = 13
 
     /// 投递回调前先确认 ProNotch 还在运行。
     ///
@@ -98,6 +100,47 @@ enum GlowHookInstaller {
     /// - Stop hook 返回非零退出码会被 Claude Code 当成 hook 失败报错。
     private static let deliverGuard =
         #"if /usr/bin/pgrep -x ProNotch >/dev/null 2>&1; then open -g "$url"; fi"#
+
+    /// 「只有对话窗自己的任务跑完才提醒」的闸：`allow=1` 才点灯。
+    ///
+    /// notify 是全局配置，Codex 起的**每个**线程回合结束都发一条一模一样的
+    /// agent-turn-complete，载荷里没有任何主/内部标记（只有 thread-id / turn-id / cwd /
+    /// client / input-messages / last-assistant-message 这几个键）。桌面端一次提问会顺带
+    /// 起好几个内部线程——生成会话标题、写标题底下那行「活动摘要」——它们在你**刚发完消息**
+    /// 时就完成，光晕于是一开始就亮，正主还在跑。
+    ///
+    /// 判据只能从线程自己的 rollout 档案来，实证（0.148.0-alpha.9 实机抓的 9 条载荷）：
+    /// - 内部任务线程**从不落盘**，`sessions/` 与 `archived_sessions/` 里都没有它的档案；
+    /// - 主对话线程一定有档案，头部 `thread_source` = `user`；
+    /// - 子代理是 `subagent`，实时语音是 `realtime_voice`。
+    ///
+    /// 所以这里改成白名单——**只放行确认是主对话的**，而不是逐个去挡已知的内部任务。
+    /// 上一版靠匹配标题任务的提示词原文（`Generate a concise UI title`）来挡，
+    /// 0.148 换了提示词，那道闸就整个空转了：判据但凡挂在文案上，就活不过一次版本更新。
+    ///
+    /// 两处兜底防「把正主一起吞了」：档案没找着先隔 0.3 秒重找一次（防落盘慢半拍）；
+    /// 仍没有时先确认落盘机制本身是活的（会话目录里存在**任何**档案），
+    /// 若整个目录空着（CODEX_HOME 改了、会话记录关了）就照旧放行。
+    private static let mainThreadOnlyGuard = #"""
+    allow=1
+    if [ -n "$tid" ]; then
+      codex_home="${CODEX_HOME:-$HOME/.codex}"
+      find_rollout() {
+        set -- "$codex_home/sessions"/*/*/*/rollout-*"$tid".jsonl
+        [ -f "$1" ] || set -- "$codex_home/archived_sessions"/rollout-*"$tid".jsonl
+        [ -f "$1" ] && printf '%s' "$1"
+      }
+      roll=$(find_rollout)
+      [ -n "$roll" ] || { sleep 0.3; roll=$(find_rollout); }
+      if [ -n "$roll" ]; then
+        src=$(head -c 4000 "$roll" 2>/dev/null | sed -n 's/.*"thread_source":"\([^"]*\)".*/\1/p' | head -1)
+        [ -n "$src" ] && [ "$src" != "user" ] && allow=0
+      else
+        set -- "$codex_home/sessions"/*/*/*/rollout-*.jsonl
+        [ -f "$1" ] && allow=0
+      fi
+    fi
+    """#
 
     /// 沿进程链向上找到「Agent 实际所在的 GUI App」bundle id。只认 /Applications 下的 app
     /// （借此排除 claude-code 的 CLI 包装 app）；终端 / IDE / 桌面 App 通用，找不到回空。
@@ -891,31 +934,24 @@ enum GlowHookInstaller {
         payload="$1"
         case "$payload" in
           *agent-turn-complete*)
-            # 跳过 Codex Desktop 自动生成会话标题的内部任务——它在你刚发消息时就完成，会让光晕「一开始就亮」
-            case "$payload" in
-              *"Generate a concise UI title"*) : ;;
-              *)
-                host=$(detect_host)
-                tid=$(printf '%s' "$payload" | sed -n 's/.*"thread-id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
-                # 子代理线程收工不提醒：桌面端拆活给子 Agent 跑时，每个子线程完成都发一模一样的
-                # turn-complete，可对话窗的任务还没完。载荷里没有任何主/子标记（引擎二进制实证，
-                # notify 只带 thread-id/turn-id/cwd 等几个键），只能查线程自己的 rollout 档案：
-                # 头部 thread_source 字段 user=主对话、subagent=子代理（本机 633 份会话实证仅这两种）。
-                # 档案找不到、字段读不出一律当主对话放行——宁可多亮一次，不能吞正主的提醒
-                sub=0
-                if [ -n "$tid" ]; then
-                  set -- "$HOME/.codex/sessions"/*/*/*/rollout-*"$tid".jsonl
-                  [ -f "$1" ] && head -c 4000 "$1" 2>/dev/null | grep -q '"thread_source":"subagent"' && sub=1
-                fi
-                url="pronotch://done?source=codex&token=\(token)"
-                [ -n "$host" ] && url="$url&host=$host"
-                [ -n "$tid" ] && url="$url&session=$tid"
-                if [ "$sub" = 0 ]; then \(deliverGuard); fi ;;
-            esac ;;
+            host=$(detect_host)
+            tid=$(printf '%s' "$payload" | sed -n 's/.*"thread-id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p' | head -1)
+            \(indented(mainThreadOnlyGuard, by: 12))
+            url="pronotch://done?source=codex&token=\(token)"
+            [ -n "$host" ] && url="$url&host=$host"
+            [ -n "$tid" ] && url="$url&session=$tid"
+            if [ "$allow" = 1 ]; then \(deliverGuard); fi ;;
         esac
         \(forwardExecBlock(previous: previous))
         """
         return AtomicConfigWriter.stageScript(script, finalPath: paths.codexScript)
+    }
+
+    /// 多行片段插进脚本时对齐缩进（首行由插值处自带，只补后续行）——
+    /// bash 不在乎，但这脚本是用户会打开来看的，缩进错位读着像坏了
+    private static func indented(_ text: String, by spaces: Int) -> String {
+        text.split(separator: "\n", omittingEmptySubsequences: false)
+            .joined(separator: "\n" + String(repeating: " ", count: spaces))
     }
 
     /// 透传块：把原 notify 数组解析成 bash 参数 exec；无 previous 则空操作

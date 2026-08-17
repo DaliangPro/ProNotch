@@ -1,19 +1,23 @@
 import XCTest
 @testable import ProNotch
 
-/// Codex 子代理线程收工不点灯——只有对话窗自己的任务跑完才提醒。
+/// 只有对话窗自己的任务跑完才点灯——Codex 起的其余线程收工一律不打扰。
 ///
 /// 由来（大梁老师 2026-08-09）：「桌面端 Codex 调用子 Agent 完成任务的时候，还是会有
 /// 光晕提醒。可实际上咱们需要的是对话窗口任务运行完毕才提醒，而不是过程中的
-/// 子 Agent 完成了就提醒。」
+/// 子 Agent 完成了就提醒。」2026-08-16 桌面端升到 0.148 后又犯：「Codex 只要一开始
+/// 运行，它就开始有这种呼吸的光晕提示。」
 ///
-/// 病灶：notify 是全局配置，每个线程（包括子代理线程）回合结束都发一条一模一样的
-/// agent-turn-complete，载荷里没有任何主/子标记（引擎二进制实证，只带 thread-id /
-/// turn-id / cwd 等几个键）。唯一判据在线程自己的 rollout 档案头部：thread_source
-/// 字段 user=主对话、subagent=子代理（本机 633 份会话实证仅这两种取值）。
+/// 病灶：notify 是全局配置，每个线程回合结束都发一条一模一样的 agent-turn-complete，
+/// 载荷里没有任何主/内部标记。判据只能查线程自己的 rollout 档案（实机抓的 9 条载荷）：
+/// 主对话有档案且 thread_source=user；子代理是 subagent；生成标题、写「活动摘要」
+/// 这类桌面端内部任务**根本不落盘**——它们在你刚发完消息时就完成，光晕于是一开始就亮。
+///
+/// 因此判据是白名单：确认是主对话才放行。上一版靠匹配内部任务的提示词原文来挡，
+/// 0.148 一改文案就整个空转，这组用例把「档案缺失」这一类也钉死。
 ///
 /// 全部用例把转发器脚本真跑起来：假 HOME 里造档案，看投递结果
-final class CodexSubagentFilterTests: XCTestCase {
+final class CodexNotifyFilterTests: XCTestCase {
 
     private var tmp: URL!
     /// 脚本里 `$HOME/.codex/sessions` 的假家目录
@@ -57,13 +61,45 @@ final class CodexSubagentFilterTests: XCTestCase {
                       "主对话的完成提醒被误吞，整个功能就哑了")
     }
 
-    /// 档案找不到（会话目录被挪、CODEX_HOME 改了）就当主对话放行——
-    /// 宁可多亮一次，不能吞正主的提醒
-    func test档案找不到时放行() throws {
+    /// 桌面端 0.148 那次的病根：生成标题、写「活动摘要」这些内部线程不落盘，
+    /// 而它们在你刚发完消息时就收工——放行就等于「一开始运行就亮」
+    func test不落盘的内部任务线程不点灯() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        // 目录里得有别的会话档案，否则会走「落盘机制整个不可用」那条兜底
+        try writeRollout(ownID: "019fe000-1111-7000-8000-00000000000a",
+                         sessionID: "019fe000-1111-7000-8000-00000000000a", threadSource: "user")
+        let r = try deliver(threadID: "019fe000-cccc-7000-8000-000000000003", watching: probe.name)
+        XCTAssertFalse(r.delivered, "内部任务收工就点灯，光晕在你刚发完消息时就亮起来了")
+        XCTAssertEqual(r.status, 0)
+    }
+
+    /// 会话目录一份档案都没有：落盘机制本身没在工作（CODEX_HOME 改了、会话记录关了），
+    /// 这时判不了主次，照旧放行——宁可多亮一次，不能让整条提醒哑掉
+    func test落盘机制不可用时放行() throws {
         let probe = try startProbe()
         defer { probe.process.terminate() }
         XCTAssertTrue(try deliver(threadID: "019fe000-cccc-7000-8000-000000000003",
                                   watching: probe.name).delivered)
+    }
+
+    /// 非 user 的取值一律不点灯（实时语音线程是实机见过的第三种），
+    /// 这样引擎日后再添新类型，白名单会自动把它挡在外面
+    func test非主对话来源一律不点灯() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        let tid = "019fe000-ffff-7000-8000-000000000006"
+        try writeRollout(ownID: tid, sessionID: tid, threadSource: "realtime_voice")
+        XCTAssertFalse(try deliver(threadID: tid, watching: probe.name).delivered)
+    }
+
+    /// 归档过的会话续跑：档案挪进了平铺的 archived_sessions，一样要认得出是主对话
+    func test归档会话的主对话照常点灯() throws {
+        let probe = try startProbe()
+        defer { probe.process.terminate() }
+        let tid = "019fe000-9999-7000-8000-000000000007"
+        try writeRollout(ownID: tid, sessionID: tid, threadSource: "user", archived: true)
+        XCTAssertTrue(try deliver(threadID: tid, watching: probe.name).delivered)
     }
 
     /// 老版本引擎的档案没有 thread_source 字段：读不出就放行，理由同上
@@ -106,14 +142,18 @@ final class CodexSubagentFilterTests: XCTestCase {
 
     // MARK: - 夹具
 
-    /// 造一份线程 rollout 档案，首行结构仿真实引擎（0.147.0）的 session_meta
-    private func writeRollout(ownID: String, sessionID: String, threadSource: String?) throws {
-        var payload = #""session_id":"\#(sessionID)","id":"\#(ownID)","cwd":"/Users/x/proj","originator":"Codex Desktop","cli_version":"0.147.0""#
+    /// 造一份线程 rollout 档案，首行结构仿真实引擎（0.148.0-alpha.9）的 session_meta。
+    /// `archived` 落到平铺的 archived_sessions（会话归档后档案就搬到那儿）
+    private func writeRollout(ownID: String, sessionID: String, threadSource: String?,
+                              archived: Bool = false) throws {
+        var payload = #""session_id":"\#(sessionID)","id":"\#(ownID)","cwd":"/Users/x/proj","originator":"codex_work_desktop","cli_version":"0.148.0-alpha.9""#
         if let threadSource { payload += #","thread_source":"\#(threadSource)""# }
         payload += #","base_instructions":{"text":"You are Codex"}"#
         let line = #"{"timestamp":"2026-08-09T00:00:00.000Z","type":"session_meta","payload":{\#(payload)}}"#
-        let file = home.appendingPathComponent(
-            ".codex/sessions/2026/08/09/rollout-2026-08-09T00-00-00-\(ownID).jsonl")
+        let dir = home.appendingPathComponent(
+            archived ? ".codex/archived_sessions" : ".codex/sessions/2026/08/09")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let file = dir.appendingPathComponent("rollout-2026-08-09T00-00-00-\(ownID).jsonl")
         try (line + "\n").write(to: file, atomically: true, encoding: .utf8)
     }
 
