@@ -1,11 +1,28 @@
 import AppKit
+import Combine
 import SwiftUI
 
-/// 光晕运行时控制器：持有覆盖整屏的 `GlowPanel`，由 `GlowOverlayView` 观察绘制。
+/// 完成提醒的方式，二选一（大梁老师 2026-09-16 定）
+enum AgentAlertStyle: String, CaseIterable, Sendable {
+    /// 屏幕四周呼吸光晕
+    case glow
+    /// 刘海顶部弹窗：与天气预警同一种从刘海长出来的卡
+    case card
+
+    var title: String {
+        switch self {
+        case .glow: return "四周光晕"
+        case .card: return "顶部弹窗"
+        }
+    }
+}
+
+/// 完成提醒控制器：持有覆盖整屏的 `GlowPanel`，由 `GlowOverlayView` 观察绘制。
 /// 来源统一用 `AgentKind`（supportsGlow 的家）：颜色、桌面 App 识别都从那份定义取。
 ///
 /// - 点亮：`notifyCompletion`（真实 hook）/ `toggleTest`（模拟完成）/ `togglePreview`（调参）；
 /// - 熄灭：「完成提醒」类光晕在对应桌面 App 切到最前台时自动熄灭；「预览」类只手动关。
+/// - 提醒方式选「顶部弹窗」时不点光晕，改往 `completionCards` 挂一张任务完成卡，收卡规则同上。
 @MainActor
 final class GlowController: ObservableObject {
     /// 当前点亮的颜色；nil = 不显示
@@ -24,6 +41,11 @@ final class GlowController: ObservableObject {
     private enum Mode { case preview, alert }   // preview=调参(切前台不灭); alert=完成提醒(切前台灭)
 
     private let settings: SettingsStore
+    /// 顶部弹窗挂卡的地方。渲染设置窗的离屏实例没有它，此时弹窗方式什么都不做
+    var completionCards: AgentCompletionStore? {
+        didSet { observePreviewCard() }
+    }
+    private var previewCardWatch: AnyCancellable?
     private var activeSource: AgentKind?
     private var activeMode: Mode?
     /// 光晕点亮期间累计的宿主 App bundle id 集合。多会话并发时各自的完成信号都会进来——
@@ -87,8 +109,9 @@ final class GlowController: ObservableObject {
 
     // MARK: - 点亮 / 熄灭
 
-    /// 真实完成信号（pronotch://done?source=…）→ 完成提醒光晕
-    func notifyCompletion(_ source: AgentKind, host: String? = nil) {
+    /// 真实完成信号（pronotch://done?source=…）→ 完成提醒（光晕或顶部弹窗）
+    func notifyCompletion(_ source: AgentKind, host: String? = nil,
+                          session: String = "", project: String = "") {
         // 三道闸每一道都埋一条日志。
         //
         // 原来三种拦截全是静默 return，「跑完了怎么没亮」在界面之外没有任何可观测点，
@@ -111,6 +134,12 @@ final class GlowController: ObservableObject {
             AppLog.glow.debug("完成提醒：宿主 \(hostID, privacy: .public) 就在最前台，不点亮")
             return
         }
+        if settings.agentAlertStyle == .card {
+            completionCards?.present(
+                AgentCompletionNotice(source: source, session: session, host: hostID, project: project,
+                                      tintHex: settings.glowColorHex(for: source)))
+            return
+        }
         AppLog.glow.debug("完成提醒：点亮 \(source.rawValue, privacy: .public) 宿主 \(hostID ?? "-", privacy: .public)")
         previewingSource = nil
         testingSource = nil
@@ -129,14 +158,44 @@ final class GlowController: ObservableObject {
         light(source, mode: .alert)
     }
 
-    /// 设置页「预览」按钮：常亮调参（切前台不灭），再点同色熄灭
+    /// 设置页「预览」按钮：常亮调参（切前台不灭），再点同色熄灭。
+    /// 顶部弹窗方式下预览的是那张卡
     func togglePreview(_ source: AgentKind) {
         guard settings.glowEnabled else { return }
+        if settings.agentAlertStyle == .card { toggleCardPreview(source); return }
         if previewingSource == source { dismiss(); return }
         testingSource = nil
         previewingSource = source
         activeHosts = []
         light(source, mode: .preview)
+    }
+
+    /// 预览卡：项目名那行写「预览效果」，点它只收卡不跳转（见 AgentCompletionCardView）
+    private func toggleCardPreview(_ source: AgentKind) {
+        guard let cards = completionCards else { return }
+        let wasPreviewing = previewingSource == source
+        withdrawPreviewCard()
+        guard !wasPreviewing else { return }
+        cards.present(
+            AgentCompletionNotice(source: source, session: AgentCompletionNotice.previewSession, host: nil,
+                                  project: "预览效果", tintHex: settings.glowColorHex(for: source)))
+        previewingSource = source
+    }
+
+    private func withdrawPreviewCard() {
+        completionCards?.withdraw { $0.session == AgentCompletionNotice.previewSession }
+        previewingSource = nil
+    }
+
+    /// 预览卡被点掉（或被新的完成卡顶掉）后，设置页按钮要从「停止」变回「预览」
+    private func observePreviewCard() {
+        guard let cards = completionCards else { previewCardWatch = nil; return }
+        previewCardWatch = cards.$notice
+            .sink { [weak self] current in
+                guard let self, self.settings.agentAlertStyle == .card,
+                      self.previewingSource != nil else { return }
+                if current?.session != AgentCompletionNotice.previewSession { self.previewingSource = nil }
+            }
     }
 
     private func light(_ source: AgentKind, mode: Mode) {
@@ -154,9 +213,11 @@ final class GlowController: ObservableObject {
 
     /// 「完成提醒」光晕：切到任一相关宿主 App 的最前台 → 熄灭（预览类不受影响）
     private func handleAppActivation(_ note: Notification) {
-        guard activeMode == .alert, let source = activeSource,
-              let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+        guard let app = note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
               let bid = app.bundleIdentifier else { return }
+        // 顶部弹窗同一口径收卡。自己被激活（打开设置窗）不算「回到那个 App」
+        if bid != Bundle.main.bundleIdentifier { completionCards?.dismiss(activated: bid) }
+        guard activeMode == .alert, let source = activeSource else { return }
         // 集合空(旧 hook 没报宿主)回退到该来源桌面版 bundle id；
         // 连桌面版都没有（如 Kimi 且宿主探测失败）→ 无从知道该等谁，切到任意 App 即熄灭，不留永灭不掉的光晕
         let targets = activeHosts.isEmpty ? Set([source.appBundleID].compactMap { $0 }) : activeHosts
@@ -205,6 +266,15 @@ final class GlowController: ObservableObject {
         thickness = settings.glowThickness
         if !settings.glowEnabled {
             dismiss()
+            completionCards?.dismiss()
+            previewingSource = nil
+            return
+        }
+        // 换了提醒方式：另一种方式正亮着的预览收掉，免得光晕和预览卡同时挂着
+        if settings.agentAlertStyle == .card, activeSource != nil {
+            dismiss()
+        } else if settings.agentAlertStyle == .glow, previewingSource != nil, activeSource == nil {
+            withdrawPreviewCard()
         } else if let source = activeSource {
             // 正亮着的来源被取消勾选:立即熄灭——此前勾选框只拦「下次点亮」,当前光晕关不掉
             if activeMode == .alert, !GlowHookInstaller.isInstalled(source) {

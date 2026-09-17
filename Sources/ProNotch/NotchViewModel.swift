@@ -135,35 +135,26 @@ final class NotchViewModel: ObservableObject {
     /// 只有不透明像素会截获点击（透明区按像素透传），假刘海黑条被点到无副作用
     var alertBannerVisible = false { didSet { applyGrownCardHitTesting() } }
 
-    /// Agent「等你拍板」提醒卡显示中（收起态）。与预警各记一个标志而不是共用一个 Bool：
+    /// Agent「任务完成」弹窗显示中（收起态）。与预警各记一个标志而不是共用一个 Bool：
     /// 共用的话，先收的那张会把还挂着的另一张的点击一起关掉
-    var agentWaitCardVisible = false { didSet { applyGrownCardHitTesting() } }
+    var agentCardVisible = false { didSet { applyGrownCardHitTesting() } }
 
     /// 收起态有任意一张大卡在场（两种卡都要接收点击）
-    var grownCardVisible: Bool { alertBannerVisible || agentWaitCardVisible }
+    var grownCardVisible: Bool { alertBannerVisible || agentCardVisible }
 
-    /// 当前张开的「等你拍板」卡宽（0＝不在场）。两种卡各记自己的宽度，
+    /// 当前张开的「任务完成」卡宽（0＝不在场）。两种卡各记自己的宽度，
     /// 而不是共用一个字段：天气预警 8 秒自动收，收的时候若把共用字段清零，
-    /// 还挂着的拍板卡两侧图标就会缩回中间
+    /// 还挂着的任务完成卡两侧图标就会缩回中间
     @Published var agentCardWidth: CGFloat = 0
     /// 当前张开的天气预警卡宽（0＝不在场）
     @Published var alertCardWidth: CGFloat = 0
 
-    /// 收起态张开的大卡有多宽（0＝没有卡）。两张同时在场时以拍板卡为准——
-    /// 它一直挂着等答复，天气预警只停 8 秒。
+    /// 收起态张开的大卡有多宽（0＝没有卡）。两张同时在场时以任务完成卡为准——
+    /// 它一直挂着，天气预警只停 8 秒。
     ///
     /// 两侧小图标（左内存右天气）靠它随卡张开一起向外走到卡的两边（大梁老师定：
     /// 「随着刘海的拓展而移动到弹出的两边，而不是保持原来位置不变」）
     var grownCardWidth: CGFloat { agentCardWidth > 0 ? agentCardWidth : alertCardWidth }
-
-    /// 正挂着一张「等你答复」的拍板卡（不是只提醒一声那种）。
-    ///
-    /// 这段时间**悬停不再展开面板**（大梁老师定）：卡是一件还没办完的事，
-    /// 鼠标往按钮上去的路上一旦扫过刘海，面板就长出来把卡整块盖住，
-    /// 还得移开、等它收回来才能接着按——那张卡就成了摆设。
-    /// 展开态本来就不显示这张卡（`showing` 带 `!isExpanded`），所以不会互相锁死：
-    /// 面板已经开着时照常按悬停规则收起，收起后卡回来才重新挂上这道闸
-    var answerCardPending = false
 
     private func applyGrownCardHitTesting() {
         guard !isExpanded else { return }
@@ -451,10 +442,9 @@ final class NotchViewModel: ObservableObject {
         }
     }
 
-    /// 收起态悬停到这个点该不该展开。
-    /// 拍板卡在等答复时一律不展开（见 `answerCardPending`）
+    /// 收起态悬停到这个点该不该展开
     func hoverShouldExpand(at point: CGPoint) -> Bool {
-        !answerCardPending && enterRect.contains(point)
+        enterRect.contains(point)
     }
 
     private func scheduleExpand() {
@@ -462,7 +452,7 @@ final class NotchViewModel: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.pendingExpand = nil
-                // 触发时刻再校验一次，过滤快速划过（也再问一次拍板卡在不在等）
+                // 触发时刻再校验一次，过滤快速划过
                 if self.hoverShouldExpand(at: NSEvent.mouseLocation) {
                     self.expand()
                 }

@@ -56,8 +56,8 @@ enum PrefKey {
     static let glowBreathPeriod = "glowBreathPeriod"
     static let glowIntensity = "glowIntensity"
     static let glowThickness = "glowThickness"
-    /// Agent 跑到一半弹框等你拍板时，刘海弹卡提醒（与完成提醒是两件事）
-    static let agentWaitNoticeEnabled = "agentWaitNoticeEnabled"
+    /// 完成提醒的方式：四周光晕 / 刘海顶部弹窗（AgentAlertStyle 的 rawValue）
+    static let agentAlertStyle = "agentAlertStyle"
 
     // MARK: - 截图翻译
     static let translateTargetLang = "translateTargetLang"
@@ -101,7 +101,7 @@ enum PrefDefault {
             PrefKey.clipboardEnabled: true,
             PrefKey.clipboardLimit: 200,
             PrefKey.glowEnabled: true,
-            PrefKey.agentWaitNoticeEnabled: true,
+            PrefKey.agentAlertStyle: AgentAlertStyle.glow.rawValue,
             PrefKey.glowClaudeColorHex: glowClaudeColor,
             PrefKey.glowCodexColorHex: glowCodexColor,
             PrefKey.glowKimiColorHex: glowKimiColor,

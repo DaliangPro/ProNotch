@@ -725,7 +725,7 @@ private struct AgentReminderToggle: View {
         .onHover { hovering = $0 }
         .onAppear { breathing = shouldBreathe }
         .onChange(of: shouldBreathe) { _, v in breathing = v }   // 展开/收起、开关切换时启停呼吸
-        .help(on ? "Agent 完成提醒：开启（点击全局静音屏幕光晕）"
+        .help(on ? "Agent 完成提醒：开启（点击全局静音）"
                  : "Agent 完成提醒：已静音（点击恢复）")
     }
 

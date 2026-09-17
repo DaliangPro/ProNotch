@@ -276,10 +276,9 @@ final class GlowHookInstallerConfigTests: XCTestCase {
         XCTAssertEqual(
             toml.components(separatedBy: GlowHookInstaller.kimiHookCommandLine(for: paths.kimiScript)).count - 1,
             1, "升级不能把完成提醒挂成两条")
-        // 托管块现在含三条 hook：Stop（完成提醒）+ UserPromptSubmit（开工信号）
-        // + Notification（等你拍板）
-        XCTAssertEqual(toml.components(separatedBy: "[[hooks]]").count - 1, 3,
-                       "升级后应恰好是我们那三条 hook，多出来就是旧块没摘干净")
+        // 托管块含两条 hook：Stop（完成提醒）+ UserPromptSubmit（开工信号）
+        XCTAssertEqual(toml.components(separatedBy: "[[hooks]]").count - 1, 2,
+                       "升级后应恰好是我们那两条 hook，多出来就是旧块没摘干净")
     }
 
     func testKimi保留用户自己的hooks段() throws {
@@ -488,167 +487,144 @@ final class GlowHookInstallerConfigTests: XCTestCase {
         XCTAssertFalse(fm.fileExists(atPath: paths.busyScript))
     }
 
-    // MARK: - 等你拍板信号（Notification）
+    // MARK: - 旧版钩子清理
 
-    func testClaude等你拍板挂在Notification并随卸载摘除() throws {
+    /// 旧版本在 Notification / PermissionRequest 上挂过条目。升级后重新接入要把它们摘掉，
+    /// 同一事件下用户自己的钩子一条不碰，摘空的事件键不留
+    func testClaude接入时摘掉旧版条目_别人的不碰() throws {
         try write("""
-        {"hooks":{"Notification":[{"hooks":[{"type":"command","command":"/user/own.sh"}]}]}}
+        {"hooks":{
+          "Notification":[{"hooks":[{"type":"command","command":"/user/own.sh"}]},
+                          {"hooks":[{"type":"command","command":"\\"\(paths.scriptDir)/agent-wait.sh\\" claude"}]}],
+          "PermissionRequest":[{"hooks":[{"type":"command","command":"\\"\(paths.scriptDir)/agent-permission.sh\\" claude","timeout":21600}]}]
+        }}
         """, to: paths.claudeSettings)
 
         XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))
-        XCTAssertTrue(fm.fileExists(atPath: paths.waitScript), "等你拍板脚本必须落位")
-        XCTAssertEqual(jsonHookCommands(paths.claudeSettings, event: "Notification"),
-                       ["/user/own.sh", "\"\(paths.waitScript)\" claude"],
-                       "用户自己的通知钩子必须原样排在前")
-
-        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, false, paths: paths))
-        XCTAssertEqual(jsonHookCommands(paths.claudeSettings, event: "Notification"),
-                       ["/user/own.sh"])
-        XCTAssertFalse(fm.fileExists(atPath: paths.waitScript))
-    }
-
-    /// 三个事件各只能有一条我们的条目。重复接入若把条目再追加一遍，
-    /// 一次弹框会弹出两张卡（也会写两遍配置，白改用户文件）
-    func testClaude重复接入不把三个事件挂成两条() throws {
-        try write("{}", to: paths.claudeSettings)
-        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))
-        let first = read(paths.claudeSettings)
-        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))
-        XCTAssertEqual(read(paths.claudeSettings), first, "已是当前格式应完全不动文件")
-        XCTAssertEqual(jsonHookCommands(paths.claudeSettings, event: "Notification").count, 1)
-    }
-
-    /// 特征串必须与另两拨互不重叠：三个事件在同一份 JSON 里，
-    /// 认错了就会在卸载时把别的事件一起摘掉，或者反复重装
-    func testClaude三拨条目互不误认() throws {
-        try write("{}", to: paths.claudeSettings)
-        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))
+        XCTAssertEqual(jsonHookCommands(paths.claudeSettings, event: "Notification"), ["/user/own.sh"])
+        XCTAssertFalse(read(paths.claudeSettings).contains("PermissionRequest"), "摘空的事件键不该留着")
         XCTAssertEqual(jsonHookCommands(paths.claudeSettings, event: "Stop").count, 1)
-        XCTAssertEqual(jsonHookCommands(paths.claudeSettings, event: "UserPromptSubmit"),
-                       ["\"\(paths.busyScript)\" claude"])
-        XCTAssertEqual(jsonHookCommands(paths.claudeSettings, event: "Notification"),
-                       ["\"\(paths.waitScript)\" claude"])
     }
 
-    func testKimi等你拍板与另两条同在一段托管块() throws {
-        try write("model = \"kimi\"\n", to: paths.kimiConfig)
-        XCTAssertTrue(GlowHookInstaller.setInstalled(.kimi, true, paths: paths))
-
-        let toml = read(paths.kimiConfig)
-        XCTAssertTrue(toml.contains(
-            GlowHookInstaller.kimiHookCommandLine(for: paths.waitScript, argument: "kimi")))
-        XCTAssertTrue(toml.contains("event = \"Notification\""))
-        XCTAssertEqual(toml.components(separatedBy: KimiHookBlock.beginMarker).count - 1, 1)
-
-        XCTAssertTrue(GlowHookInstaller.setInstalled(.kimi, false, paths: paths))
-        XCTAssertEqual(read(paths.kimiConfig).trimmingCharacters(in: .whitespacesAndNewlines),
-                       "model = \"kimi\"", "三条 hook 必须被整段摘干净")
-        XCTAssertFalse(fm.fileExists(atPath: paths.waitScript))
-    }
-
-    /// Claude 与 Kimi 共用这个脚本；只有两家都退了才该收走。
-    /// Codex / Grok 上游没有中途信号，装不装都与这个脚本无关
-    func test两家共用等你拍板脚本_有人还在用就不删() throws {
-        try write("{}", to: paths.claudeSettings)
-        try write("model = \"kimi\"\n", to: paths.kimiConfig)
-        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))
-        XCTAssertTrue(GlowHookInstaller.setInstalled(.kimi, true, paths: paths))
-
-        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, false, paths: paths))
-        XCTAssertTrue(fm.fileExists(atPath: paths.waitScript), "Kimi 还接着，脚本不能删")
-
-        XCTAssertTrue(GlowHookInstaller.setInstalled(.kimi, false, paths: paths))
-        XCTAssertFalse(fm.fileExists(atPath: paths.waitScript))
-    }
-
-    /// Grok 只有 Stop / UserPromptSubmit 可挂，不该被写上 Notification，
-    /// 也不该顺手把共用脚本铺下去
-    func testGrok不挂等你拍板() throws {
-        try fm.createDirectory(atPath: paths.grokHome, withIntermediateDirectories: true)
-        XCTAssertTrue(GlowHookInstaller.setInstalled(.grok, true, paths: paths))
-        XCTAssertEqual(jsonHookCommands(paths.grokHookFile, event: "Notification"), [])
-        XCTAssertFalse(fm.fileExists(atPath: paths.waitScript))
-    }
-
-    // MARK: - 在刘海上直接拍板（PermissionRequest）
-
-    /// 只有 Claude 一家挂这个事件。它与前三拨同在一份 JSON 里，
-    /// 认错一条就会在卸载时把别人的事件一起摘掉，或者反复重装
-    func testClaude拍板挂在PermissionRequest并随卸载摘除() throws {
-        try write("""
-        {"hooks":{"PermissionRequest":[{"hooks":[{"type":"command","command":"/user/own.sh"}]}]}}
-        """, to: paths.claudeSettings)
-
-        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))
-        XCTAssertTrue(fm.fileExists(atPath: paths.permissionScript), "拍板脚本必须落位")
-        XCTAssertEqual(jsonHookCommands(paths.claudeSettings, event: "PermissionRequest"),
-                       ["/user/own.sh", "\"\(paths.permissionScript)\" claude"],
-                       "用户自己的授权钩子必须原样排在前")
-
-        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, false, paths: paths))
-        XCTAssertEqual(jsonHookCommands(paths.claudeSettings, event: "PermissionRequest"),
-                       ["/user/own.sh"])
-        XCTAssertFalse(fm.fileExists(atPath: paths.permissionScript))
-    }
-
-    /// 交换目录里躺着的是还没答复的请求。钩子都卸了就再没人来取，留着只是垃圾
-    func testClaude卸载时交换目录一并清掉() throws {
+    /// 脚本都是最新的、Stop 与开工条目也齐——只多一条旧版条目时，不能被「已是当前格式」挡掉
+    func testClaude只多旧版条目时不走幂等跳过() throws {
         try write("{}", to: paths.claudeSettings)
         XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))
-        try fm.createDirectory(atPath: paths.permissionDir, withIntermediateDirectories: true)
-        try write("{}", to: paths.permissionDir + "/leftover.request.json")
-
-        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, false, paths: paths))
-        XCTAssertFalse(fm.fileExists(atPath: paths.permissionDir))
-    }
-
-    /// 四个事件各只能有一条我们的条目（重复接入不追加），
-    /// 否则一次授权会弹两张卡、两个脚本各写一份答复，谁先落地都不确定
-    func testClaude重复接入不把拍板挂成两条() throws {
-        try write("{}", to: paths.claudeSettings)
-        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))
-        let first = read(paths.claudeSettings)
-        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))
-        XCTAssertEqual(read(paths.claudeSettings), first, "已是当前格式应完全不动文件")
-        XCTAssertEqual(jsonHookCommands(paths.claudeSettings, event: "PermissionRequest").count, 1)
-    }
-
-    /// 钩子默认超时远短于「人走回电脑前」，用默认值等于卡片刚弹出来就被掐掉。
-    /// 大梁老师定的是「一直等到答复」，所以这条 timeout 必须显式写、而且足够长
-    func testClaude拍板条目写了足够长的超时() throws {
-        try write("{}", to: paths.claudeSettings)
-        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))
-
-        let json = try XCTUnwrap(try JSONSerialization.jsonObject(
+        var root = try XCTUnwrap(try JSONSerialization.jsonObject(
             with: Data(read(paths.claudeSettings).utf8)) as? [String: Any])
-        let hooks = try XCTUnwrap((json["hooks"] as? [String: Any])?["PermissionRequest"]
-            as? [[String: Any]])
-        let entry = try XCTUnwrap((hooks.first?["hooks"] as? [[String: Any]])?.first)
-        XCTAssertEqual(entry["timeout"] as? Int, GlowHookInstaller.permissionWaitSeconds)
-        XCTAssertGreaterThanOrEqual(GlowHookInstaller.permissionWaitSeconds, 3600,
-                                    "少于一小时就不叫「一直等到答复」")
+        var hooks = try XCTUnwrap(root["hooks"] as? [String: Any])
+        hooks["Notification"] = [["hooks": [["type": "command",
+                                             "command": "\"\(paths.scriptDir)/agent-wait.sh\" claude"]]]]
+        root["hooks"] = hooks
+        try write(String(decoding: try JSONSerialization.data(withJSONObject: root), as: UTF8.self),
+                  to: paths.claudeSettings)
+
+        GlowHookInstaller.migrateIfInstalled(.claude, paths: paths)
+        XCTAssertFalse(read(paths.claudeSettings).contains("agent-wait.sh"))
     }
 
-    /// 四拨条目的特征串必须互不重叠
-    func testClaude四拨条目互不误认() throws {
+    func testClaude重复接入完全不动文件() throws {
         try write("{}", to: paths.claudeSettings)
         XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))
-        XCTAssertEqual(jsonHookCommands(paths.claudeSettings, event: "Stop").count, 1)
-        XCTAssertEqual(jsonHookCommands(paths.claudeSettings, event: "UserPromptSubmit"),
-                       ["\"\(paths.busyScript)\" claude"])
-        XCTAssertEqual(jsonHookCommands(paths.claudeSettings, event: "Notification"),
-                       ["\"\(paths.waitScript)\" claude"])
-        XCTAssertEqual(jsonHookCommands(paths.claudeSettings, event: "PermissionRequest"),
-                       ["\"\(paths.permissionScript)\" claude"])
+        let first = read(paths.claudeSettings)
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))
+        XCTAssertEqual(read(paths.claudeSettings), first)
     }
 
-    /// Kimi 的同名事件是 `fireAndForgetTrigger`——发完就走，不收答复。
-    /// 挂上去只会让卡片弹出来、按了却毫无作用，而终端那边照旧弹框
-    func testKimi不挂拍板() throws {
+    /// Kimi 的旧版条目在托管块里：迁移重写托管块时一并带走，只剩完成与开工两条
+    func testKimi托管块里的旧版条目随迁移带走() throws {
         try write("model = \"kimi\"\n", to: paths.kimiConfig)
         XCTAssertTrue(GlowHookInstaller.setInstalled(.kimi, true, paths: paths))
-        XCTAssertFalse(read(paths.kimiConfig).contains("PermissionRequest"))
-        XCTAssertFalse(fm.fileExists(atPath: paths.permissionScript))
+        let legacy = read(paths.kimiConfig).replacingOccurrences(of: KimiHookBlock.endMarker, with: """
+
+            [[hooks]]
+            event = "Notification"
+            command = '"\(paths.scriptDir)/agent-wait.sh" kimi'
+            timeout = 5
+            \(KimiHookBlock.endMarker)
+            """)
+        try write(legacy, to: paths.kimiConfig)
+
+        GlowHookInstaller.migrateIfInstalled(.kimi, paths: paths)
+        let toml = read(paths.kimiConfig)
+        XCTAssertFalse(toml.contains("agent-wait.sh"))
+        XCTAssertFalse(toml.contains("event = \"Notification\""))
+        XCTAssertTrue(toml.contains("event = \"Stop\""))
+        XCTAssertTrue(toml.contains("event = \"UserPromptSubmit\""))
+        XCTAssertEqual(toml.components(separatedBy: KimiHookBlock.beginMarker).count - 1, 1)
+    }
+
+    /// 新装不再铺旧脚本
+    func test接入不再落旧版脚本() throws {
+        try write("{}", to: paths.claudeSettings)
+        try write("model = \"kimi\"\n", to: paths.kimiConfig)
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.claude, true, paths: paths))
+        XCTAssertTrue(GlowHookInstaller.setInstalled(.kimi, true, paths: paths))
+        for path in paths.retiredScripts {
+            XCTAssertFalse(fm.fileExists(atPath: path), "\((path as NSString).lastPathComponent) 不该再装")
+        }
+    }
+
+    /// 开着的 Claude 会话按启动时的快照调钩子，摘了配置它照样会调旧脚本——
+    /// 所以先换成空操作，而不是马上删（删了会报 hook 失败）
+    func test启动清理_摘配置并把旧脚本换成空操作() throws {
+        try write("""
+        {"hooks":{"Notification":[{"hooks":[{"type":"command","command":"\\"\(paths.scriptDir)/agent-wait.sh\\" claude"}]}]}}
+        """, to: paths.claudeSettings)
+        for path in paths.retiredScripts { try write("#!/bin/bash\nopen -g pronotch://x\n", to: path) }
+
+        GlowHookInstaller.removeRetiredHooks(paths: paths)
+        XCTAssertFalse(read(paths.claudeSettings).contains("agent-wait.sh"))
+        for path in paths.retiredScripts {
+            XCTAssertTrue(fm.fileExists(atPath: path), "开着的会话还会调它，不能马上删")
+            XCTAssertFalse(read(path).contains("pronotch://"), "旧脚本必须换成什么都不做的空脚本")
+            XCTAssertTrue(read(path).contains("exit 0"))
+        }
+    }
+
+    func test启动清理_空脚本放满宽限期且无引用才删() throws {
+        for path in paths.retiredScripts { try write("#!/bin/bash\n", to: path) }
+        GlowHookInstaller.removeRetiredHooks(paths: paths)   // 换成空脚本
+
+        GlowHookInstaller.removeRetiredHooks(paths: paths, now: Date().addingTimeInterval(86400))
+        XCTAssertTrue(paths.retiredScripts.allSatisfy { fm.fileExists(atPath: $0) }, "宽限期内不删")
+
+        let later = Date().addingTimeInterval((GlowHookInstaller.retiredGraceDays + 1) * 86400)
+        XCTAssertTrue(GlowHookInstaller.removeRetiredHooks(paths: paths, now: later))
+        XCTAssertFalse(paths.retiredScripts.contains { fm.fileExists(atPath: $0) })
+    }
+
+    /// 配置里还指着它（比如 Kimi 没接入却残留托管块，迁移够不着）：删了就会报 hook 失败
+    func test启动清理_配置里还有引用就不删空脚本() throws {
+        try write("command = '\"\(paths.scriptDir)/agent-wait.sh\" kimi'\n", to: paths.kimiConfig)
+        for path in paths.retiredScripts { try write("#!/bin/bash\n", to: path) }
+        GlowHookInstaller.removeRetiredHooks(paths: paths)
+
+        let later = Date().addingTimeInterval((GlowHookInstaller.retiredGraceDays + 1) * 86400)
+        XCTAssertFalse(GlowHookInstaller.removeRetiredHooks(paths: paths, now: later))
+        XCTAssertTrue(paths.retiredScripts.allSatisfy { fm.fileExists(atPath: $0) })
+    }
+
+    /// 交换目录里挂着的请求：写空答复放行（那头照旧由终端询问），脚本取走后目录再删
+    func test启动清理_挂着的请求先放行再删目录() throws {
+        let dir = paths.retiredExchangeDir
+        try write("{}", to: dir + "/abc.request.json")
+
+        GlowHookInstaller.removeRetiredHooks(paths: paths)
+        XCTAssertFalse(fm.fileExists(atPath: dir + "/abc.request.json"))
+        XCTAssertEqual(fm.contents(atPath: dir + "/abc.response.json"), Data(), "空答复＝照旧由终端询问")
+        XCTAssertTrue(fm.fileExists(atPath: dir), "刚写的答复要留给脚本取")
+
+        GlowHookInstaller.removeRetiredHooks(paths: paths, now: Date().addingTimeInterval(120))
+        XCTAssertFalse(fm.fileExists(atPath: dir))
+    }
+
+    func test启动清理_什么都没有时不动任何文件() throws {
+        try write("{\"hooks\":{}}", to: paths.claudeSettings)
+        let before = read(paths.claudeSettings)
+        XCTAssertTrue(GlowHookInstaller.removeRetiredHooks(paths: paths))
+        XCTAssertEqual(read(paths.claudeSettings), before)
+        XCTAssertFalse(fm.fileExists(atPath: paths.claudeSettings + ".pronotch.bak"))
     }
 
     // MARK: - 原子写入与权限

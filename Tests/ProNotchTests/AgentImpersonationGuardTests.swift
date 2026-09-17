@@ -75,7 +75,7 @@ final class AgentImpersonationGuardTests: XCTestCase {
         }
     }
 
-    // MARK: - 开工 / 等拍板 / 权限拍板
+    // MARK: - 开工信号
 
     func test开工信号同样验出身() throws {
         let probe = try startProbe()
@@ -92,26 +92,6 @@ final class AgentImpersonationGuardTests: XCTestCase {
         defer { probe.process.terminate() }
         let r = try deliver("busy", watching: probe.name, payload: grokImpersonation, source: "grok")
         XCTAssertTrue(r.delivered, "grok 自报家门的开工信号被误拦，它自己的状态显示就没了")
-    }
-
-    func test等拍板信号同样验出身() throws {
-        let probe = try startProbe()
-        defer { probe.process.terminate() }
-        XCTAssertFalse(try deliver("wait", watching: probe.name, payload: grokImpersonation).delivered,
-                       "Grok 借道的等待事件会以 claude 名义在刘海弹卡")
-    }
-
-    /// 拍板脚本被冒名调起时：不投递、不留请求文件、不吐字（空 stdout＝调用方走自己的弹框）
-    func test拍板脚本被冒名调起时不拦不留孤儿() throws {
-        let probe = try startProbe()
-        defer { probe.process.terminate() }
-        let r = try deliver("permission", watching: probe.name, payload: grokImpersonation)
-        XCTAssertFalse(r.delivered, "冒名的权限请求也弹卡，等于替 Grok 拦了一道它不懂的闸")
-        XCTAssertEqual(r.status, 0)
-        XCTAssertEqual(r.out, "", "吐出任何东西都会被调用方当成一次决策")
-        let dir = GlowHookPaths.rooted(at: tmp.path).permissionDir
-        let leftovers = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
-        XCTAssertTrue(leftovers.isEmpty, "冒名请求留下了没人取的孤儿文件：\(leftovers)")
     }
 
     // MARK: - 夹具
@@ -131,14 +111,13 @@ final class AgentImpersonationGuardTests: XCTestCase {
         }
         var out: [String: String] = [:]
         for (name, path) in ["claude": paths.claudeScript, "kimi": paths.kimiScript,
-                             "grok": paths.grokScript, "busy": paths.busyScript,
-                             "wait": paths.waitScript, "permission": paths.permissionScript] {
+                             "grok": paths.grokScript, "busy": paths.busyScript] {
             out[name] = try String(contentsOfFile: path, encoding: .utf8)
         }
         return out
     }
 
-    /// 把脚本的 open 换成落标记文件真跑一遍；共用脚本（busy/wait/permission）经 $1 传来源
+    /// 把脚本的 open 换成落标记文件真跑一遍；共用的 busy 脚本经 $1 传来源
     private func deliver(_ name: String, watching process: String,
                          payload: String, source: String = "claude") throws
     -> (delivered: Bool, status: Int32, out: String) {
@@ -152,7 +131,7 @@ final class AgentImpersonationGuardTests: XCTestCase {
         try script.write(to: file, atomically: true, encoding: .utf8)
 
         var args = [file.path]
-        if ["busy", "wait", "permission"].contains(name) { args.append(source) }
+        if name == "busy" { args.append(source) }
         let result = try run("/bin/bash", args, stdin: payload)
         return (FileManager.default.fileExists(atPath: marker.path), result.status, result.out)
     }

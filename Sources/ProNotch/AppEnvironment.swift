@@ -17,7 +17,7 @@ struct AppEnvironment {
     let usage: UsageStore
     let agentSessions: AgentSessionsStore
     let agentActivity: AgentActivityStore
-    let agentWait: AgentWaitStore
+    let agentCompletion: AgentCompletionStore
     let quickActions: QuickActionsStore
     let settings: SettingsStore
     let memory: MemoryStore
@@ -38,7 +38,7 @@ extension View {
             .environmentObject(env.usage)
             .environmentObject(env.agentSessions)
             .environmentObject(env.agentActivity)
-            .environmentObject(env.agentWait)
+            .environmentObject(env.agentCompletion)
             .environmentObject(env.memory)
             .environmentObject(env.weather)
             .environmentObject(env.systemHUD)

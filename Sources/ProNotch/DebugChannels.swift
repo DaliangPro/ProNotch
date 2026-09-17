@@ -319,13 +319,11 @@ extension AppDelegate {
                 let picked = WeatherStore.previewAlerts.first { $0.label == label }
                 self.env.weather.preview((picked ?? WeatherStore.previewAlerts[0]).alert)
             }
-            // -notchCardScene <场景名>：造一条「等你拍板」再渲染（场景表见 cardScene）。
-            // 这些卡只由 hook 回调触发，链路要在终端里真跑一次才走得到——
-            // 而它们正是要给大梁老师看观感的，必须有条不开终端就能拍到的路
+            // -notchCardScene <任务完成|任务完成无项目>：造一张任务完成卡再渲染（场景表见 cardScene）。
+            // 这张卡只由 hook 回调触发，链路要在终端里真跑一次才走得到——
+            // 而它正是要给大梁老师看观感的，必须有条不开终端就能拍到的路
             if let i = CommandLine.arguments.firstIndex(of: "-notchCardScene") {
-                for notice in Self.cardScene(CommandLine.arguments[safe: i + 1] ?? "") {
-                    self.env.agentWait.present(notice, frontmost: nil)
-                }
+                self.env.agentCompletion.present(Self.cardScene(CommandLine.arguments[safe: i + 1] ?? ""))
             }
             // -notchHUD <音量|静音|亮度> [0…1]：摆一帧音量/亮度提示再渲染。
             // 这张卡只由真实按键触发，而按键要先拿到辅助功能权限、还会真的改音量，
@@ -407,22 +405,6 @@ extension AppDelegate {
         renderNext()
     }
 
-    /// 点击可达性核查（`-notchCardHitProbe`，需与 `-notchPermissionCard` 同用）：
-    /// 在**真实视图树**上按网格合成鼠标点击，报告第一个真正按下去的点。
-    ///
-    /// 为什么必须有这个：离屏渲染只能证明卡「长得对」，证明不了「点得到」。
-    /// 两种大卡都垫在刘海黑形状底下，而 `clipShape` **只裁画面、不裁点击**——
-    /// 黑形状的布局恒为整块面板尺寸（见 NotchContainerView 的注释），被裁掉看不见的那片黑
-    /// 照样把落在卡上的每一次点击吃光。最小复现里按钮压根不触发，实机表现就是
-    /// 「卡弹出来了，但任何按钮都点不动」。这个探针是唯一能不动手就照出这类病的口子。
-    ///
-    /// 自下而上、自左向右扫（按钮在卡的最后一行，最左那个是「允许一次」），
-    /// 一旦 `agentWait.notice` 被答复清空就算按到，立即停手
-    /// 假请求的 id（32 位 hex 才过得了 broker 的校验）。点击探针按到按钮后要靠它清掉自己写下的答复
-    /// nonisolated：场景表是纯函数（不碰任何状态），默认参数取这两个值时不该被主线程隔离绊住
-    private nonisolated static let probeRequestID = String(repeating: "a", count: 32)
-    private nonisolated static let queuedRequestID = String(repeating: "b", count: 32)
-
     /// `-notchHUD` 的档位表：档位名 → 要摆上去的那一帧
     private nonisolated static func hudPreview(_ tag: String, _ value: Double) -> SystemHUDStore.Reading {
         switch tag {
@@ -432,99 +414,38 @@ extension AppDelegate {
         }
     }
 
-    /// `-notchCardScene` 的场景表：一个场景 ＝ 上游真实会发来的一种载荷。
-    ///
-    /// 全部走真实的 `AgentPermissionBroker.parse`——自己 new 一个结构体就绕开了解析规则，
-    /// 拍出来的卡也就替不了真实链路说话（详情挑哪个入参、建议认不认得，都在 parse 里）
-    private static func cardScene(_ name: String) -> [AgentWaitNotice] {
-        func claude(_ payload: String, id: String = probeRequestID) -> AgentWaitNotice? {
-            guard let request = AgentPermissionBroker.parse(Data(payload.utf8), id: id) else { return nil }
-            return AgentWaitNotice(source: .claude, session: "snapshot", host: nil,
-                                   project: request.project, request: request)
-        }
-        let head = #"{"session_id":"snapshot","cwd":"/Users/x/Coding/ProNotch","#
-            + #""hook_event_name":"PermissionRequest","#
+    /// `-notchCardScene` 的场景表。会话名用预览会话：点击探针按到卡时只收卡、不真的跳去别的 App
+    private static func cardScene(_ name: String) -> AgentCompletionNotice {
         switch name {
-        case "多条建议":
-            // 实测：往「允许目录」之外写文件时上游一次给两条，粒度还完全不同
-            return [claude(head + """
-                "tool_name":"Write",\
-                "tool_input":{"file_path":"/Users/x/Documents/OrbitOS Vault/日记/2026-07-24.md"},\
-                "permission_suggestions":[\
-                {"type":"addDirectories","directories":["/Users/x/Documents/OrbitOS Vault"],\
-                "destination":"session"},\
-                {"type":"setMode","mode":"acceptEdits","destination":"session"}]}
-                """)].compactMap { $0 }
-        case "无建议":
-            // 上游没给建议（危险命令、或它自己也拿不准该写成哪条规则）：不摆假按钮
-            return [claude(head + """
-                "tool_name":"Bash",\
-                "tool_input":{"command":"rm -rf ~/Library/Caches/com.example.app"},\
-                "permission_suggestions":[]}
-                """)].compactMap { $0 }
-        case "长命令":
-            // 命令可以是一整篇脚本。详情块写死两行，超出截断——不截就把整块屏幕顶满
-            return [claude(head + """
-                "tool_name":"Bash",\
-                "tool_input":{"command":"find . -name '*.swift' -print0 | xargs -0 \
-                grep -n 'AppLog' | awk -F: '{print $1}' | sort -u | \
-                while read f; do echo \\"检查 $f\\"; swiftformat --lint \\"$f\\"; done"},\
-                "permission_suggestions":[{"type":"addRules","behavior":"allow",\
-                "destination":"localSettings",\
-                "rules":[{"toolName":"Bash","ruleContent":"find:*"}]}]}
-                """)].compactMap { $0 }
-        case "MCP工具":
-            // MCP 工具入参名五花八门，一个都不命中时压平 JSON 兜底
-            return [claude(head + """
-                "tool_name":"mcp__obsidian__append_note",\
-                "tool_input":{"vault":"OrbitOS Vault","note":"每日回顾","heading":"今天"},\
-                "permission_suggestions":[{"type":"addRules","behavior":"allow",\
-                "destination":"userSettings",\
-                "rules":[{"toolName":"mcp__obsidian__append_note"}]}]}
-                """)].compactMap { $0 }
-        case "排队中":
-            // 两个终端各跑一个很常见。四按钮的卡摞一起按不准，所以排队、答完换下一条
-            return [claude(head + """
-                "tool_name":"Bash","tool_input":{"command":"git push origin main"},\
-                "permission_suggestions":[{"type":"addRules","behavior":"allow",\
-                "destination":"localSettings",\
-                "rules":[{"toolName":"Bash","ruleContent":"git push:*"}]}]}
-                """),
-                claude(#"{"session_id":"other","cwd":"/Users/x/Coding/别的项目","#
-                    + #""tool_name":"Edit","tool_input":{"file_path":"/tmp/b.swift"}}"#,
-                    id: queuedRequestID)].compactMap { $0 }
-        case "只提醒Kimi":
-            // 别家的中途信号发完就走（收不了答复）：窄卡一张，点它跳到对应终端
-            return [AgentWaitNotice(source: .kimi, session: "snapshot", host: nil,
-                                    project: "OrbitOS Vault")]
-        case "只提醒无项目":
-            // cwd 抓空（脚本 sed 没命中）：项目名那行退一句通用文案，不留空行
-            return [AgentWaitNotice(source: .claude, session: "snapshot", host: nil, project: "")]
-        case "只提醒":
-            return [AgentWaitNotice(source: .claude, session: "snapshot", host: nil,
-                                    project: "ProNotch")]
+        case "任务完成无项目":
+            // 老脚本没带项目名、会话表里也查不到：项目那行退一句通用文案
+            return AgentCompletionNotice(source: .codex, session: AgentCompletionNotice.previewSession,
+                                         host: nil, project: "", tintHex: PrefDefault.glowCodexColor)
         default:
-            // 默认「单条建议」：最常见的形态，一条建议并进按钮行
-            return [claude(head + """
-                "tool_name":"Bash",\
-                "tool_input":{"command":"git push origin feature/agent-slots-and-reminder"},\
-                "permission_suggestions":[{"type":"addRules","behavior":"allow",\
-                "destination":"localSettings",\
-                "rules":[{"toolName":"Bash","ruleContent":"git push:*"}]}]}
-                """)].compactMap { $0 }
+            // 宿主给真实 bundle id，卡底那行才拍得出「点击回到 Ghostty」
+            return AgentCompletionNotice(source: .claude, session: AgentCompletionNotice.previewSession,
+                                         host: "com.mitchellh.ghostty", project: "ProNotch",
+                                         tintHex: PrefDefault.glowClaudeColor)
         }
     }
 
+    /// 点击可达性核查（`-notchCardHitProbe`，需与 `-notchCardScene` 同用）：
+    /// 在**真实视图树**上按网格合成鼠标点击，报告第一个真正点到卡的点。
+    ///
+    /// 为什么必须有这个：离屏渲染只能证明卡「长得对」，证明不了「点得到」。
+    /// 大卡垫在刘海黑形状底下，而 `clipShape` **只裁画面、不裁点击**——
+    /// 黑形状的布局恒为整块面板尺寸（见 NotchContainerView 的注释），被裁掉看不见的那片黑
+    /// 照样把落在卡上的每一次点击吃光，实机表现就是「卡弹出来了，但点不动」。
+    /// 这个探针是唯一能不动手就照出这类病的口子。
+    ///
+    /// 自下而上、自左向右扫，一旦卡被点掉就算按到，立即停手
     private func probeGrownCardHits(window: NSWindow, vm: NotchViewModel, size: CGSize) {
         guard CommandLine.arguments.contains("-notchCardHitProbe") else { return }
         // 事件路由要求窗口在场；挪到屏幕外再现身，避免在大梁老师眼前闪一下
         window.setFrameOrigin(NSPoint(x: -9000, y: -9000))
         window.orderFrontRegardless()
-        let cardWidth: CGFloat = 560
-        // 卡高随建议条数变（多一条建议多一行），扫描范围跟着算，别写死
-        let grown = self.env.agentWait.notice?.request
-            .map(AgentWaitCardView.grownHeight(for:)) ?? 176
-        let cardHeight = vm.notchRect.height + grown
+        let cardWidth = AgentCompletionCardView.cardWidth
+        let cardHeight = vm.notchRect.height + 132
         var hit: NSPoint?
         outer: for y in stride(from: size.height - cardHeight, through: size.height, by: 8) {
             for x in stride(from: (size.width - cardWidth) / 2,
@@ -539,27 +460,21 @@ extension AppDelegate {
                     window.sendEvent(event)
                 }
                 RunLoop.current.run(until: Date().addingTimeInterval(0.01))
-                if self.env.agentWait.notice == nil { hit = point; break outer }
+                if self.env.agentCompletion.notice == nil { hit = point; break outer }
             }
         }
         if let hit {
             AppLog.debugTools.info("""
-                卡上按钮点得到：窗口坐标 (\(Int(hit.x), privacy: .public), \
+                卡点得到：窗口坐标 (\(Int(hit.x), privacy: .public), \
                 \(Int(hit.y), privacy: .public))
                 """)
         } else {
-            AppLog.debugTools.error("卡上按钮点不到：整卡区域的合成点击全被吞掉")
-        }
-        // 按到按钮就真写了一份答复，而这条请求是假的、没有脚本在等它。
-        // 不清掉就是往真实交换目录里留垃圾（要等下次启动的收尾扫到 30 分钟才清）
-        for id in [Self.probeRequestID, Self.queuedRequestID] {
-            try? FileManager.default.removeItem(
-                atPath: GlowHookPaths.production.permissionDir + "/\(id).response.json")
+            AppLog.debugTools.error("卡点不到：整卡区域的合成点击全被吞掉")
         }
     }
 
     /// 对齐核查：把设置窗口按真实尺寸离屏渲染成 PNG（不打开窗口、不需屏幕录制权限）。
-    /// 分区由 -section 指定（如 -section 功能组件），默认「通用」；
+    /// 分区由 -section 指定（如 -section 功能组件），默认「通用」；-height 加高窗口拍长页面下半截；
     /// 尺寸取 SwiftUI 自算值，跟着 SettingsView 的 frame 走，不写死
     func snapshotSettings(settings: SettingsStore, chat: ChatStore, glow: GlowController,
                           weather: WeatherStore, snippets: SnippetStore) {
@@ -567,7 +482,9 @@ extension AppDelegate {
         let section = args.firstIndex(of: "-section")
             .flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
             .flatMap(SettingsView.Section.init(rawValue:)) ?? .general
-        let root = SettingsView(initialSection: section)
+        let height = args.firstIndex(of: "-height")
+            .flatMap { args.indices.contains($0 + 1) ? Double(args[$0 + 1]) : nil } ?? 540
+        let root = SettingsView(initialSection: section, windowHeight: height)
             .environmentObject(settings)
             .environmentObject(chat)
             .environmentObject(glow)

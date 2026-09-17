@@ -60,7 +60,7 @@ final class SystemHUDStore: ObservableObject {
     /// 只读镜像，供设置页显示「已接管 / 未接管」
     var isIntercepting: Bool { tap.isRunning }
 
-    /// 「刘海已经被别的大卡占着了吗」。天气预警、Agent 拍板卡与 HUD 都从刘海同一处长出来，
+    /// 「刘海已经被别的大卡占着了吗」。天气预警、Agent 任务完成卡与 HUD 都从刘海同一处长出来，
     /// 同时在场会叠成一团。此时**不接管**：按键交回系统，用户看见的是屏幕中间那块方块——
     /// 不好看，但比「按了没反应」强得多。由 AppDelegate 接上两个 Store，
     /// 免得 Store 之间互相持有（见 AppDelegate）

@@ -74,7 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         env = AppEnvironment(
             launcher: launcher, clipboard: clipboard, snippets: snippets,
             chat: ChatStore(), usage: UsageStore(), agentSessions: AgentSessionsStore(),
-            agentActivity: AgentActivityStore(), agentWait: AgentWaitStore(),
+            agentActivity: AgentActivityStore(), agentCompletion: AgentCompletionStore(),
             quickActions: QuickActionsStore(), settings: SettingsStore(),
             memory: MemoryStore(), weather: WeatherStore(),
             systemHUD: SystemHUDStore())
@@ -126,12 +126,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         // 光晕提醒：控制器常驻（很轻），覆盖整屏的光晕窗点亮才建、熄灭即拆
         glowController = GlowController(settings: env.settings)
+        // 完成提醒选「顶部弹窗」时，卡挂在这里
+        glowController?.completionCards = env.agentCompletion
 
         // 音量 / 亮度 HUD：两个开关都关时 start() 内部不装事件 tap（真不接管），
         // 开关一改立刻按新状态装卸。大卡在场时让位（理由见 SystemHUDStore.otherCardShowing）
-        let weatherStore = env.weather, agentWaitStore = env.agentWait
+        let weatherStore = env.weather, completionStore = env.agentCompletion
         env.systemHUD.otherCardShowing = {
-            weatherStore.alert != nil || agentWaitStore.notice != nil
+            weatherStore.alert != nil || completionStore.notice != nil
         }
         env.systemHUD.start()
 
@@ -151,14 +153,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         // 清除早期 hooks.json 接入残留的「无 host」pronotch 孤儿（与接入与否无关，幂等）
         GlowHookInstaller.cleanCodexHooksOrphan()
-        // 上次退出时还挂在卡上的拍板请求：卡的状态只在内存里，重启后没人来答了，
-        // 而脚本认进程名、看见新进程会继续等下去。开机就放它们回终端问（详见 releaseOrphans）
-        Task.detached(priority: .utility) {
-            let released = AgentPermissionBroker().releaseOrphans()
-            if released > 0 {
-                AppLog.glow.info("已放回终端询问的残留拍板请求：\(released, privacy: .public) 条")
-            }
-        }
+        // 旧版本装过、现已不用的钩子与脚本：排在迁移之后，配置里的引用摘干净了才删脚本
+        GlowHookInstaller.removeRetiredHooks()
 
         // 注：曾在此预热系统翻译（翻个 "Hi" 焐热 session），但未装目标语言包时预热会触发系统
         // 「下载语言包」弹框、出现在屏幕左下角，用户没主动翻译却被打扰。已移除——首次截图翻译
@@ -230,14 +226,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func handleGlowURL(_ url: URL) {
         guard url.scheme == "pronotch" else { return }
-        // done：这一回合真的结束了 —— 点亮光晕，并把该会话标回空闲
-        // busy：用户刚提交提问，回合开工 —— 只记状态给刘海槽位用，不点光晕
+        // done：这一回合真的结束了 —— 完成提醒（光晕或顶部弹窗），并把该会话标回空闲
+        // busy：用户刚提交提问，回合开工 —— 只记状态给刘海槽位用，不提醒
         //（开工就闪一下会变成每次提问都打扰，那正是「完成提醒」要避免的）
-        // waiting：回合还没结束，但它弹了个框在等你拍板 —— 刘海弹一张提醒卡
-        // permission：它要授权了，而且这次能收我们的答复 —— 把真实选项摆到卡上当场拍板
-        guard let action = url.host,
-              action == "done" || action == "busy" || action == "waiting"
-                || action == "permission" else { return }
+        guard let action = url.host, action == "done" || action == "busy" else { return }
         let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
         // 认证优先：这条 URL 谁都能调（本机任意进程、任意网页里的一个链接），
         // 伪造的回调不仅能乱点光晕，还能往会话表里塞宿主映射、把用户点卡片时引向别的 App。
@@ -259,17 +251,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // source 参数即 AgentKind 的 rawValue（claude/codex/kimi/grok），支持光晕的家统一走这一条路
         guard let kind = source.flatMap(AgentKind.init(rawValue:)), kind.supportsGlow else { return }
 
-        // 等你拍板：回合没结束，不动槽位状态（它还在「工作中」，只是被你挡住了），
-        // 也不点光晕（那是完成提醒的语言），只弹一张卡
-        if action == "waiting" {
-            handleWaitingCallback(kind, items: items, host: host, session: session)
-            return
-        }
-        if action == "permission" {
-            handlePermissionCallback(kind, items: items, host: host)
-            return
-        }
-
         // 开工信号到此为止：只更新槽位要的活动状态，不碰光晕也不动会话表
         guard action == "done" else {
             env?.agentActivity.markBusy(kind, session: session)
@@ -283,77 +264,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         AppLog.app.debug("槽位记账：\(kind.rawValue, privacy: .public) 收工")
         let effectiveHost = (host?.isEmpty == false) ? host
             : env?.agentSessions.knownHost(for: session, source: kind)
-        glowController?.notifyCompletion(kind, host: effectiveHost)
+        // 项目名：钩子从载荷的 cwd 抠（v14 起）；老脚本或载荷里没有 cwd 时，查监控台会话表兜底
+        var project = AgentCompletionNotice.decodeProject(
+            items?.first(where: { $0.name == "project" })?.value ?? "")
+        if project.isEmpty, !session.isEmpty {
+            project = env?.agentSessions.sessions
+                .first { $0.source == kind && $0.id == session }?.projectName ?? ""
+        }
+        glowController?.notifyCompletion(kind, host: effectiveHost, session: session, project: project)
         env?.agentSessions.markTurnEnded(session: session, source: kind, host: host)
-    }
-
-    /// 「Agent 弹框等你拍板」回调：过滤掉不值得打扰的通知类型，再交给刘海弹卡。
-    ///
-    /// 三道闸都要过：这家仍被勾选（钩子已卸的残留信号不认）、用户没关这个提醒、
-    /// 通知类型确实是「在等你做决定」（`AgentWaitPolicy`）
-    private func handleWaitingCallback(_ kind: AgentKind, items: [URLQueryItem]?,
-                                       host: String?, session: String) {
-        guard let env, kind.supportsWaitNotice, GlowHookInstaller.isInstalled(kind),
-              env.settings.agentWaitNoticeEnabled else { return }
-        let type = items?.first(where: { $0.name == "type" })?.value ?? ""
-        guard AgentWaitPolicy.shouldNotify(type: type) else {
-            AppLog.app.debug("等你拍板：忽略类型 \(type, privacy: .public)")
-            return
-        }
-        // host 抓空时复用该会话之前抓对过的宿主（同 done 分支的理由），否则点卡跳不过去
-        let effectiveHost = (host?.isEmpty == false) ? host
-            : env.agentSessions.knownHost(for: session, source: kind)
-        let project = items?.first(where: { $0.name == "project" })?.value ?? ""
-        env.agentWait.present(
-            AgentWaitNotice(source: kind, session: session, host: effectiveHost,
-                            project: AgentWaitNotice.decodeProject(project)),
-            frontmost: NSWorkspace.shared.frontmostApplication?.bundleIdentifier,
-            hostWindowVisible: AgentHostVisibility.ownsTopWindow(host: effectiveHost))
-        AppLog.app.debug("等你拍板：\(kind.rawValue, privacy: .public) 类型 \(type, privacy: .public)")
-    }
-
-    /// 「在刘海上直接拍板」回调：把 hook 写下的请求读出来摆到卡上。
-    ///
-    /// 与 waiting 最大的不同是**这条链路不能沉默**：终端那头正卡在钩子里等我们的答复，
-    /// 任何一条不弹卡的分支都必须写一份「不作决策」放它走，否则那一轮就干等到钩子超时。
-    /// 所以每个 return 之前都有一次 release
-    private func handlePermissionCallback(_ kind: AgentKind, items: [URLQueryItem]?, host: String?) {
-        let requestID = items?.first(where: { $0.name == "req" })?.value ?? ""
-        let broker = AgentPermissionBroker()
-        guard let request = broker.take(id: requestID) else {
-            // 请求文件读不出来（被清过、写坏了、id 不合法）：这里连该问什么都不知道，
-            // 放它回终端问是唯一诚实的做法
-            broker.release(id: requestID)
-            AppLog.app.error("拍板请求读不出来，已放回终端询问")
-            return
-        }
-        guard let env, kind.supportsPermissionCard, GlowHookInstaller.isInstalled(kind),
-              env.settings.agentWaitNoticeEnabled else {
-            broker.answer(request, .terminal)
-            return
-        }
-        // host 抓空时复用该会话之前抓对过的宿主（同 done 分支的理由），否则「打开终端」跳不过去
-        let effectiveHost = (host?.isEmpty == false) ? host
-            : env.agentSessions.knownHost(for: request.session, source: kind)
-        let frontmost = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
-        let hostVisible = AgentHostVisibility.ownsTopWindow(host: effectiveHost)
-        // 「本身就是找你确认」的工具（见 AgentWaitPolicy.selfPromptingTools）：
-        // 放它回窗口里正常问，刘海只提醒一声——真正的选项在窗口里，卡上摆不出来
-        guard AgentWaitPolicy.canAnswerOnCard(tool: request.tool) else {
-            broker.answer(request, .terminal)
-            env.agentWait.present(
-                AgentWaitNotice(source: kind, session: request.session, host: effectiveHost,
-                                project: request.project),
-                frontmost: frontmost, hostWindowVisible: hostVisible)
-            AppLog.app.debug("拍板请求：\(kind.rawValue, privacy: .public) 工具 \(request.tool, privacy: .public) 是问你话类，已放回窗口、只提醒一声")
-            return
-        }
-        env.agentWait.present(
-            AgentWaitNotice(source: kind, session: request.session, host: effectiveHost,
-                            project: request.project, request: request),
-            frontmost: frontmost, hostWindowVisible: hostVisible)
-        // 只记工具名：详情里躺着要跑的命令和要写的路径，日志是永久明文
-        AppLog.app.debug("拍板请求：\(kind.rawValue, privacy: .public) 工具 \(request.tool, privacy: .public)")
     }
 
     /// 应用更名（NotchHub → ProNotch，bundle id 一并变更）的一次性数据搬家：

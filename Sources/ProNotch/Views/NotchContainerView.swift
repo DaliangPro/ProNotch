@@ -25,7 +25,7 @@ struct NotchContainerView: View {
             // 两种大卡垫底：从刘海形状背后弹出（形状不透明，缩回即被盖住），
             // 层级在黑形状之下，滑动过程天然是「刘海绽放成一块大卡」
             WeatherAlertCardView()
-            AgentWaitCardView()
+            AgentCompletionCardView()
             SystemHUDCardView()
             notchLayer
             // 两侧功能区（左内存右天气）压在最上层，而不是塞在 notchLayer 里面：
@@ -72,8 +72,8 @@ struct NotchContainerView: View {
         .clipShape(revealShape)
         // 命中区必须跟着可见形状一起收：`clipShape` **只裁画面、不裁点击**，
         // 上面那块 Color.black 的布局恒为整块面板尺寸，被裁掉看不见的那片黑照样把落在
-        // 「刘海以下」的点击全吃光——垫在黑形状底下的两种大卡（天气预警、Agent 等你拍板）
-        // 因此一个按钮都点不动（实测：整卡区域合成点击全被吞，见 probeGrownCardHits）。
+        // 「刘海以下」的点击全吃光——垫在黑形状底下的两种大卡（天气预警、Agent 任务完成）
+        // 因此点不动（实测：整卡区域合成点击全被吞）。
         // 收起态收到刘海条后，刘海以下的空白才让给大卡；展开态形状即整面板，行为不变
         .contentShape(revealShape)
         .shadow(color: .black.opacity(vm.isExpanded ? 0.55 : 0), radius: 14, y: 5)
@@ -171,7 +171,7 @@ private struct WeatherAlertCardView: View {
 
     private func card(_ a: WeatherAlert) -> some View {
         // 点一下就是关掉它，不再顺手展开刘海到组件页（大梁老师 2026-07-31 定的分工）：
-        // 天气是「告诉你一声」，看完即弃；只有「有人在等你」那类才需要把你送到能处理的地方
+        // 天气是「告诉你一声」，看完即弃；Agent 任务完成才需要把你送回对应的 App
         NotchGrownCard(width: Self.cardWidth, grownHeight: 180, glow: glowColor(a), shown: shown) {
             weather.dismissAlert()
         } content: {

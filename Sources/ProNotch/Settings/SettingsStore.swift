@@ -322,11 +322,10 @@ final class SettingsStore: ObservableObject {
             }
         }
     }
-    /// 「等你拍板」提醒：Agent 跑到一半弹框等你选时刘海弹卡（与完成提醒各自独立）。
-    /// 只管弹不弹卡，不动 hook —— 钩子跟着完成提醒一起装，关掉这个开关只是不弹，
-    /// 免得为一个开关再走一轮配置改写
-    @Published var agentWaitNoticeEnabled: Bool {
-        didSet { persistGlow(agentWaitNoticeEnabled, PrefKey.agentWaitNoticeEnabled) }
+    /// 完成提醒用哪种方式：四周光晕 / 刘海顶部弹窗，二选一（大梁老师 2026-09-16 定）。
+    /// 只换「怎么提醒」，钩子、勾选、颜色都不动
+    @Published var agentAlertStyle: AgentAlertStyle {
+        didSet { persistGlow(agentAlertStyle.rawValue, PrefKey.agentAlertStyle) }
     }
     @Published var glowClaudeColorHex: String { didSet { persistGlow(glowClaudeColorHex, PrefKey.glowClaudeColorHex) } }
     @Published var glowCodexColorHex: String { didSet { persistGlow(glowCodexColorHex, PrefKey.glowCodexColorHex) } }
@@ -393,7 +392,8 @@ final class SettingsStore: ObservableObject {
         clockCardZones = savedCardZones.map { $0.compactMap(ClockZone.init(rawValue:)) }
             ?? ClockZone.defaultCardZones
         glowEnabled = UserDefaults.standard.bool(forKey: PrefKey.glowEnabled)
-        agentWaitNoticeEnabled = UserDefaults.standard.bool(forKey: PrefKey.agentWaitNoticeEnabled)
+        agentAlertStyle = UserDefaults.standard.string(forKey: PrefKey.agentAlertStyle)
+            .flatMap(AgentAlertStyle.init(rawValue:)) ?? .glow
         glowClaudeColorHex = UserDefaults.standard.string(forKey: PrefKey.glowClaudeColorHex) ?? PrefDefault.glowClaudeColor
         glowCodexColorHex = UserDefaults.standard.string(forKey: PrefKey.glowCodexColorHex) ?? PrefDefault.glowCodexColor
         glowKimiColorHex = UserDefaults.standard.string(forKey: PrefKey.glowKimiColorHex) ?? PrefDefault.glowKimiColor

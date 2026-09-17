@@ -38,8 +38,12 @@ struct SettingsView: View {
     @State private var selected: Section
 
     /// 默认开在「通用」；离屏核查（-snapshotSettings）用它逐页渲染对照
-    init(initialSection: Section = .general) {
+    /// 窗口高度。只有离屏快照会改（`-height`）：窗口内是滚动视图，默认高度拍不到页面下半截
+    private let windowHeight: CGFloat
+
+    init(initialSection: Section = .general, windowHeight: CGFloat = 540) {
         _selected = State(initialValue: initialSection)
+        self.windowHeight = windowHeight
     }
 
     @State private var glowConnected: [AgentKind: Bool] = [:]   // 各家完成钩子接入态（supportsGlow 的家）
@@ -77,7 +81,7 @@ struct SettingsView: View {
             }
             .ignoresSafeArea()   // 忽略标题栏自动安全区，留白只由下面的 26pt 决定，避免双重叠加
         }
-        .frame(width: 660, height: 540)
+        .frame(width: 660, height: windowHeight)
         .preferredColorScheme(.dark)
         .onAppear {
             refreshGlowConnected()
@@ -740,7 +744,7 @@ struct SettingsView: View {
     private var glowContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             pageTitle("Agent",
-                      subtitle: "统一管理本机 AI Agent：勾选监控哪些家，配置任务完成时的光晕提醒。")
+                      subtitle: "统一管理本机 AI Agent：勾选监控哪些家，配置任务完成时的提醒。")
 
             // 本地 Agent 检测（stat 级、毫秒完成）：打开本页自动列一次，装了新 CLI 点「重新扫描」
             HStack {
@@ -803,7 +807,7 @@ struct SettingsView: View {
                 SettingsCard {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("启用 Agent 光晕提醒")
+                            Text("启用 Agent 完成提醒")
                                 .font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
                             Text("总开关，与刘海面板上的按钮联动")
                                 .font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
@@ -814,7 +818,8 @@ struct SettingsView: View {
                     .padding(.horizontal, 14).padding(.vertical, 11)
                 }
 
-                // 完成时提醒：勾选哪些 Agent（并排，随接入且支持钩子的家动态增减）；总开关关闭时整块禁用、灰显
+                // 完成时提醒：勾选哪些 Agent（并排，随接入且支持钩子的家动态增减）+ 提醒方式二选一；
+                // 总开关关闭时整块禁用、灰显
                 sectionLabel("完成时提醒")
                 SettingsCard {
                     HStack(spacing: 0) {
@@ -822,46 +827,37 @@ struct SettingsView: View {
                             sourceRow(kind.displayName, source: kind)
                         }
                     }
+                    CardDivider()
+                    pillPickerRow("提醒方式", options: AgentAlertStyle.allCases,
+                                  title: { $0.title },
+                                  isOn: { settings.agentAlertStyle == $0 },
+                                  select: { settings.agentAlertStyle = $0 })
                 }
                 .disabled(!settings.glowEnabled)
                 .opacity(settings.glowEnabled ? 1 : 0.4)
-
-                // 等你拍板：与完成提醒是两件事（那个说「跑完了」，这个说「跑一半在等你选」），
-                // 所以单独一块。只在上游给得出中途信号的家已接入时才出现（大梁老师的诚实渲染口径）
-                if !waitKinds.isEmpty {
-                    sectionLabel("等你拍板")
-                    SettingsCard {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("弹框等你选择时在刘海上拍板")
-                                    .font(.system(size: 13)).foregroundColor(.white.opacity(0.9))
-                                Text(waitCardCopy)
-                                    .font(.system(size: 11)).foregroundColor(.white.opacity(0.4))
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            Spacer()
-                            ThemedSwitch(isOn: $settings.agentWaitNoticeEnabled)
-                        }
-                        .padding(.horizontal, 14).padding(.vertical, 11)
-                    }
-                    noteText("Codex 与 Grok 暂不支持：它们的钩子只有「开始」和「结束」，没有中途等待的信号。",
+                if settings.agentAlertStyle == .card {
+                    noteText("弹窗会一直显示，点它或切回对应 App 后收起。",
                              color: .white.opacity(0.4))
                 }
 
                 sectionLabel("外观")
                 SettingsCard {
-                    ForEach(glowKinds) { kind in
+                    // 颜色两种方式都用（弹窗边缘的光晕也是它）；呼吸 / 强度 / 厚度只管四周光晕
+                    ForEach(Array(glowKinds.enumerated()), id: \.element) { i, kind in
+                        if i > 0 { CardDivider() }
                         colorRow("\(kind.displayName) 颜色", binding: glowColorBinding(kind), source: kind)
-                        CardDivider()
                     }
-                    glowSliderRow("呼吸周期", value: $settings.glowBreathPeriod, range: 1.5...6,
-                                  display: String(format: "%.1f 秒", settings.glowBreathPeriod))
-                    CardDivider()
-                    glowSliderRow("光晕强度", value: $settings.glowIntensity, range: 0.3...1,
-                                  display: "\(Int(settings.glowIntensity * 100))%")
-                    CardDivider()
-                    glowSliderRow("光晕厚度", value: $settings.glowThickness, range: 40...180,
-                                  display: "\(Int(settings.glowThickness)) pt")
+                    if settings.agentAlertStyle == .glow {
+                        CardDivider()
+                        glowSliderRow("呼吸周期", value: $settings.glowBreathPeriod, range: 1.5...6,
+                                      display: String(format: "%.1f 秒", settings.glowBreathPeriod))
+                        CardDivider()
+                        glowSliderRow("光晕强度", value: $settings.glowIntensity, range: 0.3...1,
+                                      display: "\(Int(settings.glowIntensity * 100))%")
+                        CardDivider()
+                        glowSliderRow("光晕厚度", value: $settings.glowThickness, range: 40...180,
+                                      display: "\(Int(settings.glowThickness)) pt")
+                    }
                 }
             }
         }
@@ -879,27 +875,6 @@ struct SettingsView: View {
     /// 支持完成钩子且已接入的家（光晕三区按这个渲染，随上方本地 Agent 勾选增减）
     private var glowKinds: [AgentKind] {
         AgentKind.allCases.filter { $0.supportsGlow && settings.enabledAgents.contains($0) }
-    }
-
-    /// 上游给得出「中途等你拍板」信号、且已勾选的家（Claude / Kimi）
-    private var waitKinds: [AgentKind] {
-        AgentKind.allCases.filter { $0.supportsWaitNotice && settings.enabledAgents.contains($0) }
-    }
-
-    /// 说明文案按能力分开写：能当场拍板的和只能提醒一声的是两种体验，
-    /// 混成一句会让人以为哪家都能在卡上按（诚实渲染，同能力模型的口径）
-    private var waitCardCopy: String {
-        let decide = waitKinds.filter(\.supportsPermissionCard).map(\.displayName)
-        let notify = waitKinds.filter { !$0.supportsPermissionCard }.map(\.displayName)
-        var parts: [String] = []
-        if !decide.isEmpty {
-            parts.append("\(decide.joined(separator: " / ")) 要授权时，刘海把它的真实选项摆上来，允许 / 拒绝当场按完，终端不再弹框")
-        }
-        if !notify.isEmpty {
-            parts.append("\(notify.joined(separator: " / ")) 只能弹卡说一声（上游的中途信号收不了答复），点它跳到对应终端")
-        }
-        parts.append("关闭后一切照旧由终端询问")
-        return parts.joined(separator: "；")
     }
 
     private func refreshGlowConnected() {
