@@ -189,8 +189,8 @@ struct UsageMenuView: View {
     }
 
     // MARK: - 辅助
-    /// 概览优先显示「周额度」——5 小时窗恢复快，周额度才是真正的用量上限
-    private func overviewWindow(_ q: ServiceQuota?) -> QuotaWindow? { q?.secondary ?? q?.primary }
+    /// 概览显示「周额度」，与菜单栏收起态同一口径
+    private func overviewWindow(_ q: ServiceQuota?) -> QuotaWindow? { q?.longestWindow }
     private func pct(_ used: Double) -> Int { min(100, max(0, Int(used.rounded()))) }
 
     /// 柱状条填充「已用量」——与刘海额度页一致

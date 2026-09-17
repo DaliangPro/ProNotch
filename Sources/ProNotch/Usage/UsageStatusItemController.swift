@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// 菜单栏上那条独立的「额度」栏：常驻显示各家 5h 用量百分比，点开是详情卡。
+/// 菜单栏上那条独立的「额度」栏：常驻显示各家周额度用量百分比，点开是详情卡。
 ///
 /// 它和主菜单栏图标是两个 NSStatusItem——这条可以由用户单独关掉，关掉后
 /// 定时刷新一并停机（不再无谓访问 Claude / ChatGPT 接口）。
@@ -67,7 +67,7 @@ final class UsageStatusItemController {
         }
     }
 
-    /// 只创建一次：变宽额度栏，常驻 C<5h%> X<5h%>，点开是详情卡（两服务 5h/7d 进度条）
+    /// 只创建一次：变宽额度栏，常驻 C<周%> X<周%>，点开是详情卡（各家 5 小时 / 周额度进度条）
     private func createStatusItem() {
         guard statusItem == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -136,7 +136,9 @@ final class UsageStatusItemController {
 
     private func stopTimer() { timer?.invalidate(); timer = nil }
 
-    /// 额度栏标题：勾选各家品牌 logo + 5h%；高占用百分比变色；无数据的服务省略。仅额度栏存在时更新
+    /// 额度栏标题：勾选各家品牌 logo + 周额度%；高占用百分比变色；无数据的服务省略。仅额度栏存在时更新。
+    /// 一律取周额度（大梁老师定）：原先取 primary，有 5 小时窗的家（Claude / Kimi / Codex Plus）
+    /// 露的是 5 小时窗、只有周窗的家露的是周窗，同一排数字口径不一
     private func updateTitle() {
         guard let button = statusItem?.button else { return }
         // 取消接入时数据被置 nil，objectWillChange 会把这里再驱动一遍，标题即时增减
@@ -144,7 +146,7 @@ final class UsageStatusItemController {
         let title = NSMutableAttributedString()
         let base: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)]
         for kind in items {
-            guard let pct = env.usage.quota(for: kind)?.primary?.usedPercent else { continue }
+            guard let pct = env.usage.quota(for: kind)?.longestWindow?.usedPercent else { continue }
             if title.length > 0 { title.append(NSAttributedString(string: "  ", attributes: base)) }
             let att = NSTextAttachment()
             att.image = Self.brandImage(kind.polys, tint: Self.brandTints[kind] ?? .systemGray, size: 17)

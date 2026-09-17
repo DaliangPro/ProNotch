@@ -21,11 +21,15 @@ struct QuotaWindow: Sendable {
 struct ServiceQuota: Sendable {
     var plan: String?            // 订阅计划名
     var account: String?         // 账号标识（多账号切换时确认数据归属）
-    var primary: QuotaWindow?    // 5 小时窗
-    var secondary: QuotaWindow?  // 7 天窗
+    var primary: QuotaWindow?    // 短窗（两窗时是 5 小时窗；只有一个窗时就是它，如 Codex Pro 的周窗）
+    var secondary: QuotaWindow?  // 长窗（7 天窗），只有一个窗时为 nil
     var dataAt: Date?            // 数据时间（源文件里最后一条记录的时间）
     var error: String?           // 拿不到数据时的原因
     var topTasks: [TaskUsage] = []   // 近 7 天最耗额度的前 5 个任务（占总额度%）
+
+    /// 最长的那个窗，即周额度：菜单栏收起态与面板概览都看它——
+    /// 5 小时窗恢复快，周额度才是真正的用量上限（大梁老师定：收起态各家一律显示周额度）
+    var longestWindow: QuotaWindow? { secondary ?? primary }
 }
 
 /// 一轮刷新拉回来的全部额度数据（不可变快照，跨线程只传值）
@@ -55,7 +59,7 @@ struct ProductionUsageLoader: UsageLoading {
         // token 窗口锚到额度窗口的起点（resetsAt − 窗长）：分子分母同一段时间，
         // 重置前的老会话不再来分当前额度（大梁老师 2026-08-03「Codex 严重不准」）
         func windowStart(_ q: ServiceQuota?) -> Date? {
-            guard let w = q?.secondary ?? q?.primary,
+            guard let w = q?.longestWindow,
                   let reset = w.resetsAt else { return nil }
             return reset.addingTimeInterval(-Double(w.windowMinutes) * 60)
         }
@@ -361,26 +365,101 @@ enum GrokQuotaLoader {
     }
 }
 
-// MARK: - Kimi Code：CLI 内置 managed-usage 同款接口（零配置，凭据就在本地）
+// MARK: - Kimi：客户端或 CLI 任一登录即可查（managed-usage 同款接口，零配置）
 
 enum KimiQuotaLoader {
-    /// 从 CLI 二进制逆向出的官方链路（packages/oauth/src/managed-usage.ts，未暴露成命令）：
-    /// 1. `~/.kimi-code/credentials/kimi-code.json` 的 refresh_token 换临时 access_token
-    ///    （POST auth.kimi.com/api/oauth/token）。服务端轮换发新但不废旧——CLI 自己 18 天不写回
-    ///    照样能刷（实证）；我们拿到的新 token 只在内存用完即弃，绝不写盘，不影响 CLI 登录。
-    /// 2. GET api.kimi.com/coding/v1/usages 带 Bearer → usage（周窗）+ limits[]（5 小时窗）。
+    /// 同一个 Kimi 会员额度，本机有两条凭据路线，哪个登录了用哪个（大梁老师定：装了 Kimi 客户端
+    /// 没装 CLI，额度也得查得到）：
+    /// ① Kimi 客户端（Kimi.app，含 Kimi Work）：内核 daimon 跑的就是 kimi-code，登录后签发一把
+    ///    长效 API Key 落在数据目录里，直接 Bearer 调 usages——一次请求，不用换 token。
+    ///    2026-09-16 实测（Kimi 3.2.8）：与 CLI 同一 user_id、同一套周窗 + 5 小时窗。
+    /// ② Kimi Code CLI：从 CLI 二进制逆向出的官方链路（packages/oauth/src/managed-usage.ts）——
+    ///    `~/.kimi-code/credentials/kimi-code.json` 的 refresh_token 换临时 access_token
+    ///    （POST auth.kimi.com/api/oauth/token），拿到的新 token 只在内存用完即弃，绝不写盘。
+    ///    注意 refresh_token 会失效：2026-09-16 实测 8 月签发、未到期的 token 已被拒（invalid_grant）
+    /// 两条都走 GET api.kimi.com/coding/v1/usages → usage（周窗）+ limits[]（5 小时窗）。
     static let tokenEndpoint = "https://auth.kimi.com/api/oauth/token"
     static let usageEndpoint = "https://api.kimi.com/coding/v1/usages"
+    static let userInfoEndpoint = "https://api.kimi.com/coding/v1/me"
     static let clientID = "17e5f671-d194-4dfb-9706-5516cb48c098"   // CLI 官方 device-code flow client
 
+    /// Kimi 客户端数据目录：既是「已安装」判据（AgentKind.installMarkers），也是凭据所在
+    static var clientDataDir: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/kimi-desktop")
+    }
+
+    /// 一条路线的失败。isAuth = 凭据本身不被认（该去重登）；其余是断网 / 限流 / 结构问题，重登没用
+    struct Failure: Error, Equatable {
+        let message: String
+        let isAuth: Bool
+    }
+
     static func load() async -> ServiceQuota {
+        let clientKeys = clientAPIKeys()
+        let refreshToken = cliRefreshToken()
+        guard !clientKeys.isEmpty || refreshToken != nil else {
+            return ServiceQuota(error: "未登录 Kimi：登录 Kimi 客户端，或在终端运行 kimi login")
+        }
+        var failures: [Failure] = []
+        for key in clientKeys {
+            switch await fetchUsage(bearer: key, authMessage: "Kimi 客户端登录已失效，打开 Kimi 重新登录") {
+            case .success(var q):
+                if q.plan == nil { q.plan = await clientPlan(apiKey: key) }
+                return q
+            case .failure(let f):
+                failures.append(f)
+            }
+        }
+        if let refreshToken {
+            switch await cliAccessToken(refreshToken) {
+            case .success(let access):
+                switch await fetchUsage(bearer: access, authMessage: "Kimi 登录已过期，在终端重新 kimi login") {
+                case .success(let q): return q
+                case .failure(let f): failures.append(f)
+                }
+            case .failure(let f):
+                failures.append(f)
+            }
+        }
+        return ServiceQuota(error: combinedError(failures))
+    }
+
+    /// 两条路线都失败时报哪句（纯函数，可测）：有断网 / 限流 / 服务端故障就报它——那种情况重登没用；
+    /// 全是凭据失效才叫人重登，两条路线说法不同时把两个入口都说出来
+    static func combinedError(_ failures: [Failure]) -> String {
+        if let other = failures.first(where: { !$0.isAuth }) { return other.message }
+        let messages = failures.map(\.message).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+        if messages.count == 1 { return messages[0] }
+        return "Kimi 登录已失效：打开 Kimi 客户端重新登录，或在终端重新 kimi login"
+    }
+
+    /// 客户端的 API Key：`daimon-share/daimon/kimi-code-key.json` → `keys[].apiKey`（sk-kimi-…）
+    private static func clientAPIKeys() -> [String] {
+        let url = clientDataDir.appendingPathComponent("daimon-share/daimon/kimi-code-key.json")
+        guard let data = try? Data(contentsOf: url) else { return [] }
+        return clientAPIKeys(from: data)
+    }
+
+    /// 解析 key 文件（纯函数，可测）。实测结构 `{"v":2,"keys":[{"userId","apiKey","keyId"}]}`，
+    /// 按文件顺序逐把试，前一把被拒再换下一把
+    static func clientAPIKeys(from data: Data) -> [String] {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let keys = obj["keys"] as? [[String: Any]] else { return [] }
+        return keys.compactMap { $0["apiKey"] as? String }.filter { !$0.isEmpty }
+    }
+
+    private static func cliRefreshToken() -> String? {
         let cred = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".kimi-code/credentials/kimi-code.json")
         guard let data = try? Data(contentsOf: cred),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let refreshToken = obj["refresh_token"] as? String, !refreshToken.isEmpty else {
-            return ServiceQuota(error: "未登录 Kimi CLI，在终端运行 kimi login")
-        }
+              let token = obj["refresh_token"] as? String, !token.isEmpty else { return nil }
+        return token
+    }
+
+    /// CLI 路线：refresh_token 换临时 access_token
+    private static func cliAccessToken(_ refreshToken: String) async -> Result<String, Failure> {
         var comps = URLComponents()
         comps.queryItems = [
             .init(name: "client_id", value: clientID),
@@ -388,36 +467,63 @@ enum KimiQuotaLoader {
             .init(name: "refresh_token", value: refreshToken),
         ]
         guard let url = URL(string: tokenEndpoint), let body = comps.percentEncodedQuery else {
-            return ServiceQuota(error: "接口地址异常")
+            return .failure(Failure(message: "接口地址异常", isAuth: false))
         }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = 10
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         req.httpBody = Data(body.utf8)
-        guard let (tokData, tokResp) = try? await URLSession.shared.data(for: req),
-              let tokCode = (tokResp as? HTTPURLResponse)?.statusCode else {
-            return ServiceQuota(error: "无法连接 Kimi 认证服务")
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let code = (resp as? HTTPURLResponse)?.statusCode else {
+            return .failure(Failure(message: "无法连接 Kimi 认证服务", isAuth: false))
         }
-        guard tokCode == 200,
-              let tokObj = try? JSONSerialization.jsonObject(with: tokData) as? [String: Any],
-              let access = tokObj["access_token"] as? String, !access.isEmpty else {
-            return ServiceQuota(error: tokenError(code: tokCode, body: tokData))
+        guard code == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let access = obj["access_token"] as? String, !access.isEmpty else {
+            return .failure(Failure(message: tokenError(code: code, body: data),
+                                    isAuth: [400, 401, 403].contains(code)))
         }
-        guard let uurl = URL(string: usageEndpoint) else { return ServiceQuota(error: "接口地址异常") }
-        var ureq = URLRequest(url: uurl)
-        ureq.timeoutInterval = 10
-        ureq.setValue("Bearer \(access)", forHTTPHeaderField: "Authorization")
-        ureq.setValue("application/json", forHTTPHeaderField: "Accept")
-        guard let (udata, uresp) = try? await URLSession.shared.data(for: ureq),
-              let ucode = (uresp as? HTTPURLResponse)?.statusCode else {
-            return ServiceQuota(error: "无法连接 Kimi 用量服务")
+        return .success(access)
+    }
+
+    /// 查用量（两条路线共用）：bearer 是客户端的 API Key 或 CLI 换来的 access_token
+    private static func fetchUsage(bearer: String, authMessage: String) async -> Result<ServiceQuota, Failure> {
+        guard let url = URL(string: usageEndpoint) else {
+            return .failure(Failure(message: "接口地址异常", isAuth: false))
         }
-        guard ucode == 200,
-              let uobj = try? JSONSerialization.jsonObject(with: udata) as? [String: Any] else {
-            return ServiceQuota(error: "Kimi 接口返回异常（HTTP \(ucode)）")
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 10
+        req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              let code = (resp as? HTTPURLResponse)?.statusCode else {
+            return .failure(Failure(message: "无法连接 Kimi 用量服务", isAuth: false))
         }
-        return parse(uobj) ?? ServiceQuota(error: "Kimi 返回了无法识别的数据结构")
+        if code == 401 || code == 403 { return .failure(Failure(message: authMessage, isAuth: true)) }
+        if code == 429 { return .failure(Failure(message: "Kimi 接口限流，稍后自动重试", isAuth: false)) }
+        guard code == 200, let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return .failure(Failure(message: "Kimi 接口返回异常（HTTP \(code)）", isAuth: false))
+        }
+        guard let q = parse(obj) else {
+            return .failure(Failure(message: "Kimi 返回了无法识别的数据结构", isAuth: false))
+        }
+        return .success(q)
+    }
+
+    /// 客户端路线的档位名：API Key 查 usages 不带 user 段，档位走 /me 的 user_level_name——
+    /// 官方原名（实测 "Allegretto"），不用猜枚举。只取这一个字段；拿不到就不显示档位，不影响额度
+    private static func clientPlan(apiKey: String) async -> String? {
+        guard let url = URL(string: userInfoEndpoint) else { return nil }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 10
+        req.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let name = obj["user_level_name"] as? String, !name.isEmpty else { return nil }
+        return name
     }
 
     /// token 刷新失败的归因（纯函数，可测）：非 200 一律报「登录已过期」会骗人白跑一趟——
@@ -580,19 +686,43 @@ enum CodexQuotaLoader {
                 : .unreachable("HTTP \(code)")
         }
         guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
-              let rl = json["rate_limit"] as? [String: Any] else {
+              let q = parse(json) else {
             return .broken("Codex 返回了无法识别的数据结构")
         }
-        var q = ServiceQuota()
-        q.plan = json["plan_type"] as? String
-        q.account = json["email"] as? String
-        q.dataAt = Date()
-        if let p = rl["primary_window"] as? [String: Any] { q.primary = officialWindow(p) }
-        if let s = rl["secondary_window"] as? [String: Any] { q.secondary = officialWindow(s) }
-        guard q.primary != nil || q.secondary != nil else {
+        guard q.primary != nil else {
             return .broken("Codex 没返回任何额度窗口")
         }
         return .ok(q)
+    }
+
+    /// 响应解析（纯函数，可测）。接口给几个窗就显示几个，不按套餐名硬编码：
+    /// Plus 是 5 小时 + 周两个窗；Pro / Pro Lite 现只剩一个周窗（2026-09-16 实测 Pro 的 secondary_window 为 null）。
+    /// 窗口按时长排，短的进 primary、长的进 secondary——不信接口给的先后，
+    /// 否则哪天两窗对调，5 小时窗就会被当成周额度露在菜单栏上。
+    /// 没有 rate_limit 段返回 nil；有段但一个窗都没有时 primary 为 nil，由调用方报错
+    static func parse(_ json: [String: Any]) -> ServiceQuota? {
+        guard let rl = json["rate_limit"] as? [String: Any] else { return nil }
+        let windows = ["primary_window", "secondary_window"]
+            .compactMap { rl[$0] as? [String: Any] }
+            .map(officialWindow)
+            .sorted { $0.windowMinutes < $1.windowMinutes }
+        var q = ServiceQuota()
+        q.plan = (json["plan_type"] as? String).map(planName)
+        q.account = json["email"] as? String
+        q.dataAt = Date()
+        q.primary = windows.first
+        q.secondary = windows.count > 1 ? windows.last : nil
+        return q
+    }
+
+    /// plan_type → 官方套餐名；没见过的原样露出，不猜
+    static func planName(_ raw: String) -> String {
+        switch raw.lowercased() {
+        case "plus": return "Plus"
+        case "pro": return "Pro"
+        case "prolite": return "Pro Lite"
+        default: return raw
+        }
     }
 
     private static func officialWindow(_ d: [String: Any]) -> QuotaWindow {

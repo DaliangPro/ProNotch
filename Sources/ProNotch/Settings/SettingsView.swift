@@ -963,6 +963,7 @@ struct SettingsView: View {
 
     private func agentStatus(_ r: AgentProbeResult) -> String {
         guard r.installed else {
+            if r.kind == .kimi { return "未发现（Kimi Code CLI 与 Kimi 客户端都没装）" }
             return "未发现（~/\(r.kind.homeDir.lastPathComponent) 不存在）"
         }
         guard let d = r.lastActive else { return "已安装" }

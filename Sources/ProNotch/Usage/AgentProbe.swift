@@ -59,6 +59,15 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
         }
     }
 
+    /// 安装判据：任一路径存在即视为已装。多数家就是特征目录；Kimi 另有桌面客户端（Kimi.app，含 Kimi Work），
+    /// 只装客户端的人额度照样查得到（见 KimiQuotaLoader），不能因为没有 ~/.kimi-code 就判未安装
+    var installMarkers: [URL] {
+        switch self {
+        case .kimi: return [homeDir, KimiQuotaLoader.clientDataDir]
+        default: return [homeDir]
+        }
+    }
+
     /// 活跃度探测路径：会话/日志目录的 mtime 即「最近用过」的时间
     var activityPath: URL {
         switch self {
@@ -69,7 +78,7 @@ enum AgentKind: String, CaseIterable, Identifiable, Codable {
         }
     }
 
-    /// 是否有额度可查（四家全支持；Kimi 走 CLI 内置 managed-usage 同款接口，见 KimiQuotaLoader）
+    /// 是否有额度可查（四家全支持；Kimi 客户端或 CLI 任一登录即可，走 managed-usage 同款接口，见 KimiQuotaLoader）
     var supportsQuota: Bool { true }
 
     /// 是否支持会话监控台——四家全支持。
@@ -165,8 +174,12 @@ enum AgentProbe {
     static func detect() -> [AgentProbeResult] {
         let fm = FileManager.default
         return AgentKind.allCases.map { kind in
-            let installed = fm.fileExists(atPath: kind.homeDir.path)
-            let lastActive = installed ? (mtime(kind.activityPath) ?? mtime(kind.homeDir)) : nil
+            let present = kind.installMarkers.filter { fm.fileExists(atPath: $0.path) }
+            // 活跃时间取各判据里最新的：只用 Kimi 客户端时 ~/.kimi-code/sessions 停在老时间，不能拿它当「上次用」
+            let homeActive = present.contains(kind.homeDir) ? (mtime(kind.activityPath) ?? mtime(kind.homeDir)) : nil
+            let otherActive = present.filter { $0 != kind.homeDir }.compactMap(mtime)
+            let lastActive = ([homeActive].compactMap { $0 } + otherActive).max()
+            let installed = !present.isEmpty
             return AgentProbeResult(kind: kind, installed: installed, lastActive: lastActive)
         }
     }

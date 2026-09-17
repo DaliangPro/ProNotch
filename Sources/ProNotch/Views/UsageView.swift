@@ -77,7 +77,7 @@ private struct QuotaCard: View {
                 Text(title).font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
                     .lineLimit(1)
                 if let plan = quota?.plan, !plan.isEmpty {
-                    Text(planLabel(plan))
+                    Text(plan)
                         .font(.system(size: 9.5, weight: .semibold)).foregroundColor(.cyan)
                         .lineLimit(1).fixedSize()
                         .padding(.horizontal, 6).padding(.vertical, 2)
@@ -128,15 +128,6 @@ private struct QuotaCard: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(Color.white.opacity(0.06)))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5))
-    }
-
-    private func planLabel(_ raw: String) -> String {
-        switch raw.lowercased() {
-        case "prolite": return "Pro Lite"
-        case "pro": return "Pro"
-        case "plus": return "Plus"
-        default: return raw
-        }
     }
 
 }
