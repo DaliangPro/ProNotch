@@ -149,7 +149,9 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     private var phase: Phase = .selecting {
         didSet { if phase != oldValue { window?.invalidateCursorRects(for: self) } }
     }
-    private var tool: Tool = .none
+    private var tool: Tool = .none {
+        didSet { if tool != oldValue { window?.invalidateCursorRects(for: self) } }   // 文字工具的光标随工具切换
+    }
     private var selection: NSRect? {
         didSet { if selection != oldValue { window?.invalidateCursorRects(for: self) } }
     }
@@ -364,6 +366,10 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: .crosshair)
         guard phase == .editing, let sel = selection else { return }
+        if tool == .text {   // 文字工具：选区内 I 形光标＝可输入，选区外箭头＝这里放不了字（后加的矩形优先）
+            addCursorRect(bounds, cursor: .arrow)
+            addCursorRect(sel, cursor: .iBeam)
+        }
         let t: CGFloat = 7
         if sel.height > 2 * t {   // 左右边：去掉两端 t，让角优先
             addCursorRect(NSRect(x: sel.minX - t, y: sel.minY + t, width: 2 * t, height: sel.height - 2 * t),
@@ -652,9 +658,11 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
     /// 选中标注的高亮指示（白色虚线外框/外环）；按 ESC 删除
     private func drawSelection(_ ref: AnnotationRef) {
         NSColor.white.withAlphaComponent(0.95).setStroke()
+        /// 文字 / 备注的选中环：黑白双色虚线（同 dashedStroke），白底截图上也看得清；纯白虚线在浅色背景上等于没画
         func ring(_ rect: NSRect) {
             let p = NSBezierPath(roundedRect: rect.insetBy(dx: -4, dy: -4), xRadius: 8, yRadius: 8)
-            p.lineWidth = 1.5; p.setLineDash([4, 3], count: 2, phase: 0); p.stroke()
+            dashedStroke(p, width: 1.5)
+            NSColor.white.withAlphaComponent(0.95).setStroke()   // 还原给后面的分支用
         }
         switch ref {
         case .box(let i):    if boxes.indices.contains(i) { drawBoxSelectionChrome(boxes[i]) }
@@ -1158,6 +1166,12 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         // 已选中框选/箭头：命中手柄=缩放/拖端点，命中身体=整体移动（像系统选中对象，优先于画新）
         if phase == .editing, let g = hitSelectedGrab(at: pt) {
             commitEditing()
+            // 已选中的文字：双击才重新编辑；单击只是拖动（大梁老师 2026-09-09）
+            if case .move = g.mode, event.clickCount >= 2, case .text(let i)? = selected, texts.indices.contains(i) {
+                selected = nil
+                startTextEdit(i)
+                return
+            }
             // 双击旋转手柄 → 恢复默认角度（归零）
             if case .boxRotate = g.mode, event.clickCount >= 2,
                case .box(let i)? = selected, boxes.indices.contains(i) {
@@ -1203,8 +1217,15 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         if phase == .editing, tool == .text {
             commitEditing()
             if let i = texts.lastIndex(where: { $0.rect.contains(pt) }) {
-                startTextEdit(i)   // 选中态由 startTextEdit 接管（编辑中也能改字号/颜色）
-            } else if (selection ?? .zero).insetBy(dx: -40, dy: -40).contains(pt) {   // 选区外围也可放字（导出会带上）
+                if event.clickCount >= 2 {
+                    startTextEdit(i)   // 双击才重新编辑；选中态由 startTextEdit 接管（编辑中也能改字号/颜色）
+                } else {               // 单击＝选中并可拖动，哪怕刚才正在编辑别的文字（大梁老师 2026-09-09）
+                    let r = texts[i].rect
+                    selected = .text(i)
+                    selGrab = (.move(NSPoint(x: pt.x - r.minX, y: pt.y - r.minY)), false)
+                    refreshToolbars()
+                }
+            } else if let sel = selection, sel.contains(pt) {   // 只在选区内新建文字：选区外点击不响应（大梁老师 2026-09-09）
                 selected = nil
                 record()
                 let size = TextAnnoLayout.size("", fontSize: textFontSize)
@@ -1358,12 +1379,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
             needsDisplay = true
             return
         }
-        if let g = selGrab {   // 结束选中对象的拖拽调整；文字标注没拖＝单击 → 重新编辑
+        if selGrab != nil {   // 结束选中对象的拖拽调整；文字标注单击没拖＝保持选中，双击才编辑（见 mouseDown）
             selGrab = nil
-            if !g.moved, case .move = g.mode, case .text(let i)? = selected, texts.indices.contains(i) {
-                selected = nil
-                startTextEdit(i)
-            }
             needsDisplay = true
             return
         }
@@ -1469,6 +1486,15 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         // Cmd+Z 撤回任意标注操作（文字编辑时归 NSTextView 自己处理，不会走到这里）
         if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "z" {
             undo(); return
+        }
+        // T ＝ 文字工具快捷键（大梁老师 2026-09-09「按了 T 以后，鼠标点哪里，哪里就可以输入文字」）：
+        // 等价于点工具栏「文字」按钮，只切模式、不落字；已在文字模式再按不取消，免得连按两下反而退出。
+        // 正在输入时 T 进的是输入框（它是第一响应者），到不了这里，不会打断输入
+        if phase == .editing, editingField == nil,
+           event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
+           event.charactersIgnoringModifiers?.lowercased() == "t" {
+            if tool != .text { toggleTool(.text) }
+            return
         }
         switch event.keyCode {
         case 53:                                 // Esc：编辑中先结束编辑，几何调整中先退出，有选中标注先删除，否则取消截图
@@ -1800,6 +1826,11 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                  : (plain ? TextAnnoLayout.size(value, fontSize: fontSize)
                           : bubbleSize(value, maxWidth: bubbleMaxWidth))
         let tv = AnnotationTextView(frame: NSRect(origin: frame.origin, size: size))   // 左下角锚点
+        // 必须在赋 string 之前关掉自适应：NSTextView(frame:) 默认纵向可自适应，此时容器还是初始窄宽度，
+        // 已有文字被排成两行就会当场 sizeToFit 把框撑高一行；父视图 y 轴朝上，撑高＝文字往上跳，
+        // 落定又按跳过的位置存回去——这就是「双击重编辑文字位置会变」的根因（大梁老师 2026-09-09）
+        tv.isHorizontallyResizable = false
+        tv.isVerticallyResizable = false
         tv.font = font ?? (numeric ? numFont : textFont)   // 文字标注传自定字号，与落定渲染一致
         tv.textColor = plainColor ?? .white
         tv.insertionPointColor = plainColor ?? .white
@@ -1823,8 +1854,6 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         // 换行宽度：文字标注随字号缩放，与落定渲染同一个换行点，不会编辑时不换、画出来换
         let wrapWidth = numeric ? size.width : (plain ? TextAnnoLayout.maxWidth(for: fontSize) : bubbleMaxWidth)
         tv.textContainer?.containerSize = NSSize(width: wrapWidth - padX * 2, height: .greatestFiniteMagnitude)
-        tv.isHorizontallyResizable = false
-        tv.isVerticallyResizable = false
         // 已有文字：按实际排版尺寸收紧，底框贴住文字、不留多余空白（左下角锚点不动）。
         // 文字标注不走这条——它的尺寸由 TextAnnoLayout 统一量，二次收紧只会和落定渲染打架
         if !numeric, !plain, !value.isEmpty {
@@ -2033,7 +2062,8 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
                 let t = texts[i]
                 return AnyView(TextOptionsBar(
                     colorHex: t.colorHex, fontSize: t.fontSize,
-                    onColor: { [weak self] v in self?.updateSelectedText { $0.colorHex = v } },
+                    // 改选中文字的颜色时同步记为工具默认色：再点空白新建的文字沿用这次选的颜色，不再回到红色（大梁老师 2026-09-09）
+                    onColor: { [weak self] v in self?.textColorHex = v; self?.updateSelectedText { $0.colorHex = v } },
                     onSize: { [weak self] v in self?.updateSelectedText { $0.fontSize = v } }))
             case .shape(let i) where shapes.indices.contains(i):   // 吸附形状：颜色 + 粗细（复用画笔面板）
                 let sh = shapes[i]
