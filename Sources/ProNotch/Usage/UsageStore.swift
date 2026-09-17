@@ -8,6 +8,8 @@ struct QuotaWindow: Sendable {
     var resetsAt: Date?          // 窗口重置时间
     var windowMinutes: Int       // 窗口长度（300=5小时，10080=7天）
     var isEstimate: Bool         // true=本地估算（非官方数字）
+    /// 只管某个模型的窗口叫什么（如 Claude 的 Fable 周额度）；nil=管全部用量的窗口
+    var scopeName: String?
 
     /// 窗口时长显示名，按真实分钟数生成——服务商改窗口（如 Codex 取消 5 小时窗只留周额度）标签自动跟上
     var label: String {
@@ -15,6 +17,12 @@ struct QuotaWindow: Sendable {
         if windowMinutes >= 60 { return "\(windowMinutes / 60) 小时" }
         return "\(windowMinutes) 分钟"
     }
+
+    /// 界面上这一条叫什么：限定模型的窗口报模型名（"Fable"），其余报时长（"5 小时"）
+    var displayName: String { scopeName ?? label }
+
+    /// 面板里的小节标题。模型名与「额度」之间留空格（"Fable 额度"），中文时长不留（"7 天额度"）
+    var blockTitle: String { scopeName == nil ? "\(label)额度" : "\(displayName) 额度" }
 }
 
 /// 一个服务（Claude Code / Codex）的额度快照
@@ -26,6 +34,8 @@ struct ServiceQuota: Sendable {
     var dataAt: Date?            // 数据时间（源文件里最后一条记录的时间）
     var error: String?           // 拿不到数据时的原因
     var topTasks: [TaskUsage] = []   // 近 7 天最耗额度的前 5 个任务（占总额度%）
+    /// 只管某个模型的额度窗口（Claude 的 Fable 周额度即在此）。与总额度并列显示，不参与收起态与分账
+    var scopedWindows: [QuotaWindow] = []
 
     /// 最长的那个窗，即周额度：菜单栏收起态与面板概览都看它——
     /// 5 小时窗恢复快，周额度才是真正的用量上限（大梁老师定：收起态各家一律显示周额度）
@@ -156,6 +166,17 @@ final class UsageStore: ObservableObject {
         MemoryRelief.relieveSoon()
         cancelRefresh()
         start(enabled: enabled)
+    }
+
+    /// 离屏核查用（`-demoQuota`）：直接摆一份数据再渲染。额度是联网取的，
+    /// 快照那 0.6 秒等不到，不给这条口子就永远只能拍到转圈
+    func preview(_ snapshot: UsageSnapshot) {
+        cancelRefresh()
+        codex = snapshot.codex
+        claude = snapshot.claude
+        grok = snapshot.grok
+        kimi = snapshot.kimi
+        sessionTokens = snapshot.sessionTokens
     }
 
     /// 取消在途刷新：代际前进（迟到结果自动作废）、任务取消、`refreshing` 复位。
@@ -755,7 +776,9 @@ enum ClaudeQuotaLoader {
 
     /// 路线 A：解密 CCD 的 claude.ai sessionKey → 调 /api/organizations/{org}/usage，
     /// 返回 five_hour/seven_day 的 utilization（官方口径百分比）
-    private static func fetchWebUsage() async -> ServiceQuota? {
+    /// 路线 A 的原始返回（调试通道 `-dumpClaudeUsage` 也用它：接口加了新额度时，
+    /// 得有个不改代码就能看清字段的口子）
+    static func rawWebUsage() async -> Data? {
         guard let org = organizationUUID(),
               let cookies = CCDCookieReader.claudeAICookies(),
               let url = URL(string: "https://claude.ai/api/organizations/\(org)/usage") else { return nil }
@@ -769,20 +792,62 @@ enum ClaudeQuotaLoader {
         req.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/1.0 Chrome/120 Electron/28 Safari/537.36",
                      forHTTPHeaderField: "User-Agent")
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
-              (resp as? HTTPURLResponse)?.statusCode == 200,
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        func window(_ d: [String: Any]?, minutes: Int) -> QuotaWindow? {
-            guard let d else { return nil }
-            let pct = (d["utilization"] as? NSNumber)?.doubleValue
-            let resets = (d["resets_at"] as? String).flatMap { ISO8601Flex.parse($0) }
-            return QuotaWindow(usedPercent: pct, usedTokens: nil, resetsAt: resets, windowMinutes: minutes, isEstimate: false)
-        }
-        var q = ServiceQuota()
-        q.primary = window(obj["five_hour"] as? [String: Any], minutes: 300)
-        q.secondary = window(obj["seven_day"] as? [String: Any], minutes: 10080)
+              (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return data
+    }
+
+    private static func fetchWebUsage() async -> ServiceQuota? {
+        guard let data = await rawWebUsage(),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var q = parseUsage(obj) else { return nil }
         q.plan = planName()
         q.account = accountEmail()
+        return q
+    }
+
+    /// 用量接口的解析（纯函数，可测；路线 A / B 共用）。
+    ///
+    /// 优先读 `limits` 数组——2026-09 起官方把额度都挪了进去，按 `kind` 分：
+    /// `session`＝5 小时窗、`weekly_all`＝周额度、`weekly_scoped`＝只管某个模型的周额度
+    /// （`scope.model.display_name`，如 Fable）。老的 `seven_day_opus` 这类字段已经恒为 null，
+    /// 认它们等于看不见 Fable 那条。
+    /// 没有 `limits` 的老响应退回 `five_hour` / `seven_day` 两个字段，行为与从前一致
+    static func parseUsage(_ obj: [String: Any]) -> ServiceQuota? {
+        var q = ServiceQuota()
         q.dataAt = Date()
+        if let limits = obj["limits"] as? [[String: Any]], !limits.isEmpty {
+            for limit in limits {
+                guard let kind = limit["kind"] as? String,
+                      let pct = (limit["percent"] as? NSNumber)?.doubleValue else { continue }
+                let resets = (limit["resets_at"] as? String).flatMap { ISO8601Flex.parse($0) }
+                switch kind {
+                case "session":
+                    q.primary = QuotaWindow(usedPercent: pct, usedTokens: nil, resetsAt: resets,
+                                            windowMinutes: 300, isEstimate: false, scopeName: nil)
+                case "weekly_all":
+                    q.secondary = QuotaWindow(usedPercent: pct, usedTokens: nil, resetsAt: resets,
+                                              windowMinutes: 10080, isEstimate: false, scopeName: nil)
+                case "weekly_scoped":
+                    // 认不出是哪个模型就不显示：一条没名字的百分比没法解释
+                    guard let scope = limit["scope"] as? [String: Any],
+                          let model = scope["model"] as? [String: Any],
+                          let name = model["display_name"] as? String, !name.isEmpty else { continue }
+                    q.scopedWindows.append(
+                        QuotaWindow(usedPercent: pct, usedTokens: nil, resetsAt: resets,
+                                    windowMinutes: 10080, isEstimate: false, scopeName: name))
+                default:
+                    continue   // 认不出的新 kind 不猜，等实地看过再接
+                }
+            }
+        }
+        func legacy(_ d: [String: Any]?, minutes: Int) -> QuotaWindow? {
+            guard let d, let pct = (d["utilization"] as? NSNumber)?.doubleValue else { return nil }
+            let resets = (d["resets_at"] as? String).flatMap { ISO8601Flex.parse($0) }
+            return QuotaWindow(usedPercent: pct, usedTokens: nil, resetsAt: resets,
+                               windowMinutes: minutes, isEstimate: false, scopeName: nil)
+        }
+        if q.primary == nil { q.primary = legacy(obj["five_hour"] as? [String: Any], minutes: 300) }
+        if q.secondary == nil { q.secondary = legacy(obj["seven_day"] as? [String: Any], minutes: 10080) }
         guard q.primary != nil || q.secondary != nil else { return nil }
         return q
     }
@@ -833,18 +898,7 @@ enum ClaudeQuotaLoader {
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
               (resp as? HTTPURLResponse)?.statusCode == 200,
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
-        func window(_ d: [String: Any]?, minutes: Int) -> QuotaWindow? {
-            guard let d else { return nil }
-            let pct = (d["utilization"] as? NSNumber)?.doubleValue
-            let resets = (d["resets_at"] as? String).flatMap { ISO8601Flex.parse($0) }
-            return QuotaWindow(usedPercent: pct, usedTokens: nil, resetsAt: resets, windowMinutes: minutes, isEstimate: false)
-        }
-        var q = ServiceQuota()
-        q.primary = window(obj["five_hour"] as? [String: Any], minutes: 300)
-        q.secondary = window(obj["seven_day"] as? [String: Any], minutes: 10080)
-        q.dataAt = Date()
-        guard q.primary != nil || q.secondary != nil else { return nil }
-        return q
+        return parseUsage(obj)
     }
 
     private static func planName() -> String? {

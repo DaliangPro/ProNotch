@@ -288,6 +288,10 @@ extension AppDelegate {
     /// 叠红色基准线（左 x=43=20+pageHInset、右 x=917 对称），在图上直接检查
     /// 「各页左缘是否压线、右侧留白是否对称」。渲染完自动退出进程
     @objc func debugSnapshotPanel() {
+        // -demoQuota：摆一份额度数据（额度页与收起态都要用，所以排在两条渲染之前）。
+        // 额度是联网取的，快照那 0.6 秒等不到，不给这条口子就永远只能拍到转圈
+        if CommandLine.arguments.contains("-demoQuota") { env.usage.preview(Self.demoQuota()) }
+
         // 假刘海几何取 14 寸 MBP 典型值；挂进离屏 window 让 onAppear/pageEntrance 生效
         let vm = NotchViewModel(notchRect: CGRect(x: 380, y: 0, width: 200, height: 38))
         vm.debugToggle()   // 置 isExpanded=true：各页 pageEntrance 才会翻 played、内容可见
@@ -403,6 +407,62 @@ extension AppDelegate {
             }
         }
         renderNext()
+    }
+
+    /// 菜单栏额度面板（`-snapshotUsagePanel [-usageTab <序号>]`，默认第 1 页即 Claude）：
+    /// 用演示数据渲染，核对额度窗口的排布。
+    /// 这个面板平时只能点出来看，而点出来就没法截图核对
+    func snapshotUsagePanel(store: UsageStore, settings: SettingsStore) {
+        store.preview(Self.demoQuota())
+        let args = CommandLine.arguments
+        let tab = args.firstIndex(of: "-usageTab")
+            .flatMap { args.indices.contains($0 + 1) ? Int(args[$0 + 1]) : nil } ?? 1
+        let root = UsageMenuView(store: store, settings: settings, initialTab: tab)
+        let hosting = NSHostingView(rootView: root)
+        hosting.appearance = NSAppearance(named: .darkAqua)
+        hosting.frame = NSRect(origin: .zero, size: hosting.fittingSize)
+        let win = NSWindow(contentRect: hosting.frame, styleMask: .borderless,
+                           backing: .buffered, defer: false)
+        win.isReleasedWhenClosed = false
+        win.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            if let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
+                hosting.cacheDisplay(in: hosting.bounds, to: rep)
+                if let data = rep.representation(using: .png, properties: [:]) {
+                    try? data.write(to: URL(fileURLWithPath: "/tmp/pronotch-usage-panel.png"))
+                    AppLog.debugTools.debug("额度面板快照已保存")
+                }
+            }
+            NSApp.terminate(nil)
+        }
+    }
+
+    /// `-demoQuota` 的演示数据：形状照 2026-09-17 真实响应，含 Claude 的 Fable 这类限定模型额度
+    private nonisolated static func demoQuota() -> UsageSnapshot {
+        func w(_ pct: Double, _ minutes: Int, _ hours: Double, scope: String? = nil) -> QuotaWindow {
+            QuotaWindow(usedPercent: pct, usedTokens: nil,
+                        resetsAt: Date().addingTimeInterval(hours * 3600),
+                        windowMinutes: minutes, isEstimate: false, scopeName: scope)
+        }
+        func tasks(_ names: [(String, Double)]) -> [TaskUsage] {
+            names.enumerated().map { i, t in
+                TaskUsage(id: "demo-\(i)", name: t.0, tokens: 0, percentOfTotal: t.1)
+            }
+        }
+        var claude = ServiceQuota(plan: "Max 20x", primary: w(4, 300, 4),
+                                  secondary: w(29, 10080, 40), dataAt: Date())
+        claude.scopedWindows = [w(37, 10080, 40, scope: "Fable")]
+        claude.topTasks = tasks([("ProNotch 额度页", 9), ("刘海弹窗", 7), ("钩子迁移", 5),
+                                 ("截图文字工具", 4), ("翻译多套配置", 3)])
+        var codex = ServiceQuota(plan: "Pro", primary: w(65, 10080, 50), dataAt: Date())
+        codex.topTasks = tasks([("Codex 对话", 30), ("代码检查", 12), ("文档整理", 8)])
+        var grok = ServiceQuota(plan: "SuperGrok", primary: w(18, 10080, 100), dataAt: Date())
+        grok.topTasks = tasks([("Grok 会话", 10)])
+        var kimi = ServiceQuota(plan: "Allegretto", primary: w(0, 300, 3),
+                                secondary: w(39, 10080, 20), dataAt: Date())
+        kimi.topTasks = tasks([("Kimi 会话", 20), ("资料整理", 9)])
+        return UsageSnapshot(codex: codex, claude: claude, grok: grok, kimi: kimi)
     }
 
     /// `-notchHUD` 的档位表：档位名 → 要摆上去的那一帧

@@ -118,3 +118,68 @@ final class KimiQuotaSourceTests: XCTestCase {
         XCTAssertEqual(AgentKind.codex.installMarkers, [AgentKind.codex.homeDir])
     }
 }
+
+/// Claude 用量接口解析。fixture 取自 2026-09-17 真实响应（账号信息已去掉）：
+/// 官方把额度挪进了 `limits` 数组，Fable 这类限定模型的额度只在那里有，
+/// 老的 `seven_day_opus` / `seven_day_sonnet` 字段全成了 null
+final class ClaudeUsageParseTests: XCTestCase {
+    private let live: [String: Any] = [
+        "five_hour": ["utilization": 4.0, "resets_at": "2026-09-18T01:50:00.594618+00:00"],
+        "seven_day": ["utilization": 29.0, "resets_at": "2026-09-19T12:00:00.594645+00:00"],
+        "seven_day_opus": NSNull(), "seven_day_sonnet": NSNull(),
+        "limits": [
+            ["kind": "session", "group": "session", "percent": 4,
+             "resets_at": "2026-09-18T01:50:00.594618+00:00", "scope": NSNull()],
+            ["kind": "weekly_all", "group": "weekly", "percent": 29,
+             "resets_at": "2026-09-19T12:00:00.594645+00:00", "scope": NSNull()],
+            ["kind": "weekly_scoped", "group": "weekly", "percent": 37,
+             "resets_at": "2026-09-19T11:59:59.594970+00:00",
+             "scope": ["model": ["id": NSNull(), "display_name": "Fable"], "surface": NSNull()]],
+        ],
+    ]
+
+    func testFable额度单独列出() {
+        let q = ClaudeQuotaLoader.parseUsage(live)
+        XCTAssertEqual(q?.primary?.usedPercent, 4)
+        XCTAssertEqual(q?.primary?.displayName, "5 小时")
+        XCTAssertEqual(q?.secondary?.usedPercent, 29)
+        XCTAssertEqual(q?.scopedWindows.count, 1, "Fable 那条必须单独列出来，不能并进周额度")
+        XCTAssertEqual(q?.scopedWindows.first?.usedPercent, 37)
+        XCTAssertEqual(q?.scopedWindows.first?.displayName, "Fable", "行首要写模型名")
+        XCTAssertEqual(q?.scopedWindows.first?.windowMinutes, 10080)
+        XCTAssertNotNil(q?.scopedWindows.first?.resetsAt)
+    }
+
+    /// 限定模型的额度不参与收起态与分账：菜单栏、概览看的仍是周额度
+    func testFable不顶替周额度() {
+        XCTAssertEqual(ClaudeQuotaLoader.parseUsage(live)?.longestWindow?.usedPercent, 29)
+    }
+
+    /// 没有 limits 的老响应照旧认两个字段
+    func test老响应仍按five_hour与seven_day解析() {
+        let q = ClaudeQuotaLoader.parseUsage([
+            "five_hour": ["utilization": 12.0],
+            "seven_day": ["utilization": 34.0, "resets_at": "2026-09-19T12:00:00Z"],
+        ])
+        XCTAssertEqual(q?.primary?.usedPercent, 12)
+        XCTAssertEqual(q?.secondary?.usedPercent, 34)
+        XCTAssertTrue(q?.scopedWindows.isEmpty ?? false)
+    }
+
+    func test认不出模型名的限定额度不显示() {
+        let q = ClaudeQuotaLoader.parseUsage([
+            "limits": [
+                ["kind": "weekly_all", "percent": 10],
+                ["kind": "weekly_scoped", "percent": 50, "scope": NSNull()],
+                ["kind": "monthly_whatever", "percent": 70],
+            ],
+        ])
+        XCTAssertEqual(q?.secondary?.usedPercent, 10)
+        XCTAssertTrue(q?.scopedWindows.isEmpty ?? false, "一条没名字的百分比没法解释，不摆上去")
+    }
+
+    func test一个窗都没有时返回nil() {
+        XCTAssertNil(ClaudeQuotaLoader.parseUsage(["limits": []]))
+        XCTAssertNil(ClaudeQuotaLoader.parseUsage([:]))
+    }
+}

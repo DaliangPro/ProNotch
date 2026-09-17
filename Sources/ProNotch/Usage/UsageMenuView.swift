@@ -9,7 +9,19 @@ struct UsageMenuView: View {
     @ObservedObject var settings: SettingsStore
     var onRefresh: () -> Void = {}
     var onSettings: () -> Void = {}
-    @State private var tab = 0   // 0=概览，1…n = 各勾选服务
+    @State private var tab: Int   // 0=概览，1…n = 各勾选服务
+
+    /// `initialTab` 只给离屏核查用（`-snapshotUsagePanel`）：面板平时开在概览页，
+    /// 想拍某一家的额度排布就得能先翻过去
+    init(store: UsageStore, settings: SettingsStore,
+         onRefresh: @escaping () -> Void = {}, onSettings: @escaping () -> Void = {},
+         initialTab: Int = 0) {
+        self.store = store
+        self.settings = settings
+        self.onRefresh = onRefresh
+        self.onSettings = onSettings
+        _tab = State(initialValue: initialTab)
+    }
 
     private struct Svc { let kind: AgentKind; let name: String; let short: String; let polys: [[CGPoint]]; let tint: Color; let quota: ServiceQuota? }
     /// 只列勾选的家（设置 → Agent 每家总开关）——注意面板始终显示全部接入的家，
@@ -114,8 +126,9 @@ struct UsageMenuView: View {
             if let err = s.quota?.error {
                 Text(err).font(.system(size: 12)).foregroundColor(.secondary)
             } else {
-                // 该服务的所有额度窗口都列出（Claude/Codex：5 小时 + 7 天；Grok：仅周）
+                // 该服务的所有额度窗口都列出（Claude：5 小时 + 7 天 + Fable 这类限定模型的；Grok：仅周）
                 let windows = [s.quota?.primary, s.quota?.secondary].compactMap { $0 }
+                    + (s.quota?.scopedWindows ?? [])
                 if windows.isEmpty {
                     Text("读取中…").font(.system(size: 12)).foregroundColor(.secondary)
                 } else {
@@ -148,7 +161,7 @@ struct UsageMenuView: View {
     /// 单个额度窗口小节：标题（如「7 天额度」）+ 柱状条 + 已用% + 重置倒计时
     @ViewBuilder private func windowBlock(_ w: QuotaWindow) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("\(w.label)额度").font(.system(size: 14, weight: .medium))
+            Text(w.blockTitle).font(.system(size: 14, weight: .medium))
             if let used = w.usedPercent {
                 bar(used)
                 HStack {

@@ -54,6 +54,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
             return
         }
+        // 额度面板核查（-snapshotUsagePanel）：菜单栏点开的那张卡，用演示数据渲染
+        if CommandLine.arguments.contains("-snapshotUsagePanel") {
+            snapshotUsagePanel(store: UsageStore(), settings: SettingsStore())
+            return
+        }
+        // 排障通道：把 Claude 用量接口的原始返回写到 /tmp（接口加新额度时看字段用）。
+        // 不走 stdout：那会被系统日志明文收走（见 LogPrivacyTests 的 print 守卫）
+        if CommandLine.arguments.contains("-dumpClaudeUsage") {
+            Task {
+                var out = "（没取到：未登录 Claude 桌面版或 cookie 读不出）"
+                if let data = await ClaudeQuotaLoader.rawWebUsage() {
+                    out = String(decoding: data, as: UTF8.self)
+                    // 顺带记一行解析结果：接口改字段时，一眼看出是没取到还是没解出
+                    if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let q = ClaudeQuotaLoader.parseUsage(obj) {
+                        let windows = ([q.primary, q.secondary].compactMap { $0 } + q.scopedWindows)
+                            .map { "\($0.displayName)=\($0.usedPercent.map { String(format: "%.0f%%", $0) } ?? "-")" }
+                        out += "\n\n解析结果：" + windows.joined(separator: " ")
+                    }
+                }
+                try? out.write(toFile: "/tmp/pronotch-claude-usage.txt", atomically: true, encoding: .utf8)
+                AppLog.debugTools.debug("Claude 用量原文已写出")
+                NSApp.terminate(nil)
+            }
+            return
+        }
         // 对齐核查：离屏渲染设置窗口 PNG 后退出（-snapshotSettings）。
         // 不放 #if DEBUG——须用 /Applications 正式签名实例跑：钥匙串 ACL 已授权，
         // ChatStore 的后台 Key 回填不会弹授权框（debug 裸二进制会弹）。

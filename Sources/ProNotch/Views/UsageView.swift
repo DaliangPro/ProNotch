@@ -93,11 +93,16 @@ private struct QuotaCard: View {
                     Spacer()
                 } else {
                     if let p = q.primary {
-                        WindowRow(label: p.label, window: p, prominent: true,
+                        WindowRow(label: p.displayName, window: p, prominent: true,
                                   entrancePlayed: entrancePlayed)
                     }
                     if let s = q.secondary {
-                        WindowRow(label: s.label, window: s, prominent: false,
+                        WindowRow(label: s.displayName, window: s, prominent: false,
+                                  entrancePlayed: entrancePlayed)
+                    }
+                    // 只管某个模型的额度（Claude 的 Fable 周额度）：与总额度并排，行首写模型名
+                    ForEach(Array(q.scopedWindows.enumerated()), id: \.offset) { _, w in
+                        WindowRow(label: w.displayName, window: w, prominent: false,
                                   entrancePlayed: entrancePlayed)
                     }
                     Spacer(minLength: 12)   // 把 Top 5 压到卡片底部（三卡等高，底部自然对齐）
