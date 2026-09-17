@@ -647,11 +647,48 @@ struct SettingsView: View {
                 if settings.translateUseChatAPI {
                     SettingsCard { toggleRow("深度思考", isOn: $settings.translateThinking) }
                 } else {
+                    Text("配置（可保存多套，点胶囊切换）")
+                        .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
+                        .padding(.leading, 2)
+                    translateEndpointBar
+                    SettingsCard {
+                        fieldRow("名称") {
+                            themedField("给这套起个名，如 DeepSeek / 本地模型",
+                                        text: Binding(
+                                            get: { settings.translateEndpoints.first { $0.id == settings.translateCurrentEndpointID }?.name ?? "" },
+                                            set: { v in
+                                                guard let id = settings.translateCurrentEndpointID else { return }
+                                                settings.renameTranslateEndpoint(id, to: v)
+                                            }))
+                        }
+                    }
                     APIEndpointEditor(baseURL: $settings.translateBaseURL, apiKey: $translateKey,
                                       model: $settings.translateModel,
                                       urlPlaceholder: "https://api.xxx.com", modelPlaceholder: "gpt-4o-mini",
                                       thinking: $settings.translateThinking)
                         .onChange(of: translateKey) { _, v in settings.setTranslateAPIKey(v) }
+                        // 切套时把新那套的 Key 读上来：钥匙串仍是惰性读，只在真切换时碰一次
+                        .onChange(of: settings.translateCurrentEndpointID) { _, _ in
+                            translateKey = settings.translateAPIKey()
+                        }
+                    if settings.translateEndpoints.count > 1 {
+                        HStack {
+                            Button {
+                                guard let id = settings.translateCurrentEndpointID else { return }
+                                settings.deleteTranslateEndpoint(id)
+                                translateKey = settings.translateAPIKey()
+                            } label: {
+                                Label("删除这套配置", systemImage: "trash")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(Color(red: 1.0, green: 0.42, blue: 0.42))
+                                    .padding(.horizontal, 12).padding(.vertical, 5)
+                                    .background(Capsule().fill(Color.red.opacity(0.18)))
+                            }
+                            .buttonStyle(.plain)
+                            Spacer()
+                        }
+                        .padding(.leading, 2)
+                    }
                 }
                 Text("深度思考：DeepSeek v4 这类混合模型默认开着，翻译短句用不上它，关掉更快也更省。模型若不支持关闭，会自动按开启重发并提示一句，不影响翻译。")
                     .font(.system(size: 11)).foregroundColor(.white.opacity(0.45))
@@ -664,6 +701,38 @@ struct SettingsView: View {
             }
         }
         .onAppear { translateKey = settings.translateAPIKey() }
+    }
+
+    /// 翻译接口的切换条：各套一枚胶囊 + 末尾「＋」新增（点胶囊载入该套地址/Key/模型）。
+    /// 与闪问那条同样式同交互，两边各存各的配置
+    private var translateEndpointBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(settings.translateEndpoints) { p in
+                    let selected = p.id == settings.translateCurrentEndpointID
+                    Button { settings.activateTranslateEndpoint(p.id) } label: {
+                        Text(p.name.isEmpty ? "未命名" : p.name)
+                            .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                            .foregroundColor(selected ? .white : .white.opacity(0.6))
+                            .lineLimit(1)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(Color.white.opacity(selected ? 0.16 : 0.06)))
+                    }
+                    .buttonStyle(.plain)
+                }
+                Button { settings.addTranslateEndpoint() } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.7))
+                        .frame(width: 30, height: 30)
+                        .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(Color.white.opacity(0.06)))
+                }
+                .buttonStyle(.plain).help("新增一套翻译接口配置")
+            }
+            .padding(.vertical, 1)
+        }
     }
 
     /// 翻译提示词编辑器：可改、可一键恢复默认；{lang} 翻译时替换成目标语言
