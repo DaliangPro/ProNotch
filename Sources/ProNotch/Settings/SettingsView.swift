@@ -46,9 +46,10 @@ struct SettingsView: View {
         switch selected {
         case .general:    GeneralPage()
         case .notch:      NotchPage()
+        case .models:     ModelsPage()
+        case .chat:       ChatPage()
         case .screenshot: ScreenshotPage()
         case .clipboard:  ClipboardPage()
-        case .chat:       ChatPage()
         case .agent:      AgentPage()
         }
     }
@@ -58,8 +59,7 @@ struct SettingsView: View {
             ForEach(SettingsSection.allCases) { sec in
                 let on = selected == sec
                 Button { selected = sec } label: {
-                    HStack(spacing: 9) {
-                        Image(systemName: sec.icon).font(.system(size: 13)).frame(width: 16)
+                    HStack {
                         Text(sec.rawValue).font(.system(size: 13)).lineLimit(1)
                         Spacer()
                     }

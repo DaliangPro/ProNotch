@@ -465,6 +465,57 @@ final class ChatStore: ObservableObject {
         }
     }
 
+    /// 某个账号可选的模型：手动加的在前 + 服务端拉的，去重；都没有就它当前那个（AI 模型配置页分组下拉用）
+    nonisolated static func models(of p: APIProvider) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for m in p.customModels + p.fetchedModels where seen.insert(m).inserted { out.append(m) }
+        if out.isEmpty, !p.model.isEmpty { out.append(p.model) }
+        return out
+    }
+
+    /// 新建一个空账号但**不切当前**（AI 模型配置页「新增」磁贴用）：账号是池子，切不切由「用哪个模型」决定。
+    /// 返回新账号 id，弹层取消时若还是空壳可删掉
+    func createProvider() -> UUID {
+        let p = APIProvider(name: "", baseURL: "", model: "",
+                            keychainAccount: "chatAPIKey-\(UUID().uuidString)")
+        providers.append(p)
+        persistProviders()
+        return p.id
+    }
+
+    /// 账号编辑弹层「完成」：改任意一套，不必是当前套。改的是当前套则运行时字段跟着更新并重测连通
+    func updateProvider(_ id: UUID, name: String, baseURL: String, apiKey: String,
+                        fetchedModels: [String], customModels: [String]) {
+        guard let i = providers.firstIndex(where: { $0.id == id }) else { return }
+        let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        let url = baseURL.trimmingCharacters(in: .whitespaces)
+        let key = apiKey.trimmingCharacters(in: .whitespaces)
+        providers[i].name = trimmedName.isEmpty ? Self.inferName(from: url) : trimmedName
+        providers[i].baseURL = url
+        providers[i].fetchedModels = fetchedModels
+        providers[i].customModels = customModels
+        // 这套的当前模型若已不在列表里（或还没有），退到列表第一个
+        let all = Self.models(of: providers[i])
+        if !all.contains(providers[i].model), let first = all.first { providers[i].model = first }
+        persistProviders()
+        env.saveKey(key, account: providers[i].keychainAccount)
+        guard id == currentProviderID else { return }
+        providerRevision += 1
+        applyCurrentProviderToFields()
+        self.apiKey = key
+        draftAPIKey = key
+        env.defaults.set(url, forKey: PrefKey.chatBaseURL)
+        env.defaults.set(model, forKey: PrefKey.chatModel)
+        checkConnectivity(force: true)
+    }
+
+    /// 闪问选模型（AI 模型配置页「用哪个模型」）：切到那个账号并定模型
+    func useModel(providerID: UUID, model: String) {
+        if providerID != currentProviderID { activateProvider(providerID) }
+        selectModel(model)
+    }
+
     /// 新增一套空配置并切过去；当前已是空壳则复用，不堆空配置
     func addProvider() {
         if let cur = providers.first(where: { $0.id == currentProviderID }),

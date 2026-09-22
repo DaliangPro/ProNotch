@@ -23,7 +23,7 @@ struct AgentPage: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PageTitle(title: "Agent")
+            PageTitle(title: "Agent 提醒")
 
             SettingsSectionHeader(text: "本地 Agent") {
                 TextButton(title: "重新扫描") { rescan() }

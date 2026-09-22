@@ -61,6 +61,13 @@ struct ScreenshotPage: View {
                         .background(LanguagePackDownloader(request: $packRequest))
                     }
                 } else {
+                    // 用哪个模型在「AI 模型配置」页选，这里只看一眼、一键过去
+                    SettingsRow(title: "模型") {
+                        HStack(spacing: 12) {
+                            Text(modelSummary).font(.system(size: 12)).foregroundColor(SettingsTheme.textMuted).lineLimit(1)
+                            TextButton(title: "更改") { settings.pendingSection = SettingsSection.models.rawValue }
+                        }
+                    }
                     CardDivider()
                     SettingsRow(title: "深度思考", subtitle: "翻译短句用不上，关掉更快更省") {
                         ThemedSwitch(isOn: $settings.translateThinking)
@@ -77,16 +84,25 @@ struct ScreenshotPage: View {
                     }
                 }
             }
-
-            // 与闪问页同一个接口池、同一个列表组件（大梁老师 2026-09-22 要求两页统一）
-            if settings.translateEngine != "system" {
-                ProviderListSection(mode: .translate)
-            }
         }
         .sheet(isPresented: $promptSheet) { TranslatePromptSheet() }
         .onAppear { screenGranted = PermissionStatus.granted(.screenRecording) }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             screenGranted = PermissionStatus.granted(.screenRecording)
         }
+    }
+
+    private func providerName(_ id: UUID?) -> String {
+        let name = chatStore.providers.first { $0.id == id }?.name ?? ""
+        return name.isEmpty ? "未命名" : name
+    }
+
+    private var modelSummary: String {
+        guard !settings.translateUseChatAPI,
+              let p = chatStore.providers.first(where: { $0.id == settings.translateProviderID }) else {
+            return chatStore.model.isEmpty ? "跟随闪问" : "跟随闪问 · \(providerName(chatStore.currentProviderID)) \(chatStore.model)"
+        }
+        let model = settings.translateModel.isEmpty ? p.model : settings.translateModel
+        return model.isEmpty ? providerName(p.id) : "\(providerName(p.id)) · \(model)"
     }
 }

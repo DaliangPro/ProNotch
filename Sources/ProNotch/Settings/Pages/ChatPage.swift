@@ -20,18 +20,13 @@ struct ChatPage: View {
                 }
             }
 
-            ProviderListSection(mode: .chat)
-
             SectionLabel(text: "对话")
             SettingsCard {
+                // 用哪个模型在「AI 模型配置」页选（账号也在那里管），这里只看一眼、一键过去
                 SettingsRow(title: "模型") {
-                    let models = chatStore.switcherModels
-                    if models.isEmpty {
-                        Text("先在接口里获取模型").font(.system(size: 12)).foregroundColor(SettingsTheme.textMuted)
-                    } else {
-                        PopupMenu(label: chatStore.draftModel.isEmpty ? "未选" : chatStore.draftModel) {
-                            ForEach(models, id: \.self) { m in Button(m) { chatStore.selectModel(m) } }
-                        }
+                    HStack(spacing: 12) {
+                        Text(modelSummary).font(.system(size: 12)).foregroundColor(SettingsTheme.textMuted).lineLimit(1)
+                        TextButton(title: "更改") { settings.pendingSection = SettingsSection.models.rawValue }
                     }
                 }
                 CardDivider()
@@ -61,6 +56,12 @@ struct ChatPage: View {
                 }
             }
         }
+    }
+
+    private var modelSummary: String {
+        guard !chatStore.model.isEmpty else { return "未选" }
+        let name = chatStore.providers.first { $0.id == chatStore.currentProviderID }?.name ?? ""
+        return "\(name.isEmpty ? "未命名" : name) · \(chatStore.model)"
     }
 
     /// 分段控件用短名；displayName 带的「（免费）（中文强）」说明放不下一行

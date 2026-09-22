@@ -223,10 +223,12 @@ final class SettingsStore: ObservableObject {
     /// 2026-09-22 起闪问与翻译共用同一个接口池（大梁老师定：一边配了另一边直接选），
     /// 翻译不再有自己的多套存档，老存档由 ChatStore 首启并入池子
     @Published var translateUseChatAPI: Bool { didSet { UserDefaults.standard.set(translateUseChatAPI, forKey: PrefKey.translateUseChatAPI) } }
-    /// 翻译单独指定的接口（闪问接口池里的一套）。nil 或找不到都退回跟闪问
+    /// 翻译单独指定的账号（AI 模型配置页那批账号里的一个）。nil 或找不到都退回跟闪问
     @Published var translateProviderID: UUID? {
         didSet { UserDefaults.standard.set(translateProviderID?.uuidString ?? "", forKey: PrefKey.translateProviderID) }
     }
+    /// 翻译用的模型名（每个功能各选各的模型，不借账号上那个）。空 = 用该账号当前模型
+    @Published var translateModel: String { didSet { UserDefaults.standard.set(translateModel, forKey: PrefKey.translateModel) } }
     /// 并行加速：长文按块并发翻译（默认开）；接口对并发限流严格时可关掉走单请求
     @Published var translateParallel: Bool { didSet { UserDefaults.standard.set(translateParallel, forKey: PrefKey.translateParallel) } }
     /// 翻译引擎：system=系统翻译（macOS 15+，本机离线毫秒级）；ai=自填 AI 接口。系统引擎失败自动降级 AI
@@ -250,8 +252,9 @@ final class SettingsStore: ObservableObject {
         let snapshot = translateUseChatAPI
             ? ActiveProviderSnapshot.load(from: .production)
             : ActiveProviderSnapshot.load(from: .production, providerID: translateProviderID)
-        return (snapshot.baseURL, snapshot.apiKey, snapshot.model,
-                snapshot.readiness == .keyPending)
+        let model = (translateUseChatAPI || translateModel.isEmpty) ? snapshot.model : translateModel
+        return (snapshot.baseURL, snapshot.apiKey, model,
+                snapshot.readiness == .keyPending || (model.isEmpty ? false : snapshot.apiKey.isEmpty && !snapshot.baseURL.isEmpty))
     }
 
     static let translateLangs = ["中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский"]
@@ -446,6 +449,7 @@ final class SettingsStore: ObservableObject {
         translateTargetLang = UserDefaults.standard.string(forKey: PrefKey.translateTargetLang) ?? PrefDefault.translateTargetLang
         translateUseChatAPI = UserDefaults.standard.bool(forKey: PrefKey.translateUseChatAPI)
         translateProviderID = UserDefaults.standard.string(forKey: PrefKey.translateProviderID).flatMap(UUID.init(uuidString:))
+        translateModel = UserDefaults.standard.string(forKey: PrefKey.translateModel) ?? ""
         translateParallel = UserDefaults.standard.object(forKey: PrefKey.translateParallel) as? Bool ?? true
         translateEngine = UserDefaults.standard.string(forKey: PrefKey.translateEngine)
             ?? (SystemTranslator.isSupported ? "system" : "ai")

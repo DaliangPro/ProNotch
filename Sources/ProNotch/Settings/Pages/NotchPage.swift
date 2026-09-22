@@ -12,7 +12,7 @@ struct NotchPage: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            PageTitle(title: "刘海")
+            PageTitle(title: "刘海设置")
 
             SettingsCard {
                 NotchPreview().padding(.horizontal, 14).padding(.top, 16).padding(.bottom, 14)
