@@ -392,10 +392,7 @@ final class SettingsStore: ObservableObject {
             let removed = oldValue.subtracting(enabledAgents).filter(\.supportsGlow)
             let added = enabledAgents.subtracting(oldValue).filter(\.supportsGlow)
             guard !removed.isEmpty || !added.isEmpty else { return }
-            for kind in removed { GlowHookInstaller.setInstalled(kind, false) }
-            if glowEnabled {
-                for kind in added { GlowHookInstaller.setInstalled(kind, true) }
-            }
+            syncAlertHooks()
             NotificationCenter.default.post(
                 name: .proNotchGlowSettingsChanged, object: nil)
         }
@@ -426,15 +423,57 @@ final class SettingsStore: ObservableObject {
     @Published var glowEnabled: Bool {
         didSet {
             persistGlow(glowEnabled, PrefKey.glowEnabled)
-            // 总开关：打开默认接入全部支持完成钩子的家、关闭全部移除（具体勾选谁再由勾选框微调）。
+            // 总开关：开 = 按 alertAgents 勾选装钩子、关 = 全部移除，勾选集本身保留。
             // 放 didSet 而非 binding set，避开「set 里改被绑值」的 re-entrancy。
-            // 同值赋值不动钩子：否则「取消勾选一家但还剩别家」时会把刚移除的钩子装回去
+            // 同值赋值不动钩子
             guard oldValue != glowEnabled else { return }
-            // 只装 enabledAgents 里的家：被关掉的家不因总开关重开而被误装回钩子
-            for kind in AgentKind.allCases where kind.supportsGlow {
-                GlowHookInstaller.setInstalled(kind, glowEnabled && enabledAgents.contains(kind))
+            syncAlertHooks()
+        }
+    }
+
+    // MARK: - 完成提醒勾选
+    /// 完成提醒勾选哪些家，独立于 enabledAgents 与总开关持久化。
+    /// 钩子安装条件 = glowEnabled ∧ 该家 ∈ enabledAgents ∧ 该家 ∈ alertAgents（见 `hooksToInstall`）。
+    /// 此前没有这个集合、勾选态直接以「钩子装没装」为准：总开关重开会把 enabledAgents 里
+    /// 所有家的钩子全装回，用户按家做的取舍一次关开就丢（2026-09-21 产品审阅第 1 条）
+    @Published var alertAgents: Set<AgentKind> {
+        didSet {
+            guard alertAgents != oldValue else { return }
+            syncAlertHooks()
+            UserDefaults.standard.set(alertAgents.map(\.rawValue).sorted(), forKey: PrefKey.alertAgents)
+            NotificationCenter.default.post(name: .proNotchGlowSettingsChanged, object: nil)
+        }
+    }
+    /// 写钩子失败的家 → 原因。勾选会被撤回（保持关闭），设置页行内红字说明，不再默默弹回；
+    /// 下次该家装成功即清除
+    @Published private(set) var alertHookErrors: [AgentKind: String] = [:]
+
+    /// 该装钩子的家：总开关 ∧ 支持钩子 ∧ 已监控 ∧ 勾了提醒。纯函数，单测用
+    nonisolated static func hooksToInstall(glowEnabled: Bool, enabled: Set<AgentKind>,
+                                           alert: Set<AgentKind>) -> Set<AgentKind> {
+        guard glowEnabled else { return [] }
+        return enabled.intersection(alert).filter(\.supportsGlow)
+    }
+
+    /// 把四家钩子对齐到当前应有状态（总开关 / 勾选 / 监控任一变化后调用）。
+    /// 装失败的家记下原因并撤回勾选；撤回在 didSet 内发生时不会再触发 didSet，
+    /// 从别处（总开关、监控）触发时会再同步一次，此时它已不在应装集合里，幂等
+    private func syncAlertHooks() {
+        let want = Self.hooksToInstall(glowEnabled: glowEnabled, enabled: enabledAgents, alert: alertAgents)
+        var failed: Set<AgentKind> = []
+        for kind in AgentKind.allCases where kind.supportsGlow {
+            if want.contains(kind) {
+                if GlowHookInstaller.setInstalled(kind, true) {
+                    alertHookErrors[kind] = nil
+                } else {
+                    alertHookErrors[kind] = "\(kind.displayName) 写入钩子失败，已保持关闭"
+                    failed.insert(kind)
+                }
+            } else {
+                GlowHookInstaller.setInstalled(kind, false)
             }
         }
+        if !failed.isEmpty { alertAgents.subtract(failed) }
     }
     /// 完成提醒用哪种方式：四周光晕 / 刘海顶部弹窗，二选一（大梁老师 2026-09-16 定）。
     /// 只换「怎么提醒」，钩子、勾选、颜色都不动
@@ -506,6 +545,15 @@ final class SettingsStore: ObservableObject {
         clockCardZones = savedCardZones.map { $0.compactMap(ClockZone.init(rawValue:)) }
             ?? ClockZone.defaultCardZones
         glowEnabled = UserDefaults.standard.bool(forKey: PrefKey.glowEnabled)
+        // 完成提醒勾选：有存值用存值；首启迁移以「当前装了钩子的家」为准——
+        // 总开关关着时钩子全被卸了、看不出用户勾过谁，按旧行为视为全勾
+        if let raw = UserDefaults.standard.stringArray(forKey: PrefKey.alertAgents) {
+            alertAgents = Set(raw.compactMap(AgentKind.init(rawValue:)))
+        } else {
+            let installed = Set(AgentKind.allCases.filter { $0.supportsGlow && GlowHookInstaller.isInstalled($0) })
+            let glowOn = UserDefaults.standard.bool(forKey: PrefKey.glowEnabled)
+            alertAgents = (glowOn && !installed.isEmpty) ? installed : Set(AgentKind.allCases.filter(\.supportsGlow))
+        }
         agentAlertStyle = UserDefaults.standard.string(forKey: PrefKey.agentAlertStyle)
             .flatMap(AgentAlertStyle.init(rawValue:)) ?? .glow
         glowClaudeColorHex = UserDefaults.standard.string(forKey: PrefKey.glowClaudeColorHex) ?? PrefDefault.glowClaudeColor

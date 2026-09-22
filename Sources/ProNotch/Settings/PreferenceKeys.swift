@@ -58,6 +58,8 @@ enum PrefKey {
     static let glowThickness = "glowThickness"
     /// 完成提醒的方式：四周光晕 / 刘海顶部弹窗（AgentAlertStyle 的 rawValue）
     static let agentAlertStyle = "agentAlertStyle"
+    /// 完成提醒勾选哪些家（AgentKind rawValue 数组），独立于 enabledAgents 与总开关
+    static let alertAgents = "alertAgents"
 
     // MARK: - 截图翻译
     static let translateTargetLang = "translateTargetLang"
