@@ -647,6 +647,29 @@ final class ChatStore: ObservableObject {
         checkConnectivity(force: true)
     }
 
+    /// 只提交联网搜索的引擎与 Key（设置页改完即存，不碰接口草稿、不重测连通）。
+    /// 设置页没有「保存」按钮了（2026-09-21 定）：分段控件点选、Key 失焦都直接落库
+    func saveSearchSettings() {
+        tavilyKey = draftTavilyKey.trimmingCharacters(in: .whitespaces)
+        braveKey = draftBraveKey.trimmingCharacters(in: .whitespaces)
+        bochaKey = draftBochaKey.trimmingCharacters(in: .whitespaces)
+        searchEngine = draftSearchEngine
+        draftTavilyKey = tavilyKey
+        draftBraveKey = braveKey
+        draftBochaKey = bochaKey
+        env.defaults.set(searchEngine, forKey: "chatSearchEngine")
+        env.saveKey(tavilyKey, account: "chatTavilyKey")
+        env.saveKey(braveKey, account: "chatBraveKey")
+        env.saveKey(bochaKey, account: "chatBochaKey")
+    }
+
+    /// 接口弹层「取消」：丢掉未提交的草稿，回到当前套已保存的值
+    func revertDrafts() {
+        applyCurrentProviderToFields()
+        draftAPIKey = apiKey
+        fetchError = nil
+    }
+
     /// 连通检测：拉一次模型列表（不消耗 token）。60 秒内不重复，force 强制
     func checkConnectivity(force: Bool = false) {
         guard isConfigured else {
