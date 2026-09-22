@@ -357,7 +357,7 @@ struct ModelSwitcher: View {
             Rectangle().fill(Color.white.opacity(0.1)).frame(height: 1)
             SwitcherFooter {
                 // 打开应用「设置」窗口并直接定位到「AI 闪问」页（不在刘海内展开表单）
-                settings.pendingSection = SettingsView.Section.chat.rawValue
+                settings.pendingSection = SettingsSection.chat.rawValue
                 quickActions.openAppSettings()
                 vm.collapseNow()   // 收起刘海，别挡住弹出的设置窗口
                 showList = false

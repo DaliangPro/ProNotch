@@ -45,7 +45,7 @@ struct UsageView: View {
             Text("尚未勾选可查额度的 Agent")
                 .font(.system(size: 13, weight: .medium)).foregroundColor(.white.opacity(0.7))
             Button {
-                settings.pendingSection = SettingsView.Section.glow.rawValue
+                settings.pendingSection = SettingsSection.agent.rawValue
                 quickActions.openAppSettings()
                 vm.collapseNow()   // 收起刘海，别挡住弹出的设置窗口
             } label: {

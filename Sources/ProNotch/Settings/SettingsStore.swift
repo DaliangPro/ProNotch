@@ -14,7 +14,7 @@ final class SettingsStore: ObservableObject {
     }
     @Published private(set) var loginItemHint: String?
 
-    /// 打开设置窗口时要求定位到的分区（SettingsView.Section 的 rawValue，如 "AI 闪问"）；
+    /// 打开设置窗口时要求定位到的分区（SettingsSection 的 rawValue，如 "AI 闪问"）；
     /// 由刘海内入口（如模型切换器「API 设置…」）置值，SettingsView 显示后消费并清空
     @Published var pendingSection: String?
 

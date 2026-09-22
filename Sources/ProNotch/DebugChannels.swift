@@ -541,7 +541,7 @@ extension AppDelegate {
         let args = CommandLine.arguments
         let section = args.firstIndex(of: "-section")
             .flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
-            .flatMap(SettingsView.Section.init(rawValue:)) ?? .general
+            .flatMap(SettingsSection.init(rawValue:)) ?? .general
         let height = args.firstIndex(of: "-height")
             .flatMap { args.indices.contains($0 + 1) ? Double(args[$0 + 1]) : nil } ?? 540
         let root = SettingsView(initialSection: section, windowHeight: height)

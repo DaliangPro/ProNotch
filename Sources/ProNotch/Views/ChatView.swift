@@ -306,7 +306,7 @@ struct ChatView: View {
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
             Button {
-                settings.pendingSection = SettingsView.Section.chat.rawValue
+                settings.pendingSection = SettingsSection.chat.rawValue
                 quickActions.openAppSettings()
                 // 让路给弹出的设置窗：刘海是收起，独立窗口是关掉自己
                 if host.inNotch { vm.collapseNow() } else { ChatWindowController.shared.hide() }
