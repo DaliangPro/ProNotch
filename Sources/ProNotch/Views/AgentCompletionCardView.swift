@@ -18,7 +18,7 @@ struct AgentCompletionCardView: View {
     private var showing: Bool { completion.notice != nil && !vm.isExpanded }
 
     /// 卡宽。两侧小图标要随卡张开外移到卡的两边（见 `NotchViewModel.grownCardWidth`）
-    static let cardWidth: CGFloat = 360
+    static let cardWidth: CGFloat = NotchGrownCardSize.agent.width
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -64,7 +64,7 @@ struct AgentCompletionCardView: View {
     // MARK: - 卡面
 
     private func card(_ n: AgentCompletionNotice) -> some View {
-        NotchGrownCard(width: Self.cardWidth, grownHeight: 132,
+        NotchGrownCard(width: Self.cardWidth, grownHeight: NotchGrownCardSize.agent.height,
                        glow: n.tintHex.map { Color(hex: $0) } ?? n.source.tint, shown: shown,
                        topGap: NotchGrownCardMetrics.inset,
                        bottomGap: NotchGrownCardMetrics.inset) {

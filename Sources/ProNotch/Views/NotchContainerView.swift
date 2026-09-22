@@ -112,7 +112,7 @@ private struct WeatherAlertCardView: View {
     private static let warnColor = Color(hex: "#FF9F0A")
 
     /// 卡宽。抽成常量是因为两侧小图标要随卡张开外移到卡的两边（见 `NotchViewModel.grownCardWidth`）
-    static let cardWidth: CGFloat = 440
+    static let cardWidth: CGFloat = NotchGrownCardSize.weather.width
 
     /// 展开态不显示（面板都开着，没必要再挂卡）
     private var showing: Bool { weather.alert != nil && !vm.isExpanded }
@@ -172,7 +172,7 @@ private struct WeatherAlertCardView: View {
     private func card(_ a: WeatherAlert) -> some View {
         // 点一下就是关掉它，不再顺手展开刘海到组件页（大梁老师 2026-07-31 定的分工）：
         // 天气是「告诉你一声」，看完即弃；Agent 任务完成才需要把你送回对应的 App
-        NotchGrownCard(width: Self.cardWidth, grownHeight: 180, glow: glowColor(a), shown: shown) {
+        NotchGrownCard(width: Self.cardWidth, grownHeight: NotchGrownCardSize.weather.height, glow: glowColor(a), shown: shown) {
             weather.dismissAlert()
         } content: {
             VStack(spacing: 9) {

@@ -131,8 +131,8 @@ final class NotchViewModel: ObservableObject {
     /// 启动台是「搜索框里有字」。焦点只是必要条件，不是充分条件
     var keyboardHold = false
 
-    /// 天气预警横幅显示中（收起态）：横幅要接收点击，临时解除窗口的鼠标穿透。
-    /// 只有不透明像素会截获点击（透明区按像素透传），假刘海黑条被点到无副作用
+    /// 天气预警横幅显示中（收起态）：横幅要接收点击，鼠标落在卡身上时解除窗口的鼠标穿透
+    ///（范围见 `grownCardHitRects`）
     var alertBannerVisible = false { didSet { applyGrownCardHitTesting() } }
 
     /// Agent「任务完成」弹窗显示中（收起态）。与预警各记一个标志而不是共用一个 Bool：
@@ -156,9 +156,38 @@ final class NotchViewModel: ObservableObject {
     /// 「随着刘海的拓展而移动到弹出的两边，而不是保持原来位置不变」）
     var grownCardWidth: CGFloat { agentCardWidth > 0 ? agentCardWidth : alertCardWidth }
 
+    /// 收起态提醒卡的点击范围（全局坐标），只算卡身，不算光晕。
+    ///
+    /// 窗口一旦解除穿透，**整扇窗连透明处都会接住点击**，并不按像素透明度放行。
+    /// 刘海窗口按展开面板定尺寸（约 1088×550pt），此前卡一挂出来就整窗解除穿透，
+    /// 屏幕上方正中这一大块点别的 App 全被吞掉，而任务完成卡会一直挂到点它或切回终端为止
+    ///（大梁老师 2026-09-22 反馈「弹窗出现时会干扰点击其他软件」；实机在卡外、光晕外、
+    /// 窗口内逐点实测全部被吞，收卡后全部恢复）。
+    /// 所以只在鼠标落在卡身上时解除穿透，由 `evaluateMouse` 跟着鼠标实时切换
+    var grownCardHitRects: [CGRect] {
+        var sizes: [CGSize] = []
+        if agentCardVisible { sizes.append(NotchGrownCardSize.agent) }
+        if alertBannerVisible { sizes.append(NotchGrownCardSize.weather) }
+        return sizes.map { Self.grownCardHitRect(notchRect: notchRect, size: $0) }
+    }
+
+    /// 一张卡的卡身矩形：顶边贴屏幕顶、居中于刘海，高 = 刘海条 + 伸出的高度。
+    /// 上沿再往屏幕外多留 20pt，理由同 `enterRect`（contains 的上界是开区间，鼠标顶到屏幕最顶时落在区外）
+    nonisolated static func grownCardHitRect(notchRect: CGRect, size: CGSize) -> CGRect {
+        let height = notchRect.height + size.height
+        return CGRect(x: notchRect.midX - size.width / 2, y: notchRect.maxY - height,
+                      width: size.width, height: height + 20)
+    }
+
+    /// 鼠标此刻是否落在某张提醒卡的卡身上
+    func mouseOnGrownCard(_ point: CGPoint) -> Bool {
+        grownCardHitRects.contains { $0.contains(point) }
+    }
+
     private func applyGrownCardHitTesting() {
         guard !isExpanded else { return }
-        panel?.ignoresMouseEvents = !grownCardVisible
+        let ignore = !mouseOnGrownCard(NSEvent.mouseLocation)
+        if panel?.ignoresMouseEvents != ignore { panel?.ignoresMouseEvents = ignore }
     }
 
     /// 全屏隐藏钩子：返回 true 时整个刘海窗口隐藏（外接屏假刘海会遮挡全屏内容）
@@ -433,6 +462,8 @@ final class NotchViewModel: ObservableObject {
                 scheduleCollapse()
             }
         } else {
+            // 提醒卡挂着时，跟着鼠标切穿透：进卡身才接点击，离开立刻放行给下面的 App
+            if grownCardVisible { applyGrownCardHitTesting() }
             if hoverShouldExpand(at: location) {
                 if pendingExpand == nil { scheduleExpand() }
             } else {
@@ -614,8 +645,8 @@ final class NotchViewModel: ObservableObject {
             }
         }
         // 收起后窗口对鼠标完全隐形，假刘海区域的点击会穿透到下层
-        // （大卡还挂着时除外——它需要接收点击，缩回后由 grownCardVisible 恢复穿透）
-        panel?.ignoresMouseEvents = !grownCardVisible
+        // （提醒卡还挂着且鼠标正落在卡身上时除外，见 grownCardHitRects）
+        panel?.ignoresMouseEvents = !mouseOnGrownCard(NSEvent.mouseLocation)
         withAnimation(.spring(response: animationDuration, dampingFraction: 0.9)) {
             isExpanded = false
         }

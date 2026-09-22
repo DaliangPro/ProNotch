@@ -119,6 +119,14 @@ enum NotchGrownCardMetrics {
     static let innerRadius: CGFloat = bottomRadius - inset
 }
 
+/// 两种提醒卡的尺寸：宽 × 刘海下方伸出的高度。
+/// 视图画卡、视图模型算点击范围共用这一份——点击范围要和卡身严丝合缝，
+/// 各写一份数字迟早对不上
+enum NotchGrownCardSize {
+    static let agent = CGSize(width: 360, height: 132)
+    static let weather = CGSize(width: 440, height: 180)
+}
+
 /// 大卡出场/收回的节奏（两种卡共用，大梁老师要求观感一致）：
 /// 长出来用 easeOut 0.22 快速到位（弹跳由 keyframe 叠加），缩回去用弹簧钻回刘海里
 enum NotchGrownCardMotion {

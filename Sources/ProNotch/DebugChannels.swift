@@ -505,7 +505,7 @@ extension AppDelegate {
         window.setFrameOrigin(NSPoint(x: -9000, y: -9000))
         window.orderFrontRegardless()
         let cardWidth = AgentCompletionCardView.cardWidth
-        let cardHeight = vm.notchRect.height + 132
+        let cardHeight = vm.notchRect.height + NotchGrownCardSize.agent.height
         var hit: NSPoint?
         outer: for y in stride(from: size.height - cardHeight, through: size.height, by: 8) {
             for x in stride(from: (size.width - cardWidth) / 2,
