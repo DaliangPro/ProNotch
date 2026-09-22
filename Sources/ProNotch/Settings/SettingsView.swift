@@ -79,7 +79,6 @@ struct SettingsView: View {
         .frame(width: 176)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(SettingsTheme.sidebar)
-        .overlay(Rectangle().fill(SettingsTheme.divider).frame(width: 1), alignment: .trailing)
     }
 
     /// 真实窗口：给最小与理想尺寸，窗口可缩放；离屏快照：固定尺寸
