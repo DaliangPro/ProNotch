@@ -135,6 +135,8 @@ struct ThemedSwitch: View {
                 Circle().fill(.white).frame(width: 18, height: 18).padding(2)
                     .shadow(color: .black.opacity(0.25), radius: 1, y: 0.5)
             }
+            // 绑定的值从别处改（联动、面板按钮）也要滑过去，不能只靠点击那一下的 withAnimation
+            .animation(.spring(response: 0.25, dampingFraction: 0.9), value: isOn)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
@@ -146,6 +148,7 @@ struct SegmentedPicker<T: Hashable>: View {
     let options: [T]
     let title: (T) -> String
     @Binding var selection: T
+    @Namespace private var highlight
 
     var body: some View {
         HStack(spacing: 2) {
@@ -155,8 +158,14 @@ struct SegmentedPicker<T: Hashable>: View {
                     Text(title(opt)).font(.system(size: 12))
                         .foregroundColor(on ? SettingsTheme.text : SettingsTheme.textSecondary)
                         .padding(.horizontal, 9).padding(.vertical, 3)
-                        .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(on ? SettingsTheme.fillOn : Color.clear))
+                        .background {
+                            // 同一个高亮块在选项之间滑动（matchedGeometryEffect），不是各画各的瞬跳
+                            if on {
+                                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                    .fill(SettingsTheme.fillOn)
+                                    .matchedGeometryEffect(id: "selected", in: highlight)
+                            }
+                        }
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -164,6 +173,7 @@ struct SegmentedPicker<T: Hashable>: View {
         }
         .padding(2)
         .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(SettingsTheme.segmentBg))
+        .animation(.spring(response: 0.3, dampingFraction: 0.85), value: selection)
     }
 }
 
@@ -185,6 +195,7 @@ struct ChipGroup<T: Hashable>: View {
                         .background(RoundedRectangle(cornerRadius: 6, style: .continuous)
                             .fill(on ? SettingsTheme.fillOn : SettingsTheme.fillOff))
                         .contentShape(Rectangle())
+                        .animation(.easeOut(duration: 0.15), value: on)
                 }
                 .buttonStyle(.plain)
             }
@@ -214,6 +225,7 @@ struct SettingsTile<Leading: View>: View {
             .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(isOn ? SettingsTheme.tileOn : SettingsTheme.fillOff))
             .contentShape(Rectangle())
+            .animation(.easeOut(duration: 0.15), value: isOn)
         }
         .buttonStyle(.plain)
     }
