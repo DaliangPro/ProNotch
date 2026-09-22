@@ -64,6 +64,8 @@ enum PrefKey {
     // MARK: - 截图翻译
     static let translateTargetLang = "translateTargetLang"
     static let translateUseChatAPI = "translateUseChatAPI"
+    /// 翻译单独指定的接口（闪问接口池里那套的 UUID 字符串；空 = 跟闪问）
+    static let translateProviderID = "translateProviderID"
     static let translateBaseURL = "translateBaseURL"
     static let translateModel = "translateModel"
     static let translateParallel = "translateParallel"

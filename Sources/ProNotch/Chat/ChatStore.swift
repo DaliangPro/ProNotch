@@ -343,7 +343,58 @@ final class ChatStore: ObservableObject {
         } else {
             currentProviderID = providers[0].id
         }
+        mergeTranslateEndpointsIfNeeded()
         applyCurrentProviderToFields()
+    }
+
+    /// 首启一次：把翻译自己那份多套存档并进闪问的接口池（2026-09-22 起两边共用一个池子，
+    /// 大梁老师定：一边配了另一边直接选）。Key 不搬——直接沿用那套原来的钥匙串账号，
+    /// 启动路径上不碰钥匙串。翻译原先单独选中的那套，并入后写成 translateProviderID
+    private func mergeTranslateEndpointsIfNeeded() {
+        let defaults = env.defaults
+        let flag = "translateEndpointsMerged"
+        guard !defaults.bool(forKey: flag) else { return }
+        let endpoints = TranslateEndpointStore.load(
+            from: defaults,
+            legacyBaseURL: defaults.string(forKey: PrefKey.translateBaseURL) ?? "",
+            legacyModel: defaults.string(forKey: PrefKey.translateModel) ?? "")
+        let merged = Self.mergeTranslateEndpoints(into: providers, endpoints: endpoints)
+        if merged.providers.count != providers.count {
+            providers = merged.providers
+            persistProviders()
+        }
+        // 翻译原先没跟闪问、单独选了一套 → 指向并入后的那套
+        if defaults.object(forKey: PrefKey.translateUseChatAPI) as? Bool == false,
+           let cur = TranslateEndpointStore.currentID(from: defaults, in: endpoints),
+           let mapped = merged.mapping[cur] {
+            defaults.set(mapped.uuidString, forKey: PrefKey.translateProviderID)
+        }
+        defaults.set(true, forKey: flag)
+        if !merged.mapping.isEmpty {
+            AppLog.chat.info("翻译接口并入闪问接口池：\(merged.mapping.count) 套")
+        }
+    }
+
+    /// 并池的纯函数（单测用）：地址和模型都相同的视为同一套、不重复加；
+    /// 空地址的翻译套是没配过的壳，不并。返回并入后的池子与「翻译套 id → 池里套 id」映射
+    nonisolated static func mergeTranslateEndpoints(into providers: [APIProvider],
+                                                    endpoints: [TranslateEndpoint])
+        -> (providers: [APIProvider], mapping: [UUID: UUID]) {
+        var out = providers
+        var mapping: [UUID: UUID] = [:]
+        func norm(_ s: String) -> String { s.trimmingCharacters(in: .whitespaces).lowercased() }
+        for ep in endpoints where !norm(ep.baseURL).isEmpty {
+            if let same = out.first(where: { norm($0.baseURL) == norm(ep.baseURL) && norm($0.model) == norm(ep.model) }) {
+                mapping[ep.id] = same.id
+            } else {
+                let p = APIProvider(name: ep.name.isEmpty ? TranslateEndpointStore.inferName(from: ep.baseURL) : ep.name,
+                                    baseURL: ep.baseURL, model: ep.model,
+                                    keychainAccount: ep.keychainAccount)
+                out.append(p)
+                mapping[ep.id] = p.id
+            }
+        }
+        return (out, mapping)
     }
 
     /// 把当前套的 URL/模型/模型列表载入运行时字段与草稿（不含 Key，Key 走钥匙串后台读）

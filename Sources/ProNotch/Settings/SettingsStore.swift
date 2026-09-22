@@ -219,20 +219,13 @@ final class SettingsStore: ObservableObject {
 
     // MARK: - 翻译（超级截图原位翻译）
     @Published var translateTargetLang: String { didSet { UserDefaults.standard.set(translateTargetLang, forKey: PrefKey.translateTargetLang) } }
+    /// true = 跟着闪问当前接口走；false = 用 translateProviderID 指定的那套。
+    /// 2026-09-22 起闪问与翻译共用同一个接口池（大梁老师定：一边配了另一边直接选），
+    /// 翻译不再有自己的多套存档，老存档由 ChatStore 首启并入池子
     @Published var translateUseChatAPI: Bool { didSet { UserDefaults.standard.set(translateUseChatAPI, forKey: PrefKey.translateUseChatAPI) } }
-    /// 当前这套的地址与模型。仍旧各自写一份到老键：别处（迁移、老版本回滚）还认它们，
-    /// 同时写回当前套的存档，这样切走再切回来拿到的就是刚才编辑的内容
-    @Published var translateBaseURL: String {
-        didSet {
-            UserDefaults.standard.set(translateBaseURL, forKey: PrefKey.translateBaseURL)
-            syncCurrentTranslateEndpoint()
-        }
-    }
-    @Published var translateModel: String {
-        didSet {
-            UserDefaults.standard.set(translateModel, forKey: PrefKey.translateModel)
-            syncCurrentTranslateEndpoint()
-        }
+    /// 翻译单独指定的接口（闪问接口池里的一套）。nil 或找不到都退回跟闪问
+    @Published var translateProviderID: UUID? {
+        didSet { UserDefaults.standard.set(translateProviderID?.uuidString ?? "", forKey: PrefKey.translateProviderID) }
     }
     /// 并行加速：长文按块并发翻译（默认开）；接口对并发限流严格时可关掉走单请求
     @Published var translateParallel: Bool { didSet { UserDefaults.standard.set(translateParallel, forKey: PrefKey.translateParallel) } }
@@ -248,126 +241,17 @@ final class SettingsStore: ObservableObject {
 
     nonisolated static let defaultTranslatePrompt = "You are a professional translation engine. Translate EVERY string in the input JSON array into {lang}, including single words, labels and UI text. If a string is already in {lang} keep it; otherwise you MUST translate it — never leave non-{lang} text untranslated. Keep as-is: product or brand names (e.g. deepseek, GitHub), code identifiers and function names (e.g. runTranslate, NaturalLanguage), all-letter acronyms (e.g. AI, API, OCR), code values with digits (e.g. status=200, v1.6.0), URLs, file paths and numbers. Return ONLY a JSON array of translated strings, same length and order, no explanations, no code fences."
 
-    // MARK: 翻译的多套接口配置
-
-    /// 存起来的各套翻译接口（至少一套）。改动一律走下面几个方法，界面只读
-    @Published private(set) var translateEndpoints: [TranslateEndpoint] = []
-    @Published private(set) var translateCurrentEndpointID: UUID?
-
-    /// 当前套的钥匙串账号。首套是单套时代的 `translateAPIKey`，新增的各带各的后缀。
-    /// 读写 Key 的每一处都必须经由它，别再把账号名写死（见 `TranslateEndpointStore.account`）
-    private var translateKeychainAccount: String {
-        TranslateEndpointStore.account(for: translateCurrentEndpointID, in: translateEndpoints)
-    }
-
-    /// 翻译 API key 走钥匙串、惰性读写（不在启动时读，避免多一个钥匙串弹框）
-    func translateAPIKey() -> String { KeychainStore.read(translateKeychainAccount) ?? "" }
-    func setTranslateAPIKey(_ v: String) { _ = KeychainStore.save(v, account: translateKeychainAccount) }
-
-    /// 启动载入：无存档就把单套时代的地址/模型迁成第一套（Key 原地复用旧账号，不碰钥匙串）
-    func loadTranslateEndpoints() {
-        translateEndpoints = TranslateEndpointStore.load(
-            from: .standard, legacyBaseURL: translateBaseURL, legacyModel: translateModel)
-        translateCurrentEndpointID = TranslateEndpointStore.currentID(
-            from: .standard, in: translateEndpoints)
-        persistTranslateEndpoints()
-    }
-
-    /// 切套/新增/删除时把写回闸掉。
+    /// 翻译实际用的接口配置：跟闪问当前那套，或接口池里单独指定的一套。
     ///
-    /// 地址和模型是两个字段、要分两步赋值，中间那一瞬 `translateModel` 还是**上一套**的值；
-    /// 写回不闸掉的话，这个中间态会被当成用户编辑存进新那套，
-    /// 结果就是切过去发现地址对了、模型名还是旧的
-    private var loadingTranslateEndpoint = false
-
-    /// 界面上改了地址/模型 → 写回当前套
-    private func syncCurrentTranslateEndpoint() {
-        guard !loadingTranslateEndpoint,
-              let i = translateEndpoints.firstIndex(where: { $0.id == translateCurrentEndpointID }),
-              translateEndpoints[i].baseURL != translateBaseURL
-                || translateEndpoints[i].model != translateModel else { return }
-        translateEndpoints[i].baseURL = translateBaseURL
-        translateEndpoints[i].model = translateModel
-        // 名字还是自动猜出来的旧值就跟着地址走；用户手改过就不动它
-        let auto = TranslateEndpointStore.inferName(from: translateEndpoints[i].baseURL)
-        if translateEndpoints[i].name.isEmpty { translateEndpoints[i].name = auto }
-        persistTranslateEndpoints()
-    }
-
-    private func persistTranslateEndpoints() {
-        TranslateEndpointStore.persist(translateEndpoints,
-                                       current: translateCurrentEndpointID, to: .standard)
-    }
-
-    func renameTranslateEndpoint(_ id: UUID, to name: String) {
-        guard let i = translateEndpoints.firstIndex(where: { $0.id == id }) else { return }
-        translateEndpoints[i].name = name
-        persistTranslateEndpoints()
-    }
-
-    /// 切到某套：把它的地址与模型载入界面字段（Key 由界面惰性去钥匙串取）
-    func activateTranslateEndpoint(_ id: UUID) {
-        guard id != translateCurrentEndpointID,
-              let p = translateEndpoints.first(where: { $0.id == id }) else { return }
-        translateCurrentEndpointID = id
-        persistTranslateEndpoints()
-        loadTranslateFields(baseURL: p.baseURL, model: p.model)
-    }
-
-    /// 载入某套的地址与模型：整段闸掉写回，两个字段落齐了再放开
-    private func loadTranslateFields(baseURL: String, model: String) {
-        loadingTranslateEndpoint = true
-        translateBaseURL = baseURL
-        translateModel = model
-        loadingTranslateEndpoint = false
-    }
-
-    /// 新增一套空配置并切过去；当前已是空壳就不再堆一个
-    func addTranslateEndpoint() {
-        if let cur = translateEndpoints.first(where: { $0.id == translateCurrentEndpointID }),
-           cur.baseURL.isEmpty, cur.model.isEmpty { return }
-        let p = TranslateEndpoint(name: "新配置", baseURL: "", model: "",
-                                  keychainAccount: TranslateEndpointStore.newAccount())
-        translateEndpoints.append(p)
-        translateCurrentEndpointID = p.id
-        persistTranslateEndpoints()
-        loadTranslateFields(baseURL: "", model: "")
-    }
-
-    /// 删除一套（至少留一套）：连它的钥匙串 Key 一起清掉，删的是当前套就切回第一套
-    func deleteTranslateEndpoint(_ id: UUID) {
-        guard translateEndpoints.count > 1,
-              let victim = translateEndpoints.first(where: { $0.id == id }) else { return }
-        // 首套用的是单套时代那个账号，删掉它等于把老 Key 也清了——这正是预期
-        KeychainStore.delete(victim.keychainAccount)
-        translateEndpoints.removeAll { $0.id == id }
-        guard id == translateCurrentEndpointID, let first = translateEndpoints.first else {
-            persistTranslateEndpoints()
-            return
-        }
-        translateCurrentEndpointID = first.id
-        persistTranslateEndpoints()
-        loadTranslateFields(baseURL: first.baseURL, model: first.model)
-    }
-
-    /// 翻译实际用的接口配置：复用闪问 或 翻译自填。
-    ///
-    /// 复用闪问时必须走 `ActiveProviderSnapshot`——闪问是多套配置，
-    /// 直接读 `chatBaseURL` + 固定账号 `chatAPIKey` 会拿到"上次保存的端点 + 第一套的 Key"，
-    /// 用户切过套之后这两者根本不是同一套。
-    ///
-    /// 翻译自填这一路现在同样是多套，Key 必须跟着当前套的账号取：
-    /// 早先这里写死 `translateAPIKey`，新建的那套填对了 Key、测试也通，
-    /// 一翻译却拿第一套的旧 Key 去请求，只报鉴权失败（大梁老师 2026-08-17 实测）
+    /// 都走 `ActiveProviderSnapshot`：每套有自己的钥匙串账号，Key 必须跟着那套取——
+    /// 早先翻译自己那份多套存档就栽过「填对了 Key、测试也通、一翻译却拿第一套旧 Key 去请求」的坑
+    ///（大梁老师 2026-08-17 实测）。钥匙串是惰性读的，只在点「翻译」时碰
     var resolvedTranslateConfig: (baseURL: String, apiKey: String, model: String, keyPending: Bool) {
-        if translateUseChatAPI {
-            let snapshot = ActiveProviderSnapshot.load(from: .production)
-            return (snapshot.baseURL, snapshot.apiKey, snapshot.model,
-                    snapshot.readiness == .keyPending)
-        }
-        let key = KeychainStore.read(translateKeychainAccount) ?? ""
-        let pending = key.isEmpty && !translateBaseURL.isEmpty && !translateModel.isEmpty
-        return (translateBaseURL, key, translateModel, pending)
+        let snapshot = translateUseChatAPI
+            ? ActiveProviderSnapshot.load(from: .production)
+            : ActiveProviderSnapshot.load(from: .production, providerID: translateProviderID)
+        return (snapshot.baseURL, snapshot.apiKey, snapshot.model,
+                snapshot.readiness == .keyPending)
     }
 
     static let translateLangs = ["中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский"]
@@ -561,8 +445,7 @@ final class SettingsStore: ObservableObject {
         glowThickness = UserDefaults.standard.double(forKey: PrefKey.glowThickness)
         translateTargetLang = UserDefaults.standard.string(forKey: PrefKey.translateTargetLang) ?? PrefDefault.translateTargetLang
         translateUseChatAPI = UserDefaults.standard.bool(forKey: PrefKey.translateUseChatAPI)
-        translateBaseURL = UserDefaults.standard.string(forKey: PrefKey.translateBaseURL) ?? ""
-        translateModel = UserDefaults.standard.string(forKey: PrefKey.translateModel) ?? ""
+        translateProviderID = UserDefaults.standard.string(forKey: PrefKey.translateProviderID).flatMap(UUID.init(uuidString:))
         translateParallel = UserDefaults.standard.object(forKey: PrefKey.translateParallel) as? Bool ?? true
         translateEngine = UserDefaults.standard.string(forKey: PrefKey.translateEngine)
             ?? (SystemTranslator.isSupported ? "system" : "ai")
@@ -614,8 +497,6 @@ final class SettingsStore: ObservableObject {
             if let d = try? JSONEncoder().encode(def) { UserDefaults.standard.set(d, forKey: PrefKey.clipboardShortcut) }
             UserDefaults.standard.set(true, forKey: PrefKey.clipboardShortcutInitialized)
         }
-        // 翻译多套配置：只读写 UserDefaults，不碰钥匙串，启动路径上不会多弹授权框
-        loadTranslateEndpoints()
     }
 
     private func applyLaunchAtLogin() {

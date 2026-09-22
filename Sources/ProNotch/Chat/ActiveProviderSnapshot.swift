@@ -28,6 +28,19 @@ struct ActiveProviderSnapshot: Sendable, Equatable {
         return apiKey.isEmpty ? .keyPending : .ready
     }
 
+    /// 接口池里指定的一套（翻译单独选的那套）。找不到（被删了）就退回当前活动那套，
+    /// 宁可用闪问的接口也不能让翻译没接口可用
+    static func load(from env: ChatEnvironment, providerID: UUID?) -> ActiveProviderSnapshot {
+        guard let providerID,
+              let data = env.defaults.data(forKey: "chatProviders"),
+              let list = try? JSONDecoder().decode([APIProvider].self, from: data),
+              let p = list.first(where: { $0.id == providerID }) else {
+            return load(from: env)
+        }
+        return ActiveProviderSnapshot(providerID: p.id, name: p.name, baseURL: p.baseURL,
+                                      model: p.model, apiKey: env.readKey(p.keychainAccount))
+    }
+
     /// 从存档解析当前活动的那一套（含它自己的钥匙串账号）。
     /// 钥匙串是惰性读的——只在真正要用接口时才调，不在启动路径上多弹一次授权框
     static func load(from env: ChatEnvironment) -> ActiveProviderSnapshot {
