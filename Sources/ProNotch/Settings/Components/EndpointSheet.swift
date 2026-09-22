@@ -39,7 +39,8 @@ struct EndpointSheet: View {
             field("API Key") { ThemedTextField(placeholder: "sk-…", text: $apiKey, secure: true) }
 
             HStack {
-                Text("模型列表").font(.system(size: 12)).foregroundColor(SettingsTheme.textSecondary)
+                Text(models.isEmpty ? "模型列表" : "模型列表 · \(models.count)")
+                    .font(.system(size: 12)).foregroundColor(SettingsTheme.textSecondary)
                 Spacer()
                 if fetching {
                     ProgressView().controlSize(.small)
@@ -48,21 +49,28 @@ struct EndpointSheet: View {
                 }
             }
             VStack(spacing: 0) {
-                ForEach(models, id: \.self) { m in
-                    HStack(spacing: 8) {
-                        Text(m).font(.system(size: 13)).foregroundColor(SettingsTheme.text).lineLimit(1)
-                        Spacer()
-                        if customModels.contains(m) {
-                            Button { onRemoveModel(m) } label: {
-                                Image(systemName: "xmark.circle.fill").font(.system(size: 12))
-                                    .foregroundColor(SettingsTheme.textMuted)
+                // 服务商动辄两三百个模型（百炼 261 个），列表限高在弹层里滚动，添加行钉在底下——
+                // 不限高弹层会被撑到屏幕外，「完成」都点不着（2026-09-22 大梁老师点验）
+                ScrollView(.vertical) {
+                    VStack(spacing: 0) {
+                        ForEach(models, id: \.self) { m in
+                            HStack(spacing: 8) {
+                                Text(m).font(.system(size: 13)).foregroundColor(SettingsTheme.text).lineLimit(1)
+                                Spacer()
+                                if customModels.contains(m) {
+                                    Button { onRemoveModel(m) } label: {
+                                        Image(systemName: "xmark.circle.fill").font(.system(size: 12))
+                                            .foregroundColor(SettingsTheme.textMuted)
+                                    }
+                                    .buttonStyle(.plain).help("从列表移除")
+                                }
                             }
-                            .buttonStyle(.plain).help("从列表移除")
+                            .padding(.horizontal, 12).padding(.vertical, 8)
+                            CardDivider().padding(.leading, -2)
                         }
                     }
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    CardDivider().padding(.leading, -2)
                 }
+                .frame(maxHeight: 200)
                 HStack(spacing: 8) {
                     Image(systemName: "plus").font(.system(size: 12)).foregroundColor(SettingsTheme.textMuted)
                     TextField("", text: $newModel,

@@ -539,6 +539,20 @@ extension AppDelegate {
     func snapshotSettings(settings: SettingsStore, chat: ChatStore, glow: GlowController,
                           weather: WeatherStore, snippets: SnippetStore) {
         let args = CommandLine.arguments
+        // -sheetModels N：改渲染服务商弹层并塞 N 个假模型，核对模型列表限高
+        //（2026-09-22 百炼 261 个模型曾把弹层撑到无限长；弹层不在设置窗树里，逐页快照拍不到）
+        if let n = args.firstIndex(of: "-sheetModels")
+            .flatMap({ args.indices.contains($0 + 1) ? Int(args[$0 + 1]) : nil }) {
+            let sheet = EndpointSheet(
+                name: .constant("百炼"), baseURL: .constant("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+                apiKey: .constant("sk-demo"),
+                models: (0..<n).map { "demo-model-\($0 + 1)" }, customModels: ["demo-model-1"],
+                fetching: false, statusText: "连接正常 · \(n) 个模型", statusColor: SettingsTheme.success,
+                canDelete: true, onFetch: {}, onAddModel: { _ in }, onRemoveModel: { _ in },
+                onTest: {}, onDelete: {}, onCancel: {}, onDone: {})
+            renderSnapshot(sheet, to: "/tmp/pronotch-sheet-\(n).png")
+            return
+        }
         let section = args.firstIndex(of: "-section")
             .flatMap { args.indices.contains($0 + 1) ? args[$0 + 1] : nil }
             .flatMap(SettingsSection.init(rawValue:)) ?? .general
@@ -551,7 +565,12 @@ extension AppDelegate {
             .environmentObject(updateChecker)
             .environmentObject(weather)
             .environmentObject(snippets)
-        let hosting = NSHostingView(rootView: root)
+        renderSnapshot(root, to: "/tmp/pronotch-settings-\(section.rawValue).png")
+    }
+
+    /// 把任意 SwiftUI 视图按自算尺寸离屏渲染成 PNG 后退出进程
+    private func renderSnapshot(_ view: some View, to out: String) {
+        let hosting = NSHostingView(rootView: view)
         hosting.appearance = NSAppearance(named: .darkAqua)
         hosting.frame = NSRect(origin: .zero, size: hosting.fittingSize)
         // 挂进离屏窗口：onAppear 与入场动画要有 window 才跑，否则渲出来是初始态
@@ -564,9 +583,8 @@ extension AppDelegate {
             if let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) {
                 hosting.cacheDisplay(in: hosting.bounds, to: rep)
                 if let data = rep.representation(using: .png, properties: [:]) {
-                    let out = "/tmp/pronotch-settings-\(section.rawValue).png"
                     try? data.write(to: URL(fileURLWithPath: out))
-                    AppLog.debugTools.debug("设置窗口快照已保存: \(LogRedaction.lastComponent(out), privacy: .public)")
+                    AppLog.debugTools.debug("离屏快照已保存: \(LogRedaction.lastComponent(out), privacy: .public)")
                 }
             }
             NSApp.terminate(nil)
