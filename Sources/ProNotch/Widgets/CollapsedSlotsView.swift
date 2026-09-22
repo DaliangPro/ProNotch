@@ -2,33 +2,16 @@ import SwiftUI
 
 /// 收起态功能区可选内容（大梁老师定的自由功能区，新组件在此扩展）
 enum NotchSlot: String, CaseIterable {
-    case none, memory, weather, clock, agentClaude, agentCodex
+    // Claude Code / Codex 两家的精灵槽位（agentClaude / agentCodex）已于 2026-09-22 去掉
+    //（大梁老师定：刘海里的运行状态显示直接去掉）。老存值解析不到会回落到默认槽位
+    case none, memory, weather, clock
 
     var title: String {
         switch self {
         case .none: return "关闭"
-        case .memory: return "内存占用"
-        case .weather: return "实时天气"
+        case .memory: return "内存"
+        case .weather: return "天气"
         case .clock: return "时间"
-        case .agentClaude: return "Claude Code"
-        case .agentCodex: return "Codex"
-        }
-    }
-
-    /// 该槽位依赖哪一家 Agent 被勾选。与 Agent 无关的槽位返回 nil
-    var requiredAgent: AgentKind? {
-        switch self {
-        case .agentClaude: return .claude
-        case .agentCodex: return .codex
-        default: return nil
-        }
-    }
-
-    /// 菜单里能选什么，取决于用户勾了哪几家（大梁老师定的口径：
-    /// 扫描发现什么、设置里才出现什么）——没接入的家不该出现在选项里
-    static func available(agents: Set<AgentKind>) -> [NotchSlot] {
-        allCases.filter { slot in
-            slot.requiredAgent.map(agents.contains) ?? true
         }
     }
 
@@ -65,8 +48,6 @@ enum NotchSlot: String, CaseIterable {
         // 我按 5×7 估了 36，差 1.3pt 就把时间折成了两行，离屏渲染当场看见）。
         // 取 40 留出余量，仍在固定框可用宽 42 之内
         case .clock: return Self.clockWidth + Self.leadingPad + trailingAir
-        case .agentClaude: return ClawdSlotView.contentWidth + Self.leadingPad + trailingAir
-        case .agentCodex: return CodexPetSlotView.contentWidth + Self.leadingPad + trailingAir
         }
     }
 }
@@ -94,7 +75,6 @@ struct CollapsedSlotsView: View {
     @EnvironmentObject var settings: SettingsStore
     @EnvironmentObject var memory: MemoryStore
     @EnvironmentObject var weather: WeatherStore
-    @EnvironmentObject var agentActivity: AgentActivityStore
     /// 收起态低频心跳：10 秒刷内存（微秒级 syscall）；天气走 store 内置 15 分钟节流
     private let ticker = Timer.publish(every: 10, on: .main, in: .common).autoconnect()
     /// 时钟当前时刻。由既有的 10 秒心跳推进——分钟级显示，10 秒粒度绰绰有余，
@@ -181,11 +161,6 @@ struct CollapsedSlotsView: View {
         case .memory: memorySlot
         case .weather: weatherSlot
         case .clock: clockSlot
-        // 展开时整块淡出，此时再跑动画是白烧 CPU——动画只在收起且真在工作时才有
-        case .agentClaude:
-            ClawdSlotView(working: agentActivity.working.contains(.claude) && !vm.isExpanded)
-        case .agentCodex:
-            CodexPetSlotView(working: agentActivity.working.contains(.codex) && !vm.isExpanded)
         }
     }
 

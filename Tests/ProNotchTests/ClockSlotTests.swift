@@ -71,8 +71,7 @@ final class ClockSlotTests: XCTestCase {
     }
 
     func test时钟出现在可选槽位里() {
-        XCTAssertTrue(NotchSlot.available(agents: []).contains(.clock),
-                      "时钟不依赖任何 Agent，任何情况下都该可选")
+        XCTAssertTrue(NotchSlot.allCases.contains(.clock), "时钟任何情况下都该可选")
     }
 
     // MARK: - 组件页时钟卡（大梁老师 2026-08-05：时钟是功能组件，不是侧栏专属）
