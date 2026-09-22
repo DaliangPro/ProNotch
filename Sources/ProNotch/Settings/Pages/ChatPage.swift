@@ -22,7 +22,7 @@ struct ChatPage: View {
 
             SectionLabel(text: "对话")
             SettingsCard {
-                // 就在这里选，按账号分组；账号本身在「AI 模型配置」页管
+                // 就在这里选，按服务商分组；服务商本身在「AI 模型配置」页管
                 SettingsRow(title: "模型") {
                     ModelPicker(label: modelSummary) { p, m in chatStore.useModel(providerID: p.id, model: m) }
                 }

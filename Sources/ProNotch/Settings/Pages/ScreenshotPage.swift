@@ -61,7 +61,7 @@ struct ScreenshotPage: View {
                         .background(LanguagePackDownloader(request: $packRequest))
                     }
                 } else {
-                    // 就在这里选，按账号分组，顶上多一项「跟随闪问」；账号本身在「AI 模型配置」页管
+                    // 就在这里选，按服务商分组，顶上多一项「跟随闪问」；服务商本身在「AI 模型配置」页管
                     SettingsRow(title: "模型") {
                         ModelPicker(label: modelSummary, followChat: { settings.translateUseChatAPI = true }) { p, m in
                             settings.translateUseChatAPI = false

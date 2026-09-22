@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// 按账号分组的模型下拉：每个功能在自己页上选模型，账号在「AI 模型配置」页管。
-/// 一个账号一组（Section 头是账号名），组里是它的模型；没有任何账号时给一条「去添加」
+/// 按服务商分组的模型下拉：每个功能在自己页上选模型，服务商在「AI 模型配置」页管。
+/// 一家一组（Section 头是服务商名），组里是它的模型；一家都没有时给一条「去添加」
 struct ModelPicker: View {
     @EnvironmentObject var settings: SettingsStore
     @EnvironmentObject var chatStore: ChatStore
@@ -31,9 +31,9 @@ struct ModelPicker: View {
                     }
                 }
             } else if chatStore.providers.isEmpty {
-                Button("去添加账号…") { settings.pendingSection = SettingsSection.models.rawValue }
+                Button("去添加服务商…") { settings.pendingSection = SettingsSection.models.rawValue }
             } else {
-                Button("账号里还没有模型，去获取…") { settings.pendingSection = SettingsSection.models.rawValue }
+                Button("还没有模型，去获取…") { settings.pendingSection = SettingsSection.models.rawValue }
             }
         }
     }

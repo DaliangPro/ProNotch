@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// 账号编辑弹层：名称、地址、Key、模型列表、测试、删除。
-/// 账号只是可用的池子，这里不定「当前模型」——用哪个模型在 AI 模型配置页按功能选；
+/// 服务商编辑弹层：名称、地址、Key、模型列表、测试、删除。
+/// 服务商只是可用的池子，这里不定「当前模型」——用哪个模型在各功能页上选；
 /// 「完成」即写入，没有草稿要另外保存
 struct EndpointSheet: View {
     @Binding var name: String
@@ -32,7 +32,7 @@ struct EndpointSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("编辑账号").font(.system(size: 15, weight: .semibold)).foregroundColor(SettingsTheme.text)
+            Text("编辑服务商").font(.system(size: 15, weight: .semibold)).foregroundColor(SettingsTheme.text)
 
             field("名称") { ThemedTextField(placeholder: "如 DeepSeek / 百炼", text: $name) }
             field("API 地址") { ThemedTextField(placeholder: "https://api.deepseek.com", text: $baseURL) }
@@ -84,7 +84,7 @@ struct EndpointSheet: View {
             }
 
             HStack(spacing: 16) {
-                if canDelete { TextButton(title: "删除账号", destructive: true, action: onDelete) }
+                if canDelete { TextButton(title: "删除服务商", destructive: true, action: onDelete) }
                 Spacer()
                 TextButton(title: "取消", action: onCancel)
                 Button(action: onDone) {
@@ -117,11 +117,11 @@ struct EndpointSheet: View {
     }
 }
 
-/// 编辑账号池里任意一个账号：字段是本地草稿，「完成」才写回 ChatStore，「取消」什么都不留。
-/// 不经过 ChatStore 的「当前套」，所以编辑哪个账号都不会动闪问正在用的那套
+/// 编辑服务商池里任意一家：字段是本地草稿，「完成」才写回 ChatStore，「取消」什么都不留。
+/// 不经过 ChatStore 的「当前套」，所以编辑哪家都不会动闪问正在用的那套
 struct AccountSheet: View {
     let providerID: UUID
-    /// 新建的账号取消时若还是空壳就删掉，不留「新配置」幽灵
+    /// 新建的服务商取消时若还是空壳就删掉，不留「新配置」幽灵
     var isNew = false
 
     @EnvironmentObject var chatStore: ChatStore
@@ -167,7 +167,7 @@ struct AccountSheet: View {
         .onAppear(perform: load)
     }
 
-    /// 打开时载入这套账号；Key 此刻才读钥匙串（用户点了编辑，弹授权框也说得通）
+    /// 打开时载入这家；Key 此刻才读钥匙串（用户点了编辑，弹授权框也说得通）
     private func load() {
         guard !loaded, let p = chatStore.providers.first(where: { $0.id == providerID }) else { return }
         loaded = true

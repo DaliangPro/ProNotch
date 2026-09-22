@@ -223,11 +223,11 @@ final class SettingsStore: ObservableObject {
     /// 2026-09-22 起闪问与翻译共用同一个接口池（大梁老师定：一边配了另一边直接选），
     /// 翻译不再有自己的多套存档，老存档由 ChatStore 首启并入池子
     @Published var translateUseChatAPI: Bool { didSet { UserDefaults.standard.set(translateUseChatAPI, forKey: PrefKey.translateUseChatAPI) } }
-    /// 翻译单独指定的账号（AI 模型配置页那批账号里的一个）。nil 或找不到都退回跟闪问
+    /// 翻译单独指定的服务商（AI 模型配置页那批里的一家）。nil 或找不到都退回跟闪问
     @Published var translateProviderID: UUID? {
         didSet { UserDefaults.standard.set(translateProviderID?.uuidString ?? "", forKey: PrefKey.translateProviderID) }
     }
-    /// 翻译用的模型名（每个功能各选各的模型，不借账号上那个）。空 = 用该账号当前模型
+    /// 翻译用的模型名（每个功能各选各的模型，不借服务商上那个）。空 = 用该服务商当前模型
     @Published var translateModel: String { didSet { UserDefaults.standard.set(translateModel, forKey: PrefKey.translateModel) } }
     /// 并行加速：长文按块并发翻译（默认开）；接口对并发限流严格时可关掉走单请求
     @Published var translateParallel: Bool { didSet { UserDefaults.standard.set(translateParallel, forKey: PrefKey.translateParallel) } }
