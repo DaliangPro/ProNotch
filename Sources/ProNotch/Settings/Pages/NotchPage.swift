@@ -15,7 +15,7 @@ struct NotchPage: View {
             PageTitle(title: "刘海")
 
             SettingsCard {
-                NotchPreview().padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 12)
+                NotchPreview().padding(.horizontal, 14).padding(.top, 16).padding(.bottom, 14)
                 CardDivider()
                 SettingsRow(title: "左侧") {
                     SegmentedPicker(options: NotchSlot.allCases, title: { $0.title }, selection: $settings.leftSlot)

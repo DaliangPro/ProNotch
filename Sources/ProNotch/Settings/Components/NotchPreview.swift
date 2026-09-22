@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// 刘海收起态的真实预览：屏幕顶部一条菜单栏、中间黑色胶囊、两侧槽位按真实样式渲染
+/// 刘海收起态的真实预览：只画黑色胶囊本身，两侧槽位按真实样式渲染
 ///（内存环、天气图标加气温、时钟），改左右槽位立刻看到效果。
-/// 此前那版是黑条上两个文字下拉，大梁老师觉得太抽象。
+/// 此前那版是黑条上两个文字下拉，大梁老师觉得太抽象；加过一条假菜单栏当背景，也被他去掉了——不需要背景。
 ///
 /// 内容渲染与 `CollapsedSlotsView` 同一套口径（环 21pt、字号、间距），只是不依赖 NotchViewModel；
 /// 内存用一次性读数，天气取设置窗环境里那份 WeatherStore 的当前值，时钟按所选时区走真实时间
@@ -11,44 +11,15 @@ struct NotchPreview: View {
     @EnvironmentObject var weather: WeatherStore
     @StateObject private var memory = MemoryStore()
 
-    /// 与真实收起态同比例：物理刘海 150、单侧槽位 56、高 30
+    /// 与真实收起态同比例：物理刘海 150、单侧槽位 56、高 32
     private let notchWidth: CGFloat = 150
     private let sideWidth: CGFloat = NotchSlot.fixedSideWidth
-    private let pillHeight: CGFloat = 30
-    private let barHeight: CGFloat = 30
+    private let pillHeight: CGFloat = 32
 
     var body: some View {
-        ZStack(alignment: .top) {
-            // 屏幕：上面一条菜单栏，下面露一点桌面
-            VStack(spacing: 0) {
-                menuBar.frame(height: barHeight)
-                Color.clear.frame(height: 24)
-            }
-            .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(SettingsTheme.notchStrip))
-            pill
-        }
-        .frame(maxWidth: .infinity)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .onAppear { memory.refresh() }
-    }
-
-    /// 假菜单栏：只为让人认出「这是屏幕顶部」，内容故意灰淡
-    private var menuBar: some View {
-        HStack(spacing: 14) {
-            Image(systemName: "apple.logo").font(.system(size: 11))
-            Text("访达").font(.system(size: 11, weight: .semibold))
-            Text("文件").font(.system(size: 11))
-            Text("编辑").font(.system(size: 11))
-            Text("显示").font(.system(size: 11))
-            Spacer()
-            Image(systemName: "wifi").font(.system(size: 10))
-            Image(systemName: "battery.100").font(.system(size: 11))
-            Text("周一 14:32").font(.system(size: 11))
-        }
-        .foregroundColor(.white.opacity(0.45))
-        .padding(.horizontal, 12)
-        .frame(maxWidth: .infinity)
-        .background(Color.white.opacity(0.06))
+        pill
+            .frame(maxWidth: .infinity)
+            .onAppear { memory.refresh() }
     }
 
     /// 黑色胶囊：两侧都关时只有物理刘海那么宽；任一侧开启即两侧对称加宽（与真实一致）
