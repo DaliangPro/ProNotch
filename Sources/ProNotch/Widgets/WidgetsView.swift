@@ -386,7 +386,7 @@ private struct WorldClockCard: View {
             }
             if zones.isEmpty {
                 Spacer()
-                Text("在设置 → 功能组件 → 时钟里添加城市")
+                Text("在设置 → 刘海 → 世界时钟城市里添加")
                     .font(.system(size: 11.5)).foregroundColor(.white.opacity(0.45))
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
@@ -416,10 +416,17 @@ private struct WorldClockCard: View {
                                  ? Color(hex: "#FF9F0A").opacity(0.85)
                                  : .white.opacity(0.35))
                 .frame(width: 14)
-            Text(zone.title)
-                .font(.system(size: 12))
-                .foregroundColor(.white.opacity(0.75))
-                .lineLimit(1)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(zone.title)
+                    .font(.system(size: 12))
+                    .foregroundColor(.white.opacity(0.75))
+                    .lineLimit(1)
+                // 那边的日期（大梁老师 2026-09-22 要的）：跨时区约时间先看日期再看钟点
+                Text(ClockFormatter.dateText(for: now, zone: tz))
+                    .font(.system(size: 9.5))
+                    .foregroundColor(.white.opacity(0.4))
+                    .lineLimit(1)
+            }
             Spacer(minLength: 6)
             // 与本地的日期差：跨时区常差一天，不标出来最容易约错时间
             if let delta = Self.dayDeltaText(now, tz) {
@@ -432,7 +439,7 @@ private struct WorldClockCard: View {
                 .foregroundColor(.white.opacity(0.92))
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 30)
+        .frame(height: 34)
     }
 
     /// 6:00–17:59 算白天。粗口径够用——这一栏是给「现在方便不方便找他」一个提示，

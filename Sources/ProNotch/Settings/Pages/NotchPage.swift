@@ -49,7 +49,7 @@ struct NotchPage: View {
                              action: { settings.memoryWidgetEnabled.toggle() }) {
                     tileIcon("memorychip", on: settings.memoryWidgetEnabled)
                 }
-                SettingsTile(title: "时钟卡", isOn: settings.clockWidgetEnabled,
+                SettingsTile(title: "世界时钟", isOn: settings.clockWidgetEnabled,
                              action: { settings.clockWidgetEnabled.toggle() }) {
                     tileIcon("clock", on: settings.clockWidgetEnabled)
                 }
@@ -60,7 +60,7 @@ struct NotchPage: View {
             }
             SettingsCard {
                 if settings.clockWidgetEnabled {
-                    SettingsRow(title: "时钟城市") {
+                    SettingsRow(title: "世界时钟城市") {
                         HStack(spacing: 12) {
                             Text(citySummary).font(.system(size: 12)).foregroundColor(SettingsTheme.textMuted)
                                 .lineLimit(1).truncationMode(.tail)
@@ -149,7 +149,7 @@ private struct CityPicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("时钟卡城市").font(.system(size: 13, weight: .semibold)).foregroundColor(SettingsTheme.text)
+            Text("世界时钟城市").font(.system(size: 13, weight: .semibold)).foregroundColor(SettingsTheme.text)
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 3), spacing: 6) {
                 ForEach(ClockZone.allCases) { zone in
                     let on = settings.clockCardZones.contains(zone)

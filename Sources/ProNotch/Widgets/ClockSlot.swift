@@ -101,4 +101,19 @@ enum ClockFormatter {
         }
         return String(format: "%02d:%02d", hour, minute)
     }
+
+    /// 那个时区的日期：「9月22日 周一」（大梁老师 2026-09-22：世界时钟不仅要时间还要日期）。
+    /// 纯函数；DateFormatter 建一次复用，时区每次按参数设
+    static func dateText(for date: Date, zone: TimeZone) -> String {
+        dateFormatter.timeZone = zone
+        return dateFormatter.string(from: date)
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        f.calendar = Calendar(identifier: .gregorian)
+        f.dateFormat = "M月d日 EEE"
+        return f
+    }()
 }
