@@ -71,7 +71,7 @@ struct NotchPage: View {
                     CardDivider()
                 }
                 // 预警独立于天气卡显示：关掉天气卡仍按设置弹预警；关此开关才停 900 秒兜底刷新
-                SettingsRow(title: "恶劣天气预警") {
+                SettingsRow(title: "天气预警") {
                     HStack(spacing: 14) {
                         PopupMenu(label: "预览") {
                             ForEach(WeatherStore.previewAlerts, id: \.label) { item in
@@ -115,7 +115,7 @@ struct NotchPage: View {
                 }
                 if !axGranted && (settings.volumeHUDEnabled || settings.brightnessHUDEnabled) {
                     CardDivider()
-                    WarningRow(text: "辅助功能未授权，按键不会被接管", action: "去授权") {
+                    WarningRow(text: "辅助功能未授权，按键时不会显示", action: "去授权") {
                         PermissionStatus.openSystemSettings(.accessibility)
                     }
                 }

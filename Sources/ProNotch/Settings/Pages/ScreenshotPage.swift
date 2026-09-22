@@ -24,7 +24,7 @@ struct ScreenshotPage: View {
                 }
                 if !screenGranted {
                     CardDivider()
-                    WarningRow(text: "屏幕录制未授权，截图会失败", action: "去授权") {
+                    WarningRow(text: "屏幕录制未授权，无法截图", action: "去授权") {
                         PermissionStatus.openSystemSettings(.screenRecording)
                     }
                 }
@@ -49,7 +49,7 @@ struct ScreenshotPage: View {
                 if settings.translateEngine == "system" {
                     // 本机离线翻译：按原文语言下载语言包（免费、一次性），是否已装由系统判断——
                     // 不预查，LanguageAvailability().status 会无限挂起
-                    SettingsRow(title: "语言包", subtitle: "选截图原文的语言，系统会弹出下载确认") {
+                    SettingsRow(title: "语言包", subtitle: "选原文语言，由系统弹窗下载") {
                         PopupMenu(label: "下载") {
                             ForEach(SettingsStore.translateLangs.filter { $0 != settings.translateTargetLang }, id: \.self) { lang in
                                 Button(lang) {
@@ -70,7 +70,7 @@ struct ScreenshotPage: View {
                         }
                     }
                     CardDivider()
-                    SettingsRow(title: "深度思考", subtitle: "翻译短句用不上，关掉更快更省") {
+                    SettingsRow(title: "深度思考", subtitle: "翻译用不上，关掉更快") {
                         ThemedSwitch(isOn: $settings.translateThinking)
                     }
                     CardDivider()

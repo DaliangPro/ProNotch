@@ -17,7 +17,7 @@ struct ClipboardPage: View {
 
             SettingsCard {
                 // 关 = 停 0.5 秒轮询（真停机）；历史保留，清空是下面那行的独立职责
-                SettingsRow(title: "记录剪贴板", subtitle: "关闭后不再记录，已有历史保留") {
+                SettingsRow(title: "记录剪贴板", subtitle: "关闭后停止记录，历史保留") {
                     ThemedSwitch(isOn: $settings.clipboardEnabled)
                 }
                 CardDivider()
@@ -53,7 +53,7 @@ struct ClipboardPage: View {
                 TextButton(title: "新增") { beginAdd() }
             }
             if snippets.snippets.isEmpty {
-                SettingsNote(text: "还没有常用话术。新增后在剪贴板面板按 Tab 切到话术，双击即粘贴")
+                SettingsNote(text: "新增后在剪贴板面板按 Tab 切到话术，双击粘贴")
             } else {
                 SettingsCard {
                     ForEach(Array(snippets.snippets.enumerated()), id: \.element.id) { i, s in
@@ -86,7 +86,7 @@ struct ClipboardPage: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(editingID == nil ? "新增话术" : "编辑话术")
                 .font(.system(size: 15, weight: .semibold)).foregroundColor(SettingsTheme.text)
-            ThemedTextField(placeholder: "标题（可选，便于识别）", text: $draftTitle)
+            ThemedTextField(placeholder: "标题（可选）", text: $draftTitle)
             TextEditor(text: $draftContent)
                 .font(.system(size: 13)).foregroundColor(SettingsTheme.text)
                 .scrollContentBackground(.hidden).padding(8).frame(height: 150)

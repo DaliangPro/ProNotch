@@ -66,7 +66,7 @@ struct EndpointSheet: View {
                 HStack(spacing: 8) {
                     Image(systemName: "plus").font(.system(size: 12)).foregroundColor(SettingsTheme.textMuted)
                     TextField("", text: $newModel,
-                              prompt: Text("输入模型名，回车添加").foregroundColor(SettingsTheme.textMuted))
+                              prompt: Text("模型名").foregroundColor(SettingsTheme.textMuted))
                         .textFieldStyle(.plain).font(.system(size: 13)).foregroundColor(SettingsTheme.text)
                         .onSubmit(commitNewModel)
                     if !newModel.trimmingCharacters(in: .whitespaces).isEmpty {
@@ -78,7 +78,7 @@ struct EndpointSheet: View {
             .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(SettingsTheme.bg))
 
             HStack {
-                StatusLine(text: statusText, color: statusColor)
+                if !statusText.isEmpty { StatusLine(text: statusText, color: statusColor) }
                 Spacer()
                 TextButton(title: "测试连接", disabled: !canFetch, action: onTest)
             }
@@ -134,7 +134,7 @@ struct AccountSheet: View {
     @State private var custom: [String] = []
     @State private var loaded = false
     @State private var fetching = false
-    @State private var status = "未测试"
+    @State private var status = ""
     @State private var statusColor = SettingsTheme.textMuted
 
     private var models: [String] {
@@ -210,7 +210,7 @@ struct TranslatePromptSheet: View {
                 .frame(height: 180).padding(8)
                 .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(SettingsTheme.bg))
             HStack {
-                Text("{lang} 会自动替换成目标语言").font(.system(size: 12)).foregroundColor(SettingsTheme.textMuted)
+                Text("{lang} 代表目标语言").font(.system(size: 12)).foregroundColor(SettingsTheme.textMuted)
                 Spacer()
                 TextButton(title: "恢复默认") { settings.translatePrompt = SettingsStore.defaultTranslatePrompt }
                 Button { dismiss() } label: {

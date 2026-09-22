@@ -30,7 +30,7 @@ struct AgentPage: View {
             }
             if visible.isEmpty {
                 SettingsCard {
-                    Text("未检测到支持的 AI 编码工具（Claude Code / Codex / Grok / Kimi Code）")
+                    Text("未检测到 Claude Code、Codex、Grok 或 Kimi Code")
                         .font(.system(size: 12)).foregroundColor(SettingsTheme.textMuted)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 14).padding(.vertical, 12)
@@ -74,7 +74,7 @@ struct AgentPage: View {
                     }
                     CardDivider()
                     if alertKinds.isEmpty {
-                        SettingsRow(title: "哪些家", subtitle: "先在上面点亮至少一家") { EmptyView() }
+                        SettingsRow(title: "哪些家", subtitle: "先在上面点亮一家") { EmptyView() }
                     } else {
                         SettingsVRow(title: "哪些家", subtitle: "会写入该 Agent 的钩子配置") {
                             ChipGroup(options: alertKinds, title: { $0.displayName },

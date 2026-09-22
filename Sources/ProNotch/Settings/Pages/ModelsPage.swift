@@ -21,7 +21,7 @@ struct ModelsPage: View {
                 TextButton(title: "新增") { editing = EditTarget(id: chatStore.createProvider(), isNew: true) }
             }
             if chatStore.providers.isEmpty {
-                SettingsNote(text: "还没有服务商。新增后填地址与 Key，AI 闪问和截图翻译就能选模型")
+                SettingsNote(text: "还没有服务商")
             } else {
                 SettingsCard {
                     ForEach(Array(chatStore.providers.enumerated()), id: \.element.id) { i, p in
