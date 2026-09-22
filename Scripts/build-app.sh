@@ -28,9 +28,15 @@ fi
 
 if [ "$VARIANT" = "universal" ]; then
     swift build -c "$CONFIG" --arch arm64 --arch x86_64
-    # 多架构产物在 .build/apple/Products/<首字母大写的配置名>/ 下
+    # 多架构产物在 <产物根>/Products/<首字母大写的配置名>/ 下，产物根随 SwiftPM 版本变：
+    # 旧版是 .build/apple，Swift 6.4（Xcode 27）实测改到 .build/out（2026-09-22 发 2.10.0 时撞上，
+    # 构建成功却在 cp 这一步找不到文件）。两处都认，取最新的那个——别让旧工具链留下的旧产物混进包里
     CONFIG_DIR="$(echo "$CONFIG" | awk '{print toupper(substr($0,1,1)) substr($0,2)}')"
-    BIN=".build/apple/Products/$CONFIG_DIR/ProNotch"
+    BIN=$(ls -t ".build/out/Products/$CONFIG_DIR/ProNotch" ".build/apple/Products/$CONFIG_DIR/ProNotch" 2>/dev/null | head -1 || true)
+    if [ -z "$BIN" ]; then
+        echo "❌ 通用构建成功但找不到产物（查过 .build/out 与 .build/apple 下的 Products/$CONFIG_DIR）" >&2
+        exit 1
+    fi
 else
     swift build -c "$CONFIG"
     BIN=".build/$CONFIG/ProNotch"
