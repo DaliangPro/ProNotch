@@ -6,8 +6,6 @@ struct ChatPage: View {
     @EnvironmentObject var settings: SettingsStore
     @EnvironmentObject var chatStore: ChatStore
 
-    @State private var endpointSheet = false
-
     private var engine: SearchEngine { SearchEngine(rawValue: chatStore.draftSearchEngine) ?? .duckduckgo }
 
     var body: some View {
@@ -22,15 +20,7 @@ struct ChatPage: View {
                 }
             }
 
-            SettingsSectionHeader(text: "接口") {
-                TextButton(title: "新增") { chatStore.addProvider(); endpointSheet = true }
-            }
-            SettingsCard {
-                ForEach(Array(chatStore.providers.enumerated()), id: \.element.id) { i, p in
-                    if i > 0 { CardDivider() }
-                    providerRow(p)
-                }
-            }
+            ProviderListSection(mode: .chat)
 
             SectionLabel(text: "对话")
             SettingsCard {
@@ -71,34 +61,6 @@ struct ChatPage: View {
                 }
             }
         }
-        .sheet(isPresented: $endpointSheet) { ChatEndpointSheet() }
-    }
-
-    private func providerRow(_ p: APIProvider) -> some View {
-        let current = p.id == chatStore.currentProviderID
-        return HStack(spacing: 12) {
-            Button { chatStore.activateProvider(p.id) } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: current ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 14))
-                        .foregroundColor(current ? SettingsTheme.accent : SettingsTheme.textMuted)
-                    Text(p.name.isEmpty ? "未命名" : p.name)
-                        .font(.system(size: 13, weight: current ? .semibold : .regular))
-                        .foregroundColor(SettingsTheme.text)
-                    Text(host(of: p.baseURL)).font(.system(size: 12)).foregroundColor(SettingsTheme.textMuted)
-                        .lineLimit(1)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            Spacer(minLength: 8)
-            if current { connectivityLabel }
-            TextButton(title: "编辑") {
-                if !current { chatStore.activateProvider(p.id) }
-                endpointSheet = true
-            }
-        }
-        .padding(.horizontal, 14).padding(.vertical, 11)
     }
 
     /// 分段控件用短名；displayName 带的「（免费）（中文强）」说明放不下一行
@@ -108,19 +70,6 @@ struct ChatPage: View {
         case .tavily: return "Tavily"
         case .brave: return "Brave"
         case .bocha: return "博查"
-        }
-    }
-
-    private func host(of url: String) -> String {
-        URLComponents(string: url)?.host ?? URL(string: url)?.host ?? url
-    }
-
-    @ViewBuilder private var connectivityLabel: some View {
-        switch chatStore.connectivity {
-        case .unknown: EmptyView()
-        case .checking: Text("检测中…").font(.system(size: 12)).foregroundColor(SettingsTheme.textMuted)
-        case .ok: Text("连接正常").font(.system(size: 12)).foregroundColor(SettingsTheme.success)
-        case .failed: Text("连接失败").font(.system(size: 12)).foregroundColor(SettingsTheme.danger)
         }
     }
 

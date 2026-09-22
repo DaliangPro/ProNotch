@@ -6,9 +6,6 @@ struct ScreenshotPage: View {
     @EnvironmentObject var settings: SettingsStore
     @EnvironmentObject var chatStore: ChatStore
 
-    @State private var endpointSheet = false
-    /// 从翻译页「编辑」进弹层时闪问原本的当前套：编辑要经过 ChatStore 的当前套，关了弹层切回去
-    @State private var chatProviderToRestore: UUID?
     @State private var promptSheet = false
     @State private var packRequest: [String]?          // [源语言码, 目标语言码]：置值触发系统语言包下载确认
     @State private var screenGranted = true
@@ -64,32 +61,6 @@ struct ScreenshotPage: View {
                         .background(LanguagePackDownloader(request: $packRequest))
                     }
                 } else {
-                    // 与闪问共用一个接口池（2026-09-22 大梁老师定）：这里列的就是闪问页那些套
-                    SettingsRow(title: "接口") {
-                        HStack(spacing: 12) {
-                            if !settings.translateUseChatAPI {
-                                TextButton(title: "编辑") { editTranslateProvider() }
-                            }
-                            PopupMenu(label: endpointLabel) {
-                                Button("同闪问 · \(chatProviderName)") { settings.translateUseChatAPI = true }
-                                Divider()
-                                ForEach(chatStore.providers) { p in
-                                    Button(p.name.isEmpty ? "未命名" : p.name) {
-                                        settings.translateUseChatAPI = false
-                                        settings.translateProviderID = p.id
-                                    }
-                                }
-                                Divider()
-                                Button("新建…") {
-                                    chatProviderToRestore = chatStore.currentProviderID
-                                    chatStore.addProvider()
-                                    settings.translateUseChatAPI = false
-                                    settings.translateProviderID = chatStore.currentProviderID
-                                    endpointSheet = true
-                                }
-                            }
-                        }
-                    }
                     CardDivider()
                     SettingsRow(title: "深度思考", subtitle: "翻译短句用不上，关掉更快更省") {
                         ThemedSwitch(isOn: $settings.translateThinking)
@@ -106,42 +77,16 @@ struct ScreenshotPage: View {
                     }
                 }
             }
+
+            // 与闪问页同一个接口池、同一个列表组件（大梁老师 2026-09-22 要求两页统一）
+            if settings.translateEngine != "system" {
+                ProviderListSection(mode: .translate)
+            }
         }
-        .sheet(isPresented: $endpointSheet, onDismiss: restoreChatProvider) { ChatEndpointSheet() }
         .sheet(isPresented: $promptSheet) { TranslatePromptSheet() }
         .onAppear { screenGranted = PermissionStatus.granted(.screenRecording) }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             screenGranted = PermissionStatus.granted(.screenRecording)
         }
-    }
-
-    private var chatProviderName: String {
-        let name = chatStore.providers.first { $0.id == chatStore.currentProviderID }?.name ?? ""
-        return name.isEmpty ? "未命名" : name
-    }
-
-    private var endpointLabel: String {
-        if settings.translateUseChatAPI { return "同闪问 · \(chatProviderName)" }
-        guard let p = chatStore.providers.first(where: { $0.id == settings.translateProviderID }) else {
-            return "同闪问 · \(chatProviderName)"   // 指定的那套已被删：实际就是跟闪问
-        }
-        return p.name.isEmpty ? "未命名" : p.name
-    }
-
-    /// 编辑翻译选的那套：ChatStore 只能编辑当前套，先切过去、关了弹层再切回闪问原来那套
-    private func editTranslateProvider() {
-        guard let id = settings.translateProviderID,
-              chatStore.providers.contains(where: { $0.id == id }) else { return }
-        if id != chatStore.currentProviderID {
-            chatProviderToRestore = chatStore.currentProviderID
-            chatStore.activateProvider(id)
-        }
-        endpointSheet = true
-    }
-
-    private func restoreChatProvider() {
-        guard let prev = chatProviderToRestore else { return }
-        chatProviderToRestore = nil
-        if chatStore.providers.contains(where: { $0.id == prev }) { chatStore.activateProvider(prev) }
     }
 }
