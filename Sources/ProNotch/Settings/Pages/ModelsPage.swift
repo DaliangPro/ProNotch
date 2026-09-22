@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// AI 模型配置：账号只在这里管（磁贴一排，点开编辑），每个功能各选各的模型。
-/// 大梁老师 2026-09-22 定：用户脑子里没有「接口」，只有账号和模型——账号配一次，功能只选模型
+/// AI 模型配置：只管账号（地址、Key、模型列表）。
+/// 用户脑子里没有「接口」，只有账号和模型——账号在这里配一次，每个功能在自己页上选模型。
+/// 这里不放任何功能的选项，免得同一件事拆在两页互相指路（大梁老师 2026-09-22 指出）
 struct ModelsPage: View {
-    @EnvironmentObject var settings: SettingsStore
     @EnvironmentObject var chatStore: ChatStore
 
     private struct EditTarget: Identifiable {
@@ -41,19 +41,10 @@ struct ModelsPage: View {
                     ForEach(0..<(4 - row.count), id: \.self) { _ in Color.clear.frame(maxWidth: .infinity) }
                 }
             }
-            SettingsNote(text: "点账号编辑地址、Key 与模型列表")
-
-            SectionLabel(text: "用哪个模型")
-            SettingsCard {
-                SettingsRow(title: "AI 闪问") { chatModelMenu }
-                CardDivider()
-                SettingsRow(title: "截图翻译") { translateModelMenu }
-            }
+            SettingsNote(text: "点账号编辑地址、Key 与模型列表；用哪个模型在各功能页上选")
         }
         .sheet(item: $editing) { AccountSheet(providerID: $0.id, isNew: $0.isNew) }
     }
-
-    // MARK: - 账号磁贴
 
     /// 账号 id 加一个 nil 代表「新增」磁贴，按每行四块切开
     private func tileRows() -> [[UUID?]] {
@@ -66,63 +57,5 @@ struct ModelsPage: View {
         return Text(letter).font(.system(size: 10, weight: .bold)).foregroundColor(SettingsTheme.text)
             .frame(width: 18, height: 18)
             .background(Circle().fill(Color.white.opacity(0.12)))
-    }
-
-    // MARK: - 用哪个模型
-
-    private func providerName(_ id: UUID?) -> String {
-        let name = chatStore.providers.first { $0.id == id }?.name ?? ""
-        return name.isEmpty ? "未命名" : name
-    }
-
-    private var chatSummary: String {
-        chatStore.model.isEmpty ? "未选" : "\(providerName(chatStore.currentProviderID)) · \(chatStore.model)"
-    }
-
-    private var hasAnyModel: Bool {
-        chatStore.providers.contains { !ChatStore.models(of: $0).isEmpty }
-    }
-
-    /// 按账号分组的模型菜单；每个功能只是动作不同
-    @ViewBuilder private func groupedModels(_ pick: @escaping (APIProvider, String) -> Void) -> some View {
-        if hasAnyModel {
-            ForEach(chatStore.providers) { p in
-                let ms = ChatStore.models(of: p)
-                if !ms.isEmpty {
-                    Section(p.name.isEmpty ? "未命名" : p.name) {
-                        ForEach(ms, id: \.self) { m in Button(m) { pick(p, m) } }
-                    }
-                }
-            }
-        } else {
-            Text("先在账号里获取模型")
-        }
-    }
-
-    private var chatModelMenu: some View {
-        PopupMenu(label: chatSummary) {
-            groupedModels { p, m in chatStore.useModel(providerID: p.id, model: m) }
-        }
-    }
-
-    private var translateSummary: String {
-        guard !settings.translateUseChatAPI,
-              let p = chatStore.providers.first(where: { $0.id == settings.translateProviderID }) else {
-            return "跟随闪问"
-        }
-        let model = settings.translateModel.isEmpty ? p.model : settings.translateModel
-        return model.isEmpty ? providerName(p.id) : "\(providerName(p.id)) · \(model)"
-    }
-
-    private var translateModelMenu: some View {
-        PopupMenu(label: translateSummary) {
-            Button("跟随闪问") { settings.translateUseChatAPI = true }
-            Divider()
-            groupedModels { p, m in
-                settings.translateUseChatAPI = false
-                settings.translateProviderID = p.id
-                settings.translateModel = m
-            }
-        }
     }
 }

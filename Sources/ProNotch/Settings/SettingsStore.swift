@@ -253,8 +253,8 @@ final class SettingsStore: ObservableObject {
             ? ActiveProviderSnapshot.load(from: .production)
             : ActiveProviderSnapshot.load(from: .production, providerID: translateProviderID)
         let model = (translateUseChatAPI || translateModel.isEmpty) ? snapshot.model : translateModel
-        return (snapshot.baseURL, snapshot.apiKey, model,
-                snapshot.readiness == .keyPending || (model.isEmpty ? false : snapshot.apiKey.isEmpty && !snapshot.baseURL.isEmpty))
+        let keyPending = !snapshot.baseURL.isEmpty && !model.isEmpty && snapshot.apiKey.isEmpty
+        return (snapshot.baseURL, snapshot.apiKey, model, keyPending)
     }
 
     static let translateLangs = ["中文", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский"]

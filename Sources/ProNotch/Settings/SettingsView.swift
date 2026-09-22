@@ -46,11 +46,11 @@ struct SettingsView: View {
         switch selected {
         case .general:    GeneralPage()
         case .notch:      NotchPage()
-        case .models:     ModelsPage()
         case .chat:       ChatPage()
         case .screenshot: ScreenshotPage()
         case .clipboard:  ClipboardPage()
         case .agent:      AgentPage()
+        case .models:     ModelsPage()
         }
     }
 

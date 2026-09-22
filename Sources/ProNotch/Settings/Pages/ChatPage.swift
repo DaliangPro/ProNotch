@@ -22,12 +22,9 @@ struct ChatPage: View {
 
             SectionLabel(text: "对话")
             SettingsCard {
-                // 用哪个模型在「AI 模型配置」页选（账号也在那里管），这里只看一眼、一键过去
+                // 就在这里选，按账号分组；账号本身在「AI 模型配置」页管
                 SettingsRow(title: "模型") {
-                    HStack(spacing: 12) {
-                        Text(modelSummary).font(.system(size: 12)).foregroundColor(SettingsTheme.textMuted).lineLimit(1)
-                        TextButton(title: "更改") { settings.pendingSection = SettingsSection.models.rawValue }
-                    }
+                    ModelPicker(label: modelSummary) { p, m in chatStore.useModel(providerID: p.id, model: m) }
                 }
                 CardDivider()
                 SettingsRow(title: "深度思考") { ThemedSwitch(isOn: $chatStore.thinkingEnabled) }

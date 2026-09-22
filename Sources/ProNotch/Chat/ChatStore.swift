@@ -500,6 +500,11 @@ final class ChatStore: ObservableObject {
         if !all.contains(providers[i].model), let first = all.first { providers[i].model = first }
         persistProviders()
         env.saveKey(key, account: providers[i].keychainAccount)
+        // 闪问还没配过（当前套是空壳）而这套配全了 → 直接用上，不必再去选一次模型
+        if id != currentProviderID, !isConfigured, !url.isEmpty, !providers[i].model.isEmpty {
+            activateProvider(id)
+            return
+        }
         guard id == currentProviderID else { return }
         providerRevision += 1
         applyCurrentProviderToFields()

@@ -61,11 +61,12 @@ struct ScreenshotPage: View {
                         .background(LanguagePackDownloader(request: $packRequest))
                     }
                 } else {
-                    // 用哪个模型在「AI 模型配置」页选，这里只看一眼、一键过去
+                    // 就在这里选，按账号分组，顶上多一项「跟随闪问」；账号本身在「AI 模型配置」页管
                     SettingsRow(title: "模型") {
-                        HStack(spacing: 12) {
-                            Text(modelSummary).font(.system(size: 12)).foregroundColor(SettingsTheme.textMuted).lineLimit(1)
-                            TextButton(title: "更改") { settings.pendingSection = SettingsSection.models.rawValue }
+                        ModelPicker(label: modelSummary, followChat: { settings.translateUseChatAPI = true }) { p, m in
+                            settings.translateUseChatAPI = false
+                            settings.translateProviderID = p.id
+                            settings.translateModel = m
                         }
                     }
                     CardDivider()
@@ -100,7 +101,7 @@ struct ScreenshotPage: View {
     private var modelSummary: String {
         guard !settings.translateUseChatAPI,
               let p = chatStore.providers.first(where: { $0.id == settings.translateProviderID }) else {
-            return chatStore.model.isEmpty ? "跟随闪问" : "跟随闪问 · \(providerName(chatStore.currentProviderID)) \(chatStore.model)"
+            return "跟随闪问"
         }
         let model = settings.translateModel.isEmpty ? p.model : settings.translateModel
         return model.isEmpty ? providerName(p.id) : "\(providerName(p.id)) · \(model)"
