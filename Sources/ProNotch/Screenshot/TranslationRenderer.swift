@@ -46,32 +46,57 @@ enum TranslationRenderer {
         return reserved == 0 ? plain >= 1 : plain >= 2
     }
 
-    /// 从块文本里抠出「非目标语言」的待翻片段（位置+原文）。目标是 CJK（中/日/韩）→ 抠拉丁片段
-    /// （标识符/英文短语，如 "import NaturalLanguage"、"status=200"），产品名/缩写/代码值按上面规则保留；
-    /// 目标是拉丁语言 → 抠连续 CJK 片段。只送这些片段、不送整块——避免中文长句拖慢/中译中被拒。
-    nonisolated static func translatableFragments(in text: String, targetIsCJK: Bool) -> [(range: NSRange, text: String)] {
-        // 拉丁分支只抠「纯字母词／空格连接的字母短语」（import NaturalLanguage、Read a file、looksTranslatable）；
+    /// 中日韩片段的两种写法：汉字/假名（含日文长音符「ー」）与谚文分开抠，免得中韩混排被连成一段。
+    /// 片段以文字起止、中间可夹句读，整句送翻（日文汉字与假名不拆开）；只有韩文按词空格，才允许跨空格相连
+    nonisolated static let cjkRunPatterns: [String] = [
+        "[\\p{Han}\\p{Hiragana}\\p{Katakana}ー々〆](?:[\\p{Han}\\p{Hiragana}\\p{Katakana}ー々〆、。，・「」『』]*[\\p{Han}\\p{Hiragana}\\p{Katakana}ー々〆])?",
+        "\\p{Hangul}(?:[\\p{Hangul}、。， ]*\\p{Hangul})?",
+    ]
+
+    /// 一段中日韩片段的语种：带假名＝日文，带谚文＝韩文；纯汉字随所在块——块里有假名就是日文汉字，否则算中文
+    nonisolated static func cjkRunLanguage(_ run: String, blockHasKana: Bool) -> String {
+        if run.range(of: "\\p{Hangul}", options: .regularExpression) != nil { return "ko" }
+        if blockHasKana || run.range(of: "[\\p{Hiragana}\\p{Katakana}]", options: .regularExpression) != nil { return "ja" }
+        return "zh"
+    }
+
+    /// 从块文本里抠出「非目标语言」的待翻片段（位置+原文，按位置升序）。两路：
+    /// - 字母文字（拉丁/西里尔）：仅目标是中日韩时抠（标识符/英文短语，如 "import NaturalLanguage"、"status=200"），
+    ///   产品名/缩写/代码值按上面规则保留；目标本身是字母语言时不动，免得把代码和专名也翻了；
+    /// - 中日韩：按片段语种判断，与目标不同才抠——目标中文时日文/韩文要翻、中文原样保留，目标英文时全抠。
+    /// 只送这些片段、不送整块——避免中文长句拖慢/中译中被拒。
+    nonisolated static func translatableFragments(in text: String, targetLang: String) -> [(range: NSRange, text: String)] {
+        let target = String(targetLang.prefix(2))
+        let ns = text as NSString
+        let all = NSRange(location: 0, length: ns.length)
+        var result: [(range: NSRange, text: String)] = []
+        // 字母分支只抠「纯字母词／空格连接的字母短语」（import NaturalLanguage、Read a file、looksTranslatable）；
         // 含数字的代码值/版本号（status=200、v1.6.0）不匹配此模式，天然留在原文——再靠「紧邻的下一字符是数字或 =」
         // 兜掉 status 这种「字母紧贴代码值」的前缀，避免把 status 单独抠去翻成「状态=200」。
-        let pattern = targetIsCJK
-            ? "[A-Za-z]+(?: [A-Za-z]+)*"
-            : "[\\x{4E00}-\\x{9FFF}\\x{3400}-\\x{4DBF}\\x{3040}-\\x{30FF}\\x{AC00}-\\x{D7A3}]+"
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return [] }
-        let ns = text as NSString
-        var result: [(range: NSRange, text: String)] = []
-        re.enumerateMatches(in: text, range: NSRange(location: 0, length: ns.length)) { m, _, _ in
-            guard let m else { return }
-            if targetIsCJK {                                   // 下一字符是数字或 = → 这是代码值前缀，跳过
+        if ["zh", "ja", "ko"].contains(target),
+           let re = try? NSRegularExpression(pattern: "[\\p{Latin}\\p{Cyrillic}]+(?: [\\p{Latin}\\p{Cyrillic}]+)*") {
+            re.enumerateMatches(in: text, range: all) { m, _, _ in
+                guard let m else { return }
                 let end = m.range.location + m.range.length
-                if end < ns.length {
+                if end < ns.length {                            // 下一字符是数字或 = → 这是代码值前缀，跳过
                     let next = ns.substring(with: NSRange(location: end, length: 1))
                     if next == "=" || next.range(of: "^[0-9]$", options: .regularExpression) != nil { return }
                 }
+                let frag = ns.substring(with: m.range)
+                if latinFragNeedsTranslation(frag) { result.append((range: m.range, text: frag)) }
             }
-            let frag = ns.substring(with: m.range)
-            if !targetIsCJK || latinFragNeedsTranslation(frag) { result.append((range: m.range, text: frag)) }
         }
-        return result
+        // 中日韩片段：语种与目标不同才送翻
+        let hasKana = text.range(of: "[\\p{Hiragana}\\p{Katakana}]", options: .regularExpression) != nil
+        for pattern in cjkRunPatterns {
+            guard let re = try? NSRegularExpression(pattern: pattern) else { continue }
+            re.enumerateMatches(in: text, range: all) { m, _, _ in
+                guard let m else { return }
+                let frag = ns.substring(with: m.range)
+                if cjkRunLanguage(frag, blockHasKana: hasKana) != target { result.append((range: m.range, text: frag)) }
+            }
+        }
+        return result.sorted { $0.range.location < $1.range.location }   // applyFragments 依赖升序从后往前替换
     }
 
     /// 把块内片段按译文就地替换（从后往前，避免前面替换改变后面片段的位置），中文与保留项原样不动

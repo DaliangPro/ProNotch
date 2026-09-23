@@ -3099,10 +3099,10 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         Task {
             let blocks = Self.recognizeBlocks(cropped)
             if blocks.isEmpty { await MainActor.run { self.translateFailed("未识别到文字") }; return }
-            let targetIsCJK = ["zh", "ja", "ko"].contains { SystemTranslator.languageCode(for: lang).hasPrefix($0) }
-            // 只抠出每块里「非目标语言」的片段送翻（中文页面就是抠英文/标识符），中文原样保留、译文就地填回。
-            // 送翻量从「整块中文长句」骤降到「零星英文短词」——AI 秒回不再超时，系统翻译也不再中译中被拒。
-            let blockFrags = blocks.map { TranslationRenderer.translatableFragments(in: $0.text, targetIsCJK: targetIsCJK) }
+            let targetCode = SystemTranslator.languageCode(for: lang)
+            // 只抠出每块里「非目标语言」的片段送翻（中文页面就是抠英文/日文/韩文），中文原样保留、译文就地填回。
+            // 送翻量从「整块中文长句」骤降到「零星外文片段」——AI 秒回不再超时，系统翻译也不再中译中被拒。
+            let blockFrags = blocks.map { TranslationRenderer.translatableFragments(in: $0.text, targetLang: targetCode) }
             var uniqueList: [String] = []
             var seen = Set<String>()
             for frags in blockFrags {

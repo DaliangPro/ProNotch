@@ -32,7 +32,7 @@ final class TranslationRendererTests: XCTestCase {
 
     func test抠片段_目标中文时抠英文放过代码值() {
         let frags = TranslationRenderer.translatableFragments(
-            in: "运行结果 status=200 与 Read a file 两项", targetIsCJK: true)
+            in: "运行结果 status=200 与 Read a file 两项", targetLang: "zh-Hans")
         let texts = frags.map(\.text)
         XCTAssertTrue(texts.contains("Read a file"))
         XCTAssertFalse(texts.contains("status"), "字母紧贴代码值的前缀不该被单独抠去翻")
@@ -40,22 +40,59 @@ final class TranslationRendererTests: XCTestCase {
 
     func test抠片段_目标英文时抠中文() {
         let frags = TranslationRenderer.translatableFragments(
-            in: "打开 Finder 窗口", targetIsCJK: false)
+            in: "打开 Finder 窗口", targetLang: "en")
         XCTAssertEqual(frags.map(\.text), ["打开", "窗口"])
+    }
+
+    func test抠片段_目标中文时日文整句送翻() {
+        // 日文汉字与假名不拆开；纯汉字词在带假名的块里也算日文
+        let frags = TranslationRenderer.translatableFragments(
+            in: "東京都の天気予報、明日は晴れ。", targetLang: "zh-Hans")
+        XCTAssertEqual(frags.map(\.text), ["東京都の天気予報、明日は晴れ"])
+        let kanjiOnly = TranslationRenderer.translatableFragments(
+            in: "設定 ボタンを押す", targetLang: "zh-Hans")
+        XCTAssertEqual(kanjiOnly.map(\.text), ["設定", "ボタンを押す"])
+    }
+
+    func test抠片段_目标中文时韩文送翻中文保留() {
+        let frags = TranslationRenderer.translatableFragments(
+            in: "中文说明 안녕하세요 세계", targetLang: "zh-Hans")
+        XCTAssertEqual(frags.map(\.text), ["안녕하세요 세계"])
+    }
+
+    func test抠片段_目标日文时中文要翻日文保留() {
+        let zh = TranslationRenderer.translatableFragments(in: "打开设置", targetLang: "ja")
+        XCTAssertEqual(zh.map(\.text), ["打开设置"])
+        let ja = TranslationRenderer.translatableFragments(in: "設定を開く", targetLang: "ja")
+        XCTAssertTrue(ja.isEmpty)
+    }
+
+    func test抠片段_带重音的西文与俄文不被拆词() {
+        let frags = TranslationRenderer.translatableFragments(
+            in: "Ouvrir le café · Привет мир", targetLang: "zh-Hans")
+        XCTAssertEqual(frags.map(\.text), ["Ouvrir le café", "Привет мир"])
+    }
+
+    func test抠片段_混排按位置升序且回填不错位() {
+        let text = "点击 안녕 然后 Cancel"
+        let frags = TranslationRenderer.translatableFragments(in: text, targetLang: "zh-Hans")
+        XCTAssertEqual(frags.map(\.text), ["안녕", "Cancel"])
+        let out = TranslationRenderer.applyFragments(text, frags, ["안녕": "你好", "Cancel": "取消"])
+        XCTAssertEqual(out, "点击 你好 然后 取消")
     }
 
     // MARK: - 译文就地回填
 
     func test回填_从后往前替换不错位() {
         let text = "点击 Save 然后 Cancel"
-        let frags = TranslationRenderer.translatableFragments(in: text, targetIsCJK: true)
+        let frags = TranslationRenderer.translatableFragments(in: text, targetLang: "zh-Hans")
         let out = TranslationRenderer.applyFragments(text, frags, ["Save": "保存", "Cancel": "取消"])
         XCTAssertEqual(out, "点击 保存 然后 取消")
     }
 
     func test回填_无译文或译文同原文时保留原样() {
         let text = "点击 Save"
-        let frags = TranslationRenderer.translatableFragments(in: text, targetIsCJK: true)
+        let frags = TranslationRenderer.translatableFragments(in: text, targetLang: "zh-Hans")
         XCTAssertEqual(TranslationRenderer.applyFragments(text, frags, [:]), text)
         XCTAssertEqual(TranslationRenderer.applyFragments(text, frags, ["Save": "Save"]), text)
     }
