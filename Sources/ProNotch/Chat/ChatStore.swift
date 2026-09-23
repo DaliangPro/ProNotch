@@ -1468,7 +1468,8 @@ final class ChatStore: ObservableObject {
         var (data, response) = try await env.transport.data(for: request)
         // 模型不认 thinking 字段：摘掉重发。这是轻量内部任务（查询改写），
         // 不弹提醒——正式对话那一路会说，不必重复打扰
-        if disable, let http = response as? HTTPURLResponse, (400...499).contains(http.statusCode) {
+        if disable, let http = response as? HTTPURLResponse, (400...499).contains(http.statusCode),
+           !ThinkingSupport.isContentRejection(String(decoding: data, as: UTF8.self)) {
             request.httpBody = try JSONSerialization.data(
                 withJSONObject: Self.requestBody(payload, config: config, stream: false, disableThinking: false))
             let retry = try await env.transport.data(for: request)
@@ -1603,7 +1604,7 @@ final class ChatStore: ObservableObject {
                 // 用户关了深度思考、模型却不认这个字段：摘掉重发一次。
                 // 这不是失败，别把用户吓成接口挂了——重发成功就只留一句提醒
                 var recovered = false
-                if disable, (400...499).contains(http.statusCode) {
+                if disable, (400...499).contains(http.statusCode), !ThinkingSupport.isContentRejection(detail) {   // 审核拦截与 thinking 无关，不重发
                     request.httpBody = try JSONSerialization.data(
                         withJSONObject: Self.requestBody(payload, config: config, stream: true, disableThinking: false))
                     let retry = try await env.transport.stream(for: request)

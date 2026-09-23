@@ -168,4 +168,13 @@ final class ThinkingSwitchTests: XCTestCase {
         XCTAssertEqual(transport.thinkingFlags, [false], "开着＝随服务端默认，一个字段都不发")
         XCTAssertNil(store.noticeText)
     }
+
+    /// 审核拦截不能当成「不认 thinking」去重发：百炼日文截图实测，重发让模型转去思考、拖到 30 秒超时
+    func test审核拦截识别() {
+        XCTAssertTrue(ThinkingSupport.isContentRejection(
+            #"{"code":"DataInspectionFailed","message":"<400> InternalError.Algo.DataInspectionFailed: Output data may contain inappropriate content."}"#))
+        XCTAssertTrue(ThinkingSupport.isContentRejection(#"{"error":{"code":"content_filter"}}"#))
+        XCTAssertFalse(ThinkingSupport.isContentRejection(#"{"error":{"message":"Unrecognized request argument supplied: thinking"}}"#))
+        XCTAssertFalse(ThinkingSupport.isContentRejection(#"{"error":{"message":"Incorrect API key provided"}}"#))
+    }
 }

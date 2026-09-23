@@ -25,6 +25,15 @@ final class ThinkingSupport: @unchecked Sendable {
         return !unsupported.contains(Self.key(baseURL, model))
     }
 
+    /// 4xx 是不是服务商的内容安全审核拦截（百炼 DataInspectionFailed、OpenAI content_filter 等）。
+    /// 这类错与 thinking 字段无关，摘掉字段重发只会让模型转去深度思考、再被拦一次或拖到超时——
+    /// 调用方据此跳过重发，直接把审核原因报给用户
+    static func isContentRejection(_ body: String) -> Bool {
+        let t = body.lowercased()
+        return ["datainspectionfailed", "data_inspection_failed", "inappropriate content", "content_filter"]
+            .contains { t.contains($0) }
+    }
+
     /// 记下「这个模型不认关闭深度思考」。只在摘掉字段重发成功后才调用——
     /// 否则 Key 失效、余额不足这些同为 4xx 的真错因会被误记成不支持
     func markUnsupported(baseURL: String, model: String) {

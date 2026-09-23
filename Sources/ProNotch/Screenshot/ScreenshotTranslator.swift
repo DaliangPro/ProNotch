@@ -162,7 +162,13 @@ enum ScreenshotTranslator {
         var (data, resp) = try await URLSession.shared.data(for: req)
         // 模型不认 `thinking` 字段：摘掉重发一次，成功就只当提醒，不报错惊扰用户。
         // 只有重发确实成功才记账——Key 失效、余额不足同样是 4xx，不能一律甩锅给深度思考
+        if let http = resp as? HTTPURLResponse, (400...499).contains(http.statusCode),
+           ThinkingSupport.isContentRejection(String(decoding: data, as: UTF8.self)) {
+            // 内容审核拦截：与 thinking 无关，重发只会拖到超时（大梁老师日文截图实测：百炼审核 400 → 重发 30 秒超时）
+            throw err("内容被服务商安全审核拦截，可换服务商或改用系统翻译")
+        }
         if disable, let http = resp as? HTTPURLResponse, (400...499).contains(http.statusCode) {
+            AppLog.screenshot.info("翻译首轮 \(http.statusCode)，摘掉 thinking 重发: \(apiMessage(data) ?? "-", privacy: .public)")
             req.httpBody = try body(false)
             let retry = try await URLSession.shared.data(for: req)
             if let h = retry.1 as? HTTPURLResponse, (200...299).contains(h.statusCode) {
