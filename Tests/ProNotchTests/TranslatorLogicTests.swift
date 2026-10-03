@@ -76,4 +76,13 @@ final class TranslatorLogicTests: XCTestCase {
         XCTAssertEqual(cut?.count, 121)   // 120 字 + 省略号
         XCTAssertTrue(cut?.hasSuffix("…") == true)
     }
+
+    /// 框选零星短词＝查词意图，走逐词词典模式（true/false 在整屏模式下会被当代码原样退回）
+    func test查词模式判定() {
+        XCTAssertTrue(ScreenshotTranslator.isLookup(["true"]))
+        XCTAssertTrue(ScreenshotTranslator.isLookup(["true", "false", "Read a file"]))
+        XCTAssertFalse(ScreenshotTranslator.isLookup([]))
+        XCTAssertFalse(ScreenshotTranslator.isLookup(["a", "b", "c", "d"]), "超过 3 段是整屏翻译")
+        XCTAssertFalse(ScreenshotTranslator.isLookup(["Here is your GitHub authentication code"]), "长句不是查词")
+    }
 }

@@ -26,6 +26,11 @@ enum ScreenshotTranslator {
         // 并行开关关闭（接口限流严）或文字少：单请求，无拆分开销。
         // 预算 400→120：片段模式抠出的英文短语总量常不足 400，一直落成单块、并行与渐进渲染全都
         // 没机会介入（大梁老师实测慢的一环）；120 让零星片段也能切 3~4 块并发，先译完先上屏
+        if isLookup(texts) {
+            let out = try await lookup(texts, to: lang, config: config, onNotice: onNotice)
+            onPartial?(0..<texts.count, out, 1, 1)
+            return out
+        }
         let ranges = config.parallel ? chunkRanges(texts, budget: 120) : [0..<texts.count]
         guard ranges.count > 1 else {
             let out = try await translateChunk(texts, to: lang, system: system, config: config, onNotice: onNotice)
@@ -62,6 +67,45 @@ enum ScreenshotTranslator {
         }
         guard okCount > 0 else { throw firstError ?? err("翻译失败") }
         return results
+    }
+
+    /// 查词模式：选区里只有零星几个短词（≤3 段、每段 ≤3 个词）——用户是专门框了这个词想知道意思。
+    /// 整屏翻译的提示词要求「代码标识符原样保留」，true/false/null 这类就会被模型原样退回；
+    /// 而且 JSON 数组里只放一个词时，即便换成词典式提示词模型也照样不翻（百炼 qwen 实测）。
+    /// 所以查词改为逐词纯文本提问、词典式提示词，实测 true→真、null→空稳定（internal 供测试）
+    static func isLookup(_ texts: [String]) -> Bool {
+        !texts.isEmpty && texts.count <= 3
+            && texts.allSatisfy { $0.count <= 40 && $0.split(separator: " ").count <= 3 }
+    }
+
+    static func lookupPrompt(_ lang: String) -> String {
+        "You are a dictionary. Reply with ONLY the \(lang) translation of the given word or phrase — no quotes, "
+            + "no explanation. Translate programming keywords and literals too (e.g. import, true, null). "
+            + "Keep product or brand names unchanged."
+    }
+
+    /// 查词：逐词并发纯文本请求；单个词失败只留空（渲染时保留原文），全部失败才抛错
+    private static func lookup(_ texts: [String], to lang: String, config: Config,
+                               onNotice: (@Sendable (String) -> Void)?) async throws -> [String] {
+        let system = lookupPrompt(lang)
+        var out = [String](repeating: "", count: texts.count)
+        var firstError: Error?
+        await withTaskGroup(of: (Int, Result<String, Error>).self) { group in
+            for (i, t) in texts.enumerated() {
+                group.addTask {
+                    do { return (i, .success(try await send(t, system: system, temperature: 0.2, config: config, onNotice: onNotice))) }
+                    catch { return (i, .failure(error)) }
+                }
+            }
+            for await (i, res) in group {
+                switch res {
+                case .success(let s): out[i] = s.trimmingCharacters(in: CharacterSet(charactersIn: "\"“”「」 \n"))
+                case .failure(let e): if firstError == nil { firstError = e }
+                }
+            }
+        }
+        if out.allSatisfy(\.isEmpty), let firstError { throw firstError }
+        return out
     }
 
     /// 单块翻译：首轮整块请求 → 逐条核对，把「没回来的 / 原样回传但明显该翻的」单独小批补翻一次。
@@ -144,8 +188,33 @@ enum ScreenshotTranslator {
     /// 单次翻译请求：JSON 数组进出，去掉可能的 ``` 包裹，解析成字符串数组
     private static func request(_ texts: [String], system: String, temperature: Double, config: Config,
                                 onNotice: (@Sendable (String) -> Void)?) async throws -> [String] {
-        let url = try completionsURL(config.baseURL)
         let inputJSON = String(data: try JSONSerialization.data(withJSONObject: texts), encoding: .utf8) ?? "[]"
+        var content = try await send(inputJSON, system: system, temperature: temperature, config: config, onNotice: onNotice)
+        if content.hasPrefix("```") {
+            content = content.replacingOccurrences(of: "```json", with: "")
+                .replacingOccurrences(of: "```", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let arr = try? JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String] { return arr }
+        // 数组前后带解释文字：截取首个 '[' 到最后一个 ']' 再试
+        if let l = content.firstIndex(of: "["), let r = content.lastIndex(of: "]"), l < r,
+           let arr = try? JSONSerialization.jsonObject(with: Data(String(content[l...r]).utf8)) as? [String] {
+            return arr
+        }
+        // 兜底按行切（截断的 JSON 会走到这）：去掉行首尾的引号和尾逗号，别把 JSON 碎片当译文
+        return content.split(separator: "\n", omittingEmptySubsequences: false).map {
+            var line = $0.trimmingCharacters(in: .whitespaces)
+            if line.hasSuffix(",") { line.removeLast() }
+            if line.hasPrefix("\""), line.hasSuffix("\""), line.count >= 2 {
+                line = String(line.dropFirst().dropLast())
+            }
+            return line
+        }
+    }
+
+    /// 发一次补全请求，返回模型正文（已去首尾空白）。关深度思考被拒时摘字段重发、审核拦截直接报错都在这里
+    private static func send(_ user: String, system: String, temperature: Double, config: Config,
+                             onNotice: (@Sendable (String) -> Void)?) async throws -> String {
+        let url = try completionsURL(config.baseURL)
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = 30
@@ -155,7 +224,7 @@ enum ScreenshotTranslator {
             thinkingOn: config.thinking, baseURL: config.baseURL, model: config.model)
         func body(_ off: Bool) throws -> Data {
             try JSONSerialization.data(withJSONObject:
-                requestBody(inputJSON, system: system, temperature: temperature,
+                requestBody(user, system: system, temperature: temperature,
                             model: config.model, disableThinking: off))
         }
         req.httpBody = try body(disable)
@@ -185,27 +254,8 @@ enum ScreenshotTranslator {
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let choices = json["choices"] as? [[String: Any]],
               let msg = choices.first?["message"] as? [String: Any],
-              var content = (msg["content"] as? String) else { throw err("响应解析失败") }
-        content = content.trimmingCharacters(in: .whitespacesAndNewlines)
-        if content.hasPrefix("```") {
-            content = content.replacingOccurrences(of: "```json", with: "")
-                .replacingOccurrences(of: "```", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        if let arr = try? JSONSerialization.jsonObject(with: Data(content.utf8)) as? [String] { return arr }
-        // 数组前后带解释文字：截取首个 '[' 到最后一个 ']' 再试
-        if let l = content.firstIndex(of: "["), let r = content.lastIndex(of: "]"), l < r,
-           let arr = try? JSONSerialization.jsonObject(with: Data(String(content[l...r]).utf8)) as? [String] {
-            return arr
-        }
-        // 兜底按行切（截断的 JSON 会走到这）：去掉行首尾的引号和尾逗号，别把 JSON 碎片当译文
-        return content.split(separator: "\n", omittingEmptySubsequences: false).map {
-            var line = $0.trimmingCharacters(in: .whitespaces)
-            if line.hasSuffix(",") { line.removeLast() }
-            if line.hasPrefix("\""), line.hasSuffix("\""), line.count >= 2 {
-                line = String(line.dropFirst().dropLast())
-            }
-            return line
-        }
+              let content = (msg["content"] as? String) else { throw err("响应解析失败") }
+        return content.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// 请求体。`thinking` 只在用户显式关掉深度思考时才出现——
