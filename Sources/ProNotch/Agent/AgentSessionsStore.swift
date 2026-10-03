@@ -563,6 +563,28 @@ final class AgentSessionsStore: ObservableObject {
         return prompt
     }
 
+    /// 完成提醒卡用的对话名：收工那一刻现读磁盘，不依赖监控台扫描（面板没开就不扫，表里可能还没这个会话）。
+    /// Codex 查 session_index.jsonl 的 thread_name；Claude 找 ~/.claude/projects/*/<session>.jsonl 取会话标题或首句。
+    /// Kimi/Grok 返回 nil，由调用方退回监控台表里的缓存标题
+    nonisolated static func conversationTitle(source: AgentKind, session: String) -> String? {
+        guard !session.isEmpty else { return nil }
+        switch source {
+        case .codex:
+            return titleize(loadCodexThreadNames()[session])
+        case .claude:
+            let fm = FileManager.default
+            let root = fm.homeDirectoryForCurrentUser.appendingPathComponent(".claude/projects")
+            guard let dirs = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return nil }
+            for dir in dirs {
+                let file = dir.appendingPathComponent(session + ".jsonl")
+                if fm.fileExists(atPath: file.path) { return titleize(claudeCustomTitle(file) ?? claudeHeadTitle(file)) }
+            }
+            return nil
+        default:
+            return nil
+        }
+    }
+
     /// Codex 对话名映射：~/.codex/session_index.jsonl 的 id → thread_name（一次读入）
     private nonisolated static func loadCodexThreadNames() -> [String: String] {
         let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex/session_index.jsonl")

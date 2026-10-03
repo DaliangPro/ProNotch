@@ -290,13 +290,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         AppLog.app.debug("槽位记账：\(kind.rawValue, privacy: .public) 收工")
         let effectiveHost = (host?.isEmpty == false) ? host
             : env?.agentSessions.knownHost(for: session, source: kind)
-        // 项目名：钩子从载荷的 cwd 抠（v14 起）；老脚本或载荷里没有 cwd 时，查监控台会话表兜底
-        var project = AgentCompletionNotice.decodeProject(
-            items?.first(where: { $0.name == "project" })?.value ?? "")
-        if project.isEmpty, !session.isEmpty {
-            project = env?.agentSessions.sessions
-                .first { $0.source == kind && $0.id == session }?.projectName ?? ""
+        // 卡面名字优先对话名：Codex 桌面版每个对话的 cwd 是自动起的短目录（如 …/2026-10-03/c），
+        // 只显示目录末段就成了「c」这种一两个字母（大梁老师 2026-10-03 反馈）。
+        // 取不到对话名再退项目名：钩子从载荷的 cwd 抠（v14 起）；老脚本或载荷里没有 cwd 时，查监控台会话表兜底
+        let known = env?.agentSessions.sessions.first { $0.source == kind && $0.id == session }
+        var project = AgentSessionsStore.conversationTitle(source: kind, session: session) ?? known?.title ?? ""
+        if project.isEmpty {
+            project = AgentCompletionNotice.decodeProject(items?.first(where: { $0.name == "project" })?.value ?? "")
         }
+        if project.isEmpty, !session.isEmpty { project = known?.projectName ?? "" }
         glowController?.notifyCompletion(kind, host: effectiveHost, session: session, project: project)
         env?.agentSessions.markTurnEnded(session: session, source: kind, host: host)
     }

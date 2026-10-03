@@ -8,7 +8,7 @@ struct AgentCompletionNotice: Equatable, Identifiable, Sendable {
     let session: String
     /// hook 探测到的宿主 App bundle id（终端 / IDE / 桌面版），点卡跳转与切回收卡都靠它
     let host: String?
-    /// 项目名（cwd 末段）。抓不到时为空，卡面退一句通用文案
+    /// 卡面名字：对话名优先，取不到退项目名（cwd 末段）。都抓不到时为空，卡面退一句通用文案
     let project: String
     /// 卡的光晕色（hex）：设置里这家的提醒色，与四周光晕同一份；nil＝品牌色
     let tintHex: String?
