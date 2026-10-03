@@ -3231,6 +3231,16 @@ final class ScreenshotOverlayView: NSView, NSTextViewDelegate {
         host.layer?.backgroundColor = (dark ? NSColor.black.withAlphaComponent(0.85)
                                             : NSColor.white).cgColor
         host.layer?.cornerRadius = 8
+        // 投影 + 细描边：白底气泡落在纯白页面上会和背景融成一片，靠这两样勾出轮廓。
+        // 阴影必须走 NSView.shadow——直接写 layer.shadowOpacity 会在上屏时被 AppKit 重置为 0（实测）
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(dark ? 0.55 : 0.3)
+        shadow.shadowBlurRadius = 12
+        shadow.shadowOffset = NSSize(width: 0, height: -3)
+        host.shadow = shadow
+        host.layer?.borderWidth = 0.5
+        host.layer?.borderColor = (dark ? NSColor.white.withAlphaComponent(0.15)
+                                        : NSColor.black.withAlphaComponent(0.12)).cgColor
         if spinning {   // 翻译中：小转圈，让人一眼看出「在干活」而不是卡死
             let spin = NSProgressIndicator()
             spin.style = .spinning
